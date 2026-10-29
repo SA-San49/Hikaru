@@ -34,21 +34,11 @@ android {
                 propFile.inputStream().use { props.load(it) }
             }
 
-            storeFile = file("anizen.jks")
+            storeFile = file("hikaru.jks")
             storePassword = props.getProperty("storePassword") ?: System.getenv("SIGNING_STORE_PASSWORD") ?: ""
             keyAlias = props.getProperty("keyAlias") ?: System.getenv("SIGNING_KEY_ALIAS") ?: ""
             keyPassword = props.getProperty("keyPassword") ?: System.getenv("SIGNING_KEY_PASSWORD") ?: ""
 
-            enableV1Signing = true
-            enableV2Signing = true
-            enableV3Signing = true
-        }
-        // Consistent debug keystore used by all CI debug / r8Debug builds
-        getByName("debug") {
-            storeFile = file("anizen-debug.jks")
-            storePassword = System.getenv("DEBUG_STORE_PASSWORD") ?: "anizen_debug_pass"
-            keyAlias = System.getenv("DEBUG_KEY_ALIAS") ?: "anizen-debug"
-            keyPassword = System.getenv("DEBUG_KEY_PASSWORD") ?: "anizen_debug_pass"
             enableV1Signing = true
             enableV2Signing = true
             enableV3Signing = true
