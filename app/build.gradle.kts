@@ -58,7 +58,7 @@ android {
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "io.github.sa_san49.hikaru"
+        applicationId = "app.hikaru"
 
         versionCode = 5
         versionName = "0.1.5"

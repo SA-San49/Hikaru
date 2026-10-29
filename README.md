@@ -113,7 +113,7 @@ app                   # Entry point, dependency injection configuration
 1. Head over to the [Releases](https://github.com/SA-San49/Hikaru/releases) tab.
 2. Download the latest `arm64-v8a` release APK.
 3. Install the APK (requires enabling *Install from Unknown Sources*).
-4. Hikaru installs under package ID `io.github.sa_san49.hikaru`.
+4. Hikaru installs under package ID `app.hikaru`.
 
 ### For Developers
 Clone the repository and build using Gradle:
