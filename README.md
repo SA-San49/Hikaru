@@ -7,7 +7,6 @@
 ### A personal anime & movie client for Android.
 *A custom media player built with Jetpack Compose, designed for fluid interactions, smart offline playback, and experimental integrations.*
 
-[![Discord](https://img.shields.io/badge/Discord-Community-5865F2?logo=discord&logoColor=FFFFFF&style=flat-square)](https://discord.gg/DISCORD_INVITE_URL)
 [![Preview Build](https://img.shields.io/github/actions/workflow/status/SA-San49/Hikaru/preview.yml?branch=preview&label=Preview%20Build&style=flat-square)](https://github.com/SA-San49/Hikaru/actions/workflows/preview.yml)
 [![Release](https://img.shields.io/github/v/release/SA-San49/Hikaru?style=flat-square)](https://github.com/SA-San49/Hikaru/releases)
 [![Downloads](https://img.shields.io/github/downloads/SA-San49/Hikaru/total?style=flat-square)](https://github.com/SA-San49/Hikaru/releases)
@@ -129,7 +128,7 @@ Automated preview builds can also be found in the [Actions tab](https://github.c
 ## 🤝 Contributing & Support
 
 *   **Bug Reports:** Report issues and attach logs via [GitHub Issues](https://github.com/SA-San49/Hikaru/issues).
-*   **Community:** Join our [Discord Server](https://discord.gg/DISCORD_INVITE_URL) to ask questions, chat, or suggest features.
+*   **Community:** Join our [GitHub Discussions](https://github.com/SA-San49/Hikaru/discussions) to ask questions, chat, or suggest features.
 
 ---
 

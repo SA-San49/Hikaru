@@ -7,6 +7,7 @@
 package eu.kanade.tachiyomi.data.connections.discord
 
 import androidx.annotation.StringRes
+import eu.kanade.tachiyomi.BuildConfig
 import eu.kanade.tachiyomi.R
 import eu.kanade.tachiyomi.util.system.isPreviewBuildType
 import kotlinx.serialization.SerialName
@@ -17,17 +18,16 @@ import kotlinx.serialization.json.JsonElement
 const val RICH_PRESENCE_TAG = "discord_rpc"
 
 // Constant for application id
-const val RICH_PRESENCE_APPLICATION_ID = "1471263338934566972"
 
 const val DOWNLOAD_BUTTON_LABEL = "Download"
-const val DOWNLOAD_BUTTON_URL = "https://github.com/salmanbappi/AniZen/releases/latest"
+const val DOWNLOAD_BUTTON_URL = "https://github.com/SA-San49/Hikaru/releases/latest"
 const val DISCORD_BUTTON_LABEL = "Discord"
-const val DISCORD_BUTTON_URL = "https://discord.gg/J2wmZqEJnS"
+val DISCORD_BUTTON_URL = BuildConfig.DISCORD_INVITE_URL
 
 @Serializable
 data class Activity(
     @SerialName("application_id")
-    val applicationId: String? = RICH_PRESENCE_APPLICATION_ID,
+    val applicationId: String? = BuildConfig.DISCORD_RPC_APP_ID,
     val name: String? = null,
     val details: String? = null,
     val state: String? = null,
@@ -179,30 +179,30 @@ enum class DiscordScreen(
     @StringRes val details: Int,
     val imageUrl: String,
 ) {
-    APP(R.string.app_name, R.string.discord_status_using, ANIMETAIL_IMAGE),
-    LIBRARY(R.string.app_name, R.string.discord_status_using, ANIMETAIL_IMAGE),
-    UPDATES(R.string.app_name, R.string.discord_status_using, ANIMETAIL_IMAGE),
-    HISTORY(R.string.app_name, R.string.discord_status_using, ANIMETAIL_IMAGE),
-    BROWSE(R.string.label_sources, R.string.discord_status_exploring, ANIMETAIL_IMAGE),
-    MORE(R.string.app_name, R.string.discord_status_using, ANIMETAIL_IMAGE),
-    WEBVIEW(R.string.app_name, R.string.discord_status_using, ANIMETAIL_IMAGE),
-    DETAILS(R.string.app_name, R.string.discord_status_using, ANIMETAIL_IMAGE),
+    APP(R.string.app_name, R.string.discord_status_using, HIKARU_IMAGE),
+    LIBRARY(R.string.app_name, R.string.discord_status_using, HIKARU_IMAGE),
+    UPDATES(R.string.app_name, R.string.discord_status_using, HIKARU_IMAGE),
+    HISTORY(R.string.app_name, R.string.discord_status_using, HIKARU_IMAGE),
+    BROWSE(R.string.label_sources, R.string.discord_status_exploring, HIKARU_IMAGE),
+    MORE(R.string.app_name, R.string.discord_status_using, HIKARU_IMAGE),
+    WEBVIEW(R.string.app_name, R.string.discord_status_using, HIKARU_IMAGE),
+    DETAILS(R.string.app_name, R.string.discord_status_using, HIKARU_IMAGE),
     VIDEO(R.string.video, R.string.watching, VIDEO_IMAGE_URL),
     MANGA(R.string.manga, R.string.reading, MANGA_IMAGE_URL),
 }
 
 // Constants for standard Rich Presence image urls
-private const val ANIZEN_LOGO_IMAGE_URL = "https://raw.githubusercontent.com/salmanbappi/AniZen/preview/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png"
-private const val ANIMETAIL_IMAGE_URL = ANIZEN_LOGO_IMAGE_URL
-private const val ANIMETAIL_PREVIEW_IMAGE_URL = ANIZEN_LOGO_IMAGE_URL
-private val ANIMETAIL_IMAGE = if (isPreviewBuildType) ANIMETAIL_PREVIEW_IMAGE_URL else ANIMETAIL_IMAGE_URL
+private const val HIKARU_LOGO_IMAGE_URL = "https://raw.githubusercontent.com/SA-San49/Hikaru/main/.github/assets/icon.png"
+private const val HIKARU_IMAGE_URL = HIKARU_LOGO_IMAGE_URL
+private const val HIKARU_PREVIEW_IMAGE_URL = HIKARU_LOGO_IMAGE_URL
+private val HIKARU_IMAGE = if (isPreviewBuildType) HIKARU_PREVIEW_IMAGE_URL else HIKARU_IMAGE_URL
 private const val BROWSE_IMAGE_URL = "https://raw.githubusercontent.com/google/material-design-icons/master/png/action/explore/materialicons/48dp/1x/baseline_explore_white_48dp.png"
 private const val LIBRARY_IMAGE_URL = "https://raw.githubusercontent.com/google/material-design-icons/master/png/av/video_library/materialicons/48dp/1x/baseline_video_library_white_48dp.png"
 private const val UPDATES_IMAGE_URL = "https://raw.githubusercontent.com/google/material-design-icons/master/png/navigation/refresh/materialicons/48dp/1x/baseline_refresh_white_48dp.png"
 private const val HISTORY_IMAGE_URL = "https://raw.githubusercontent.com/google/material-design-icons/master/png/action/history/materialicons/48dp/1x/baseline_history_white_48dp.png"
 private const val MORE_IMAGE_URL = "https://raw.githubusercontent.com/google/material-design-icons/master/png/action/settings/materialicons/48dp/1x/baseline_settings_white_48dp.png"
 private const val WEBVIEW_IMAGE_URL = "https://raw.githubusercontent.com/google/material-design-icons/master/png/action/language/materialicons/48dp/1x/baseline_language_white_48dp.png"
-private const val VIDEO_IMAGE_URL = ANIZEN_LOGO_IMAGE_URL
-private const val MANGA_IMAGE_URL = ANIZEN_LOGO_IMAGE_URL
+private const val VIDEO_IMAGE_URL = HIKARU_LOGO_IMAGE_URL
+private const val MANGA_IMAGE_URL = HIKARU_LOGO_IMAGE_URL
 
 // <-- AM (DISCORD)
