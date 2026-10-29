@@ -71,10 +71,6 @@ jobs:
           else
             ./gradlew assembleDebug assembleR8Debug -Pinclude-telemetry=false -Penable-updater=false --no-daemon
           fi
-        env:
-          SIGNING_STORE_PASSWORD: android
-          SIGNING_KEY_ALIAS: androiddebugkey
-          SIGNING_KEY_PASSWORD: android
 
       - name: Rename and validate APKs
         run: |

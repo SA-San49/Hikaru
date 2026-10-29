@@ -56,6 +56,14 @@ jobs:
           git commit -m "chore: bump version to ${{ env.NEW_VN }}"
           git push origin master
 
+      - name: Decode signing keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          test -n "$KEYSTORE_BASE64"
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > app/hikaru.jks
+          test -s app/hikaru.jks
+
       - name: Build Release APK
         run: ./gradlew assembleRelease -Pinclude-telemetry=false -Penable-updater=true --no-daemon
         env:

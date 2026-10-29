@@ -168,6 +168,14 @@ jobs:
           
           mkdir -p .github && echo "$SUMMARY" > .github/AI_NOTE_ACCUMULATOR
 
+      - name: Decode signing keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          test -n "$KEYSTORE_BASE64"
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > app/hikaru.jks
+          test -s app/hikaru.jks
+
       - name: Build Preview APK
         run: ./gradlew assemblePreview -Pinclude-telemetry=false -Penable-updater=true --no-daemon
         env:
