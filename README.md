@@ -1,25 +1,25 @@
 <div align="center">
 
-<img src="./.github/assets/icon.png" alt="AniZen Logo" width="100"/>
+<img src="./.github/assets/icon.png" alt="Original AniZen icon; Hikaru logo pending" width="100"/>
 
-# AniZen
+# Hikaru
 
 ### A personal anime & movie client for Android.
 *A custom media player built with Jetpack Compose, designed for fluid interactions, smart offline playback, and experimental integrations.*
 
 [![Discord](https://img.shields.io/discord/1242381704459452488?label=Discord&labelColor=6A7EC2&color=7389D8&logo=discord&logoColor=FFFFFF&style=flat-square)](https://discord.gg/J2wmZqEJnS)
-[![Preview Build](https://img.shields.io/github/actions/workflow/status/salmanbappi/AniZen/preview.yml?branch=preview&label=Preview%20Build&style=flat-square)](https://github.com/salmanbappi/AniZen/actions/workflows/preview.yml)
-[![Release](https://img.shields.io/github/v/release/salmanbappi/AniZen?style=flat-square)](https://github.com/salmanbappi/AniZen/releases)
-[![Downloads](https://img.shields.io/github/downloads/salmanbappi/AniZen/total?style=flat-square)](https://github.com/salmanbappi/AniZen/releases)
-[![Views](https://komarev.com/ghpvc/?username=salmanbappi&repo=AniZen&style=flat-square&color=0877d2)](https://github.com/salmanbappi/AniZen)
-[![License](https://img.shields.io/github/license/salmanbappi/AniZen?label=License&color=0877d2&style=flat-square)](/LICENSE)
+[![Preview Build](https://img.shields.io/github/actions/workflow/status/SA-San49/Hikaru/preview.yml?branch=preview&label=Preview%20Build&style=flat-square)](https://github.com/SA-San49/Hikaru/actions/workflows/preview.yml)
+[![Release](https://img.shields.io/github/v/release/SA-San49/Hikaru?style=flat-square)](https://github.com/SA-San49/Hikaru/releases)
+[![Downloads](https://img.shields.io/github/downloads/SA-San49/Hikaru/total?style=flat-square)](https://github.com/SA-San49/Hikaru/releases)
+[![Views](https://komarev.com/ghpvc/?username=SA-San49&repo=Hikaru&style=flat-square&color=0877d2)](https://github.com/SA-San49/Hikaru)
+[![License](https://img.shields.io/github/license/SA-San49/Hikaru?label=License&color=0877d2&style=flat-square)](/LICENSE)
 </div>
 
 ---
 
-## 📖 About AniZen
+## 📖 About Hikaru
 
-AniZen is a solo-built passion project that started on the foundation of Aniyomi and Anikku. It was created to explore how far an Android media client can go when designed with modern programming principles, deep player optimizations, and a focus on fluidity. 
+Hikaru is an independent fork of the AniZen source, built on upstream work from Aniyomi and Anikku. It is developing its own app identity while retaining the Apache-2.0 license and required attributions. 
 
 It aims to offer a premium, responsive, and completely personalized viewing space while remaining lightweight and respectful of hardware resources.
 
@@ -31,7 +31,7 @@ It aims to offer a premium, responsive, and completely personalized viewing spac
 
 ### Features include:
 
-* **AniZen**:
+* **Hikaru**:
   * **🎬 Media Player & Video Engine**:
     * `Anime4K Neural Shaders` built-in upscaling quality levels (Fast, Balanced, High) and multiple processing modes (A, B, C, A+, B+, C+) for real-time video upscaling.
     * `Motion Interpolation` temporal interpolation scaling (oversample, mitchell, catmull-rom) generating smooth frames matching the display refresh rate (up to 120fps/144fps).
@@ -86,7 +86,7 @@ It aims to offer a premium, responsive, and completely personalized viewing spac
 
 ## 🛠️ Technical Architecture
 
-AniZen follows **Clean Architecture** principles to separate business logic, UI, and data handling into a modular structure:
+Hikaru follows **Clean Architecture** principles to separate business logic, UI, and data handling into a modular structure:
 
 ```
 app                   # Entry point, dependency injection configuration
@@ -110,32 +110,32 @@ app                   # Entry point, dependency injection configuration
 ## 🚀 Getting Started
 
 ### For Users
-1. Head over to the [Releases](https://github.com/salmanbappi/AniZen/releases) tab.
+1. Head over to the [Releases](https://github.com/SA-San49/Hikaru/releases) tab.
 2. Download the latest `arm64-v8a` release APK.
 3. Install the APK (requires enabling *Install from Unknown Sources*).
-4. Installs under package ID `app.anizen` — runs side-by-side with official Anikku without issues.
+4. Hikaru installs under package ID `app.hikaru`.
 
 ### For Developers
 Clone the repository and build using Gradle:
 ```bash
-git clone https://github.com/salmanbappi/AniZen.git
-cd AniZen
+git clone https://github.com/SA-San49/Hikaru.git
+cd Hikaru
 ./gradlew assembleDebug
 ```
-Automated preview builds can also be found in the [Actions tab](https://github.com/salmanbappi/AniZen/actions/workflows/preview.yml).
+Automated preview builds can also be found in the [Actions tab](https://github.com/SA-San49/Hikaru/actions/workflows/preview.yml).
 
 ---
 
 ## 🤝 Contributing & Support
 
-*   **Bug Reports:** Report issues and attach logs via [GitHub Issues](https://github.com/salmanbappi/AniZen/issues).
+*   **Bug Reports:** Report issues and attach logs via [GitHub Issues](https://github.com/SA-San49/Hikaru/issues).
 *   **Community:** Join our [Discord Server](https://discord.gg/J2wmZqEJnS) to ask questions, chat, or suggest features.
 
 ---
 
 ## 💖 Credits
 
-AniZen would not be possible without the incredible open-source projects it builds upon:
+Hikaru would not be possible without the incredible open-source projects it builds upon:
 *   [Aniyomi](https://github.com/aniyomiorg/aniyomi) & [Anikku](https://github.com/komikku-app/anikku) (Core codebase foundations)
 *   [Anime4K](https://github.com/bloc97/Anime4K) (Real-time shaders)
 *   [mpvEx](https://github.com/marlboro-advance/mpvEx) (MPV integration patterns)
@@ -144,7 +144,7 @@ AniZen would not be possible without the incredible open-source projects it buil
 
 ## 📄 License
 
-AniZen is open-source software licensed under the [Apache-2.0 License](LICENSE).
+Hikaru is open-source software licensed under the [Apache-2.0 License](LICENSE).
 
 ---
 

@@ -1,4 +1,4 @@
-name: AniZen v8a R8 Debug
+name: Hikaru v8a R8 Debug
 
 on:
   workflow_dispatch:
@@ -38,7 +38,7 @@ jobs:
           CURRENT_VN=$(sed -n 's/.*versionName = "\([^"]*\)".*/\1/p' app/build.gradle.kts | head -1)
           test -n "$CURRENT_VN"
           echo "VERSION=$CURRENT_VN" >> "$GITHUB_ENV"
-          echo "Building AniZen v$CURRENT_VN"
+          echo "Building Hikaru v$CURRENT_VN"
 
       - name: Build arm64-v8a maximum R8 debug-signed APK
         run: ./gradlew assembleR8Debug -PabiList=arm64-v8a -Pandroid.enableR8.fullMode=true -Pinclude-telemetry=false -Penable-updater=false --no-daemon
@@ -50,7 +50,7 @@ jobs:
         run: |
           VERSION="${{ env.VERSION }}"
           mkdir -p dist
-          APK="dist/AniZen-v${VERSION}-v8a-r8-debug.apk"
+          APK="dist/Hikaru-v${VERSION}-v8a-r8-debug.apk"
           mapfile -t APKS < <(find app/build/outputs/apk/r8Debug -type f -name "*.apk" | sort)
           test "${#APKS[@]}" -gt 0
           printf 'Generated APKs:\n'
@@ -68,7 +68,7 @@ jobs:
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: AniZen-v${{ env.VERSION }}-v8a-r8-debug
+          name: Hikaru-v${{ env.VERSION }}-v8a-r8-debug
           path: dist/*.apk
           if-no-files-found: error
           retention-days: 7

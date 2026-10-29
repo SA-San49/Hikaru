@@ -99,7 +99,7 @@
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
 
-                <data android:scheme="anizen" />
+                <data android:scheme="hikaru" />
                 <data android:scheme="aniyomi" />
                 <data android:scheme="mihon" />
                 <data android:scheme="tachiyomi" />
@@ -243,13 +243,13 @@
                 <data android:host="tmdb-auth"/>
             </intent-filter>
 
-            <!-- Secondary filter for anizen scheme -->
+            <!-- Secondary filter for hikaru scheme -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
 
-                <data android:scheme="anizen" />
+                <data android:scheme="hikaru" />
                 <data android:host="anilist-auth" />
                 <data android:host="bangumi-auth" />
                 <data android:host="myanimelist-auth" />

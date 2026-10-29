@@ -96,7 +96,7 @@ jobs:
           DIFF=$(cat .github/ai/diff.txt)
 
           cat > .github/ai/full_prompt.txt <<EOF
-          You are an excited team member of AniZen! Write a friendly and hyped 'Changelog' for our fans. 
+          You are an excited team member of Hikaru! Write a friendly and hyped 'Changelog' for our fans. 
           Summarize WHAT IS NEW and WHAT CHANGED.
           Use emojis like 🚀, ✨, and 🛠️. Group into 'What's New', 'Fixed', and 'Polished'.
           CRITICAL: Do NOT mention technical details like 'diffs', 'commits', or file paths. Focus on user-facing features!
@@ -180,15 +180,15 @@ jobs:
           cd app/build/outputs/apk/preview/
           for f in *.apk; do
             if [[ "$f" == *"universal"* ]]; then
-              mv "$f" "AniZen-Preview-${{ env.TAG }}-universal.apk"
+              mv "$f" "Hikaru-Preview-${{ env.TAG }}-universal.apk"
             elif [[ "$f" == *"arm64-v8a"* ]]; then
-              mv "$f" "AniZen-Preview-${{ env.TAG }}-arm64-v8a.apk"
+              mv "$f" "Hikaru-Preview-${{ env.TAG }}-arm64-v8a.apk"
             elif [[ "$f" == *"armeabi-v7a"* ]]; then
-              mv "$f" "AniZen-Preview-${{ env.TAG }}-armeabi-v7a.apk"
+              mv "$f" "Hikaru-Preview-${{ env.TAG }}-armeabi-v7a.apk"
             elif [[ "$f" == *"x86_64"* ]]; then
-              mv "$f" "AniZen-Preview-${{ env.TAG }}-x86_64.apk"
+              mv "$f" "Hikaru-Preview-${{ env.TAG }}-x86_64.apk"
             elif [[ "$f" == *"x86"* ]]; then
-              mv "$f" "AniZen-Preview-${{ env.TAG }}-x86.apk"
+              mv "$f" "Hikaru-Preview-${{ env.TAG }}-x86.apk"
             else
               rm -f "$f"
             fi
@@ -197,7 +197,7 @@ jobs:
       - name: Upload APK Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: AniZen-Preview-${{ env.TAG }}
+          name: Hikaru-Preview-${{ env.TAG }}
           path: app/build/outputs/apk/preview/*.apk
 
       - name: Reset Accumulator on Success
@@ -214,12 +214,12 @@ jobs:
       - name: Create Release in Preview Repo
         uses: softprops/action-gh-release@v1
         with:
-          repository: salmanbappi/anizen-preview
+          repository: SA-San49/Hikaru
           token: ${{ secrets.GH_PAT || github.token }}
           tag_name: ${{ env.TAG }}
-          name: AniZen Preview ${{ env.TAG }}
+          name: Hikaru Preview ${{ env.TAG }}
           body: |
-            ### 🌟 AniZen Preview Release (${{ env.TAG }})
+            ### 🌟 Hikaru Preview Release (${{ env.TAG }})
             
             ${{ env.AI_CHANGELOG }}
             
@@ -237,7 +237,7 @@ jobs:
           DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
         run: |
           # Define clean links for Markdown
-          RELEASE_URL="https://github.com/salmanbappi/anizen-preview/releases/tag/${{ env.TAG }}"
+          RELEASE_URL="https://github.com/SA-San49/Hikaru/releases/tag/${{ env.TAG }}"
           COMMIT_URL="${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}"
           
           EMBED_TITLE="🛠️ Preview Build Update (${{ env.TAG }})"

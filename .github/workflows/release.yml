@@ -68,7 +68,7 @@ jobs:
           VERSION="${{ env.NEW_VN }}"
           cd app/build/outputs/apk/release/
           for f in *.apk; do
-            mv "$f" "AniZen-v$VERSION-$f"
+            mv "$f" "Hikaru-v$VERSION-$f"
           done
 
       - name: Generate Detailed Context for AI
@@ -100,7 +100,7 @@ jobs:
           DIFF=$(cat .github/ai/diff.txt)
           
           cat > .github/ai/full_prompt.txt <<EOF
-          You are an excited team member of AniZen! Write a friendly and hyped 'Changelog' for our fans. 
+          You are an excited team member of Hikaru! Write a friendly and hyped 'Changelog' for our fans. 
           Summarize WHAT IS NEW and WHAT CHANGED based on the commits and diff below.
           Use emojis like 🚀, ✨, and 🛠️. Group into 'What's New', 'Fixed', and 'Polished'.
           CRITICAL: Do NOT mention technical terms like 'code', 'commits', or 'diff'. Focus on improvements!
@@ -168,13 +168,13 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           tag_name: v${{ env.NEW_VN }}
-          name: AniZen Release v${{ env.NEW_VN }}
+          name: Hikaru Release v${{ env.NEW_VN }}
           files: app/build/outputs/apk/release/*.apk
           draft: false
           prerelease: false
           generate_release_notes: false
           body: |
-            ## 🚀 AniZen v${{ env.NEW_VN }}
+            ## 🚀 Hikaru v${{ env.NEW_VN }}
             
             ${{ env.CHANGELOG }}
             
@@ -187,10 +187,10 @@ jobs:
           DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
         run: |
           # Define clean links for Markdown
-          RELEASE_URL="https://github.com/salmanbappi/AniZen/releases/tag/v${{ env.NEW_VN }}"
+          RELEASE_URL="https://github.com/SA-San49/Hikaru/releases/tag/v${{ env.NEW_VN }}"
           COMMIT_URL="${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}"
           
-          EMBED_TITLE="🚀 AniZen Official Release (v${{ env.NEW_VN }})"
+          EMBED_TITLE="🚀 Hikaru Official Release (v${{ env.NEW_VN }})"
           EMBED_DESC=$(cat <<EOF
           ${{ env.CHANGELOG }}
 
