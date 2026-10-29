@@ -57,6 +57,7 @@ android {
 
         buildConfigField("String", "COMMIT_COUNT", "\"${getCommitCount()}\"")
         buildConfigField("String", "COMMIT_SHA", "\"${getGitSha()}\"")
+        buildConfigField("String", "DISCORD_INVITE_URL", "\"${System.getenv("DISCORD_INVITE_URL") ?: "https://discord.gg/DISCORD_INVITE_URL"}\"")
         buildConfigField("String", "BUILD_TIME", "\"${getBuildTime(useLastCommitTime = false)}\"")
         buildConfigField("boolean", "TELEMETRY_INCLUDED", "${Config.includeTelemetry}")
 

@@ -243,14 +243,14 @@ object AboutScreen : Screen() {
                             subtitle = "Join our community",
                             icon = CustomIcons.Discord,
                             iconTint = Color(0xFF5865F2),
-                            onClick = { uriHandler.openUri("https://discord.gg/J2wmZqEJnS") }
+                            onClick = { uriHandler.openUri(BuildConfig.DISCORD_INVITE_URL) }
                         )
                         MoreItem(
                             title = "GitHub",
                             subtitle = "Source code",
                             icon = CustomIcons.Github,
                             iconTint = MaterialTheme.colorScheme.onSurface,
-                            onClick = { uriHandler.openUri("https://github.com/salmanbappi/AniZen") }
+                            onClick = { uriHandler.openUri("https://github.com/SA-San49/Hikaru") }
                         )
                     }
                 }
