@@ -43,7 +43,7 @@ dependencyResolutionManagement {
 
 enableFeaturePreview("TYPESAFE_PROJECT_ACCESSORS")
 
-rootProject.name = "AniZen"
+rootProject.name = "Hikaru"
 include(":app")
 include(":core-metadata")
 include(":core:archive")
