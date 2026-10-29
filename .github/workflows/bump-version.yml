@@ -3,7 +3,6 @@ name: Bump Version and Build v8a
 on:
   push:
     branches:
-      - new-features
       - master
       - preview
     paths-ignore:
@@ -64,7 +63,7 @@ jobs:
 
   build-v8a:
     name: Build arm64-v8a R8 debug APK
-    if: github.ref_name == 'new-features'
+    if: github.ref_name == 'main'
     needs: bump-version
     runs-on: ubuntu-latest
     permissions:
@@ -96,7 +95,7 @@ jobs:
           test -n "$CURRENT_VN"
           echo "VERSION=$CURRENT_VN" >> "$GITHUB_ENV"
           echo "VERSION_CODE=$CURRENT_VC" >> "$GITHUB_ENV"
-          echo "Building AniZen v$CURRENT_VN (code=$CURRENT_VC) for arm64-v8a"
+          echo "Building Hikaru v$CURRENT_VN (code=$CURRENT_VC) for arm64-v8a"
 
       - name: Build arm64-v8a APK
         run: ./gradlew assembleR8Debug -PabiList=arm64-v8a -Pandroid.enableR8.fullMode=true -Pinclude-telemetry=false -Penable-updater=false --no-daemon
@@ -104,7 +103,7 @@ jobs:
       - name: Rename and validate APK
         run: |
           mkdir -p dist
-          APK="dist/AniZen-v$VERSION-v8a-r8-debug.apk"
+          APK="dist/Hikaru-v$VERSION-v8a-r8-debug.apk"
           SOURCE_APK=$(find app/build/outputs/apk/r8Debug -type f -name "*arm64-v8a*.apk" | head -1)
           test -n "$SOURCE_APK" || (echo "No arm64-v8a R8 debug APK found!" && exit 1)
           cp "$SOURCE_APK" "$APK"
@@ -114,7 +113,7 @@ jobs:
       - name: Upload v8a APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: AniZen-v${{ env.VERSION }}-v8a-r8-debug
+          name: Hikaru-v${{ env.VERSION }}-v8a-r8-debug
           path: dist/*.apk
           if-no-files-found: error
           retention-days: 7

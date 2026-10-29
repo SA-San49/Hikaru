@@ -55,12 +55,12 @@ jobs:
           VERSION="${{ env.VERSION }}"
           cd app/build/outputs/apk/release/
           for f in *.apk; do
-            mv "$f" "AniZen-v$VERSION-beta-$f"
+            mv "$f" "Hikaru-v$VERSION-beta-$f"
           done
 
       - name: Upload APK Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: AniZen-Beta-v${{ env.VERSION }}
+          name: Hikaru-Beta-v${{ env.VERSION }}
           path: app/build/outputs/apk/release/*.apk
           retention-days: 7
