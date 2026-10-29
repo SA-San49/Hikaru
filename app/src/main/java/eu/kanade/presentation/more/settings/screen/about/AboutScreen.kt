@@ -238,13 +238,16 @@ object AboutScreen : Screen() {
 
                 item {
                     MoreSection(title = "Links") {
-                        MoreItem(
-                            title = "Discord",
-                            subtitle = "Join our community",
-                            icon = CustomIcons.Discord,
-                            iconTint = Color(0xFF5865F2),
-                            onClick = { uriHandler.openUri(BuildConfig.DISCORD_INVITE_URL) }
-                        )
+                        if (BuildConfig.DISCORD_INVITE_URL.isNotBlank()) {
+                            MoreItem(
+                                title = "Discord",
+                                subtitle = "Join our community",
+                                icon = CustomIcons.Discord,
+                                iconTint = Color(0xFF5865F2),
+                                onClick = { uriHandler.openUri(BuildConfig.DISCORD_INVITE_URL) }
+                            )
+                        }
+
                         MoreItem(
                             title = "GitHub",
                             subtitle = "Source code",
