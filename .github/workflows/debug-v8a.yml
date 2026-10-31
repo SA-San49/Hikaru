@@ -55,9 +55,6 @@ jobs:
           SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
           SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
 
-      - name: Temp - schedule unit tests
-        run: ./gradlew :app:testDebugUnitTest --tests 'mihon.feature.airingschedule.*' --no-daemon
-
       - name: Rename and validate APK
         run: |
           VERSION="${{ env.VERSION }}"
