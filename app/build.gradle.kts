@@ -75,14 +75,16 @@ android {
             applicationIdSuffix = ".dev"
             versionNameSuffix = "-${getCommitCount()}"
             isPseudoLocalesEnabled = true
+            // Every build is signed with the Hikaru key (app/hikaru.jks).
+            signingConfig = signingConfigs.getByName("release")
         }
         maybeCreate("r8Debug").apply {
             initWith(debug)
-            // Keep debug signing, but disable debuggable mode so R8 can optimize fully.
+            // Hikaru-signed, with debuggable mode off so R8 can optimize fully.
             isDebuggable = false
             isMinifyEnabled = true
             isShrinkResources = true
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName("release")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-android-optimize.txt",
@@ -141,7 +143,7 @@ android {
             versionNameSuffix = "${debug.versionNameSuffix}-benchmark"
             applicationIdSuffix = ".benchmark"
 
-            signingConfig = debug.signingConfig
+            signingConfig = signingConfigs.getByName("release")
 
             matchingFallbacks.addAll(commonMatchingFallbacks)
         }

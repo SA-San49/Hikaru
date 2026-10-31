@@ -9,7 +9,7 @@ concurrency:
 
 jobs:
   build-debug-v8a:
-    name: Build arm64-v8a R8 debug-signed APK
+    name: Build arm64-v8a R8 Hikaru-signed APK
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -40,8 +40,20 @@ jobs:
           echo "VERSION=$CURRENT_VN" >> "$GITHUB_ENV"
           echo "Building Hikaru v$CURRENT_VN"
 
-      - name: Build arm64-v8a maximum R8 debug-signed APK
+      - name: Decode signing keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          test -n "$KEYSTORE_BASE64"
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > app/hikaru.jks
+          test -s app/hikaru.jks
+
+      - name: Build arm64-v8a maximum R8 Hikaru-signed APK
         run: ./gradlew assembleR8Debug -PabiList=arm64-v8a -Pandroid.enableR8.fullMode=true -Pinclude-telemetry=false -Penable-updater=false --no-daemon
+        env:
+          SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
+          SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
+          SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
 
       - name: Temp - schedule unit tests
         run: ./gradlew :app:testDebugUnitTest --tests 'mihon.feature.airingschedule.*' --no-daemon

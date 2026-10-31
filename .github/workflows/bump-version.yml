@@ -97,8 +97,20 @@ jobs:
           echo "VERSION_CODE=$CURRENT_VC" >> "$GITHUB_ENV"
           echo "Building Hikaru v$CURRENT_VN (code=$CURRENT_VC) for arm64-v8a"
 
+      - name: Decode signing keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          test -n "$KEYSTORE_BASE64"
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > app/hikaru.jks
+          test -s app/hikaru.jks
+
       - name: Build arm64-v8a APK
         run: ./gradlew assembleR8Debug -PabiList=arm64-v8a -Pandroid.enableR8.fullMode=true -Pinclude-telemetry=false -Penable-updater=false --no-daemon
+        env:
+          SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
+          SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
+          SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
 
       - name: Rename and validate APK
         run: |
