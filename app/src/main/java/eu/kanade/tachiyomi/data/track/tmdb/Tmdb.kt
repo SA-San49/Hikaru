@@ -237,7 +237,7 @@ class Tmdb(id: Long) : BaseTracker(id, "TMDB"), AnimeTracker {
         if (apiKey.isBlank()) throw Exception("TMDB API key required. Please save your API key first.")
         val tokenJson = api.getRequestToken()
         val requestToken = tokenJson.optString("request_token")
-        return "https://www.themoviedb.org/authenticate/$requestToken?redirect_to=anizen://tmdb-auth"
+        return "https://www.themoviedb.org/authenticate/$requestToken?redirect_to=hikaru://tmdb-auth"
     }
 
     override fun logout() {
