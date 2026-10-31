@@ -1,5 +1,8 @@
 blank_issues_enabled: false
 contact_links:
+  - name: 🧑‍💻 Discord
+    url: https://discord.gg/YVTGAhYXV
+    about: Common questions are answered here
   - name: ❌ Help with Extensions
     url: https://github.com/SA-San49/Hikaru/discussions
     about: For extension-related questions/issues
