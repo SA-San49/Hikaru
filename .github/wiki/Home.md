@@ -29,6 +29,6 @@ AniZen is an open-source anime and media client for Android with built-in MPV pl
 > [!NOTE]
 > AniZen is open-source software licensed under the **Apache-2.0 License**.
 
-- **Discord**: Join the [Discord server](https://discord.gg/YVTGAhYXV) for online help and community discussions.
+- **Discord**: Join the [Discord server](https://discord.gg/XbYhAzsrPR) for online help and community discussions.
 - **GitHub**: Report bugs and request features on our [GitHub Issues](https://github.com/salmanbappi/AniZen/issues) page.
 - **Releases**: Download the latest official APKs from the [Releases](https://github.com/salmanbappi/AniZen/releases) page.

@@ -57,7 +57,7 @@ android {
 
         buildConfigField("String", "COMMIT_COUNT", "\"${getCommitCount()}\"")
         buildConfigField("String", "COMMIT_SHA", "\"${getGitSha()}\"")
-        buildConfigField("String", "DISCORD_INVITE_URL", "\"${System.getenv("DISCORD_INVITE_URL") ?: "https://discord.gg/YVTGAhYXV"}\"")
+        buildConfigField("String", "DISCORD_INVITE_URL", "\"${System.getenv("DISCORD_INVITE_URL") ?: "https://discord.gg/XbYhAzsrPR"}\"")
         buildConfigField("String", "DISCORD_RPC_APP_ID", "\"${System.getenv("DISCORD_RPC_APP_ID") ?: ""}\"")
         buildConfigField("String", "BUILD_TIME", "\"${getBuildTime(useLastCommitTime = false)}\"")
         buildConfigField("boolean", "TELEMETRY_INCLUDED", "${Config.includeTelemetry}")
