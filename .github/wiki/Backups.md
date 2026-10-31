@@ -1,6 +1,6 @@
 # Backups Guide
 
-Manage manual and automatic library backups in AniZen.
+Manage manual and automatic library backups in Hikaru.
 
 ---
 
@@ -54,5 +54,5 @@ Depending on your selection, backups contain:
 4. Files are saved in the `autobackup/` directory inside your configured **Storage location**.
 
 > [!TIP]
-> The `autobackup/` folder can be synchronized to cloud services using third-party tools (e.g., FolderSync) or AniZen's built-in Google Drive / SyncYomi sync under **Data and storage → Sync**.
+> The `autobackup/` folder can be synchronized to cloud services using third-party tools (e.g., FolderSync) or Hikaru's built-in Google Drive / SyncYomi sync under **Data and storage → Sync**.
 

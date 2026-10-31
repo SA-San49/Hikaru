@@ -123,7 +123,7 @@ object PerformanceBenchmarkHelper {
         val screenName = currentScreenProvider?.invoke() ?: "Unknown Screen"
 
         return buildString {
-            appendLine("--- AniZen Performance Audit (30s) ---")
+            appendLine("--- Hikaru Performance Audit (30s) ---")
             appendLine("Screen: $screenName")
             appendLine("Device: ${Build.MANUFACTURER} ${Build.MODEL} (SDK ${Build.VERSION.SDK_INT})")
             appendLine("Stats: $totalFrames frames | Jank: $jankFrames (${"%.1f".format(jankPercentage)}%)")

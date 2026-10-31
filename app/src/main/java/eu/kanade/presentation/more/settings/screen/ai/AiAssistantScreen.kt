@@ -238,7 +238,7 @@ class AiAssistantScreen : Screen() {
                                     AssistantMessage(
                                         content = "Diagnostic Assistant online. How can I help you troubleshoot issues or analyze your library today?",
                                         onCopy = {
-                                            context.copyToClipboard("AniZen AI", it)
+                                            context.copyToClipboard("Hikaru AI", it)
                                             scope.launch { snackbarHostState.showSnackbar("Copied to clipboard") }
                                         }
                                     )
@@ -264,7 +264,7 @@ class AiAssistantScreen : Screen() {
                                     AssistantMessage(
                                         content = message.content,
                                         onCopy = {
-                                            context.copyToClipboard("AniZen AI", it)
+                                            context.copyToClipboard("Hikaru AI", it)
                                             scope.launch { snackbarHostState.showSnackbar("Copied to clipboard") }
                                         }
                                     )
@@ -275,7 +275,7 @@ class AiAssistantScreen : Screen() {
                                     AssistantMessage(
                                         content = streamingContent,
                                         onCopy = {
-                                            context.copyToClipboard("AniZen AI", it)
+                                            context.copyToClipboard("Hikaru AI", it)
                                             scope.launch { snackbarHostState.showSnackbar("Copied to clipboard") }
                                         }
                                     )

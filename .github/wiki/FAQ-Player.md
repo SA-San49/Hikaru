@@ -18,10 +18,10 @@ If playback stutters:
 
 ## What is the difference between `audio` and `display-resample` video sync?
 
-- **`audio` (AniZen Default)**: Syncs video frames to the audio clock, keeping CPU overhead low.
+- **`audio` (Hikaru Default)**: Syncs video frames to the audio clock, keeping CPU overhead low.
 - **`display-resample`**: Resamples audio to match the display refresh rate. Required for **Motion Interpolation**, but increases CPU and GPU load.
 
-AniZen uses `audio` sync by default and automatically switches to `display-resample` when Motion Interpolation is enabled.
+Hikaru uses `audio` sync by default and automatically switches to `display-resample` when Motion Interpolation is enabled.
 
 ---
 
@@ -32,7 +32,7 @@ In **Settings → Player → Decoder**:
 - **HW (`mediacodec-copy`)**: Hardware decodes video frames into system RAM before sending them to the GPU renderer. This increases compatibility with software video filters and GLSL shaders on certain GPUs.
 - **HW+ (`mediacodec`)**: Direct hardware decoding that renders directly to a Surface. Offers maximum battery efficiency and lower memory usage, but may bypass certain custom post-processing filters depending on GPU driver capabilities.
 
-AniZen allows switching between `mediacodec`, `mediacodec-copy`, `auto`, and software decoding directly in the player decoder menu.
+Hikaru allows switching between `mediacodec`, `mediacodec-copy`, `auto`, and software decoding directly in the player decoder menu.
 
 
 ---
@@ -48,7 +48,7 @@ To add external subtitles during video playback:
 
 ---
 
-## How do I configure Player Settings in AniZen?
+## How do I configure Player Settings in Hikaru?
 
 Navigate to **Settings → Player**:
 

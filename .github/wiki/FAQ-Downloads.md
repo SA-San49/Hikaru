@@ -4,9 +4,9 @@ Technical details regarding download engines, stream handling, external download
 
 ---
 
-## How does AniZen's chunked download engine work?
+## How does Hikaru's chunked download engine work?
 
-AniZen includes a multi-threaded internal download engine:
+Hikaru includes a multi-threaded internal download engine:
 
 - **Byte-Range Chunking**: Splits video files into parallel streams using HTTP `Range` headers (1 to 64 threads, configurable in **More → Settings → Downloads → Internal Downloader**).
 - **Part-File Recovery**: Writes chunk progress into temporary `.part` files (`$filename.part$i`) and retries network failures up to 5 times with exponential backoff and jitter.
@@ -16,7 +16,7 @@ AniZen includes a multi-threaded internal download engine:
 
 ## Can downloads be delegated to an external download manager?
 
-Yes. AniZen can hand off stream URLs to external download applications.
+Yes. Hikaru can hand off stream URLs to external download applications.
 
 ### Setup
 
@@ -24,7 +24,7 @@ Yes. AniZen can hand off stream URLs to external download applications.
 2. Under **External Downloader**, enable **Use external downloader**.
 3. Select **External downloader** and choose an installed application (**1DM / 1DM+** or **ADM**).
 
-AniZen forwards the stream URL, required HTTP headers, User-Agent strings, and target file paths to the selected manager.
+Hikaru forwards the stream URL, required HTTP headers, User-Agent strings, and target file paths to the selected manager.
 
 ---
 
@@ -32,13 +32,13 @@ AniZen forwards the stream URL, required HTTP headers, User-Agent strings, and t
 
 Immediate 0 MB download failures occur when an HLS master playlist variant cannot be resolved due to expired stream tokens.
 
-- **Fix**: Update AniZen to the latest version. The HLS engine dynamically resolves playlist variants and decrypts AES-128 key tokens before fetching segments.
+- **Fix**: Update Hikaru to the latest version. The HLS engine dynamically resolves playlist variants and decrypts AES-128 key tokens before fetching segments.
 
 ---
 
 ## What is Pre-Flight Storage Protection?
 
-Before starting downloads or muxing operations, AniZen checks available disk space on the target volume.
+Before starting downloads or muxing operations, Hikaru checks available disk space on the target volume.
 
 If free storage drops below **200 MB** plus the target video size (or **1.5×** total size for FFmpeg/DASH muxing operations), the download aborts and returns an insufficient space error (`MR.strings.download_insufficient_space`).
 

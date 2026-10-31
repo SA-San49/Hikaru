@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-AniZen Translation Synchronization Tool
+Hikaru Translation Synchronization Tool
 Syncs updated translations from upstream Mihon while strictly safeguarding
-AniZen's anime-specific terminology, video player keys, and branding.
+Hikaru's anime-specific terminology, video player keys, and branding.
 """
 
 import os
@@ -14,7 +14,7 @@ import xml.etree.ElementTree as ET
 from xml.dom import minidom
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-ANIZEN_I18N = os.path.join(ROOT, "i18n/src/commonMain/moko-resources")
+HIKARU_I18N = os.path.join(ROOT, "i18n/src/commonMain/moko-resources")
 
 FORMAT_SPEC_REGEX = re.compile(r'%(\d+\$)?[sdf]')
 
@@ -43,7 +43,7 @@ def format_xml(root_element):
     return "\n".join(lines) + "\n"
 
 def main():
-    print("🌸 AniZen Translation Synchronizer")
+    print("🌸 Hikaru Translation Synchronizer")
     print("-----------------------------------")
     
     # 1. Download / extract Mihon archive
@@ -63,14 +63,14 @@ def main():
     mihon_i18n = scratch_dir
     
     # 2. Parse base strings
-    anizen_base_tree = ET.parse(os.path.join(ANIZEN_I18N, "base/strings.xml"))
+    hikaru_base_tree = ET.parse(os.path.join(HIKARU_I18N, "base/strings.xml"))
     mihon_base_tree = ET.parse(os.path.join(mihon_i18n, "base/strings.xml"))
     
-    anizen_base = {el.attrib['name']: el.text or "" for el in anizen_base_tree.getroot().findall("string") if 'name' in el.attrib}
+    hikaru_base = {el.attrib['name']: el.text or "" for el in hikaru_base_tree.getroot().findall("string") if 'name' in el.attrib}
     mihon_base = {el.attrib['name']: el.text or "" for el in mihon_base_tree.getroot().findall("string") if 'name' in el.attrib}
     
     safe_keys = set()
-    for name, a_text in anizen_base.items():
+    for name, a_text in hikaru_base.items():
         if name not in mihon_base or name in PROTECTED_EXACT_NAMES:
             continue
         m_text = mihon_base[name]
@@ -81,21 +81,21 @@ def main():
                 safe_keys.add(name)
 
     # 3. Parse base plurals
-    anizen_plurals_tree = ET.parse(os.path.join(ANIZEN_I18N, "base/plurals.xml"))
+    hikaru_plurals_tree = ET.parse(os.path.join(HIKARU_I18N, "base/plurals.xml"))
     mihon_plurals_tree = ET.parse(os.path.join(mihon_i18n, "base/plurals.xml"))
     
-    anizen_plurals = {el.attrib['name']: {item.attrib['quantity']: item.text or "" for item in el.findall('item')} for el in anizen_plurals_tree.getroot().findall('plurals') if 'name' in el.attrib}
+    hikaru_plurals = {el.attrib['name']: {item.attrib['quantity']: item.text or "" for item in el.findall('item')} for el in hikaru_plurals_tree.getroot().findall('plurals') if 'name' in el.attrib}
     mihon_plurals = {el.attrib['name']: {item.attrib['quantity']: item.text or "" for item in el.findall('item')} for el in mihon_plurals_tree.getroot().findall('plurals') if 'name' in el.attrib}
     
     safe_plurals = set()
-    for name in anizen_plurals:
-        if name in mihon_plurals and anizen_plurals[name] == mihon_plurals[name]:
+    for name in hikaru_plurals:
+        if name in mihon_plurals and hikaru_plurals[name] == mihon_plurals[name]:
             safe_plurals.add(name)
 
     print(f"Verified {len(safe_keys)} safe string keys and {len(safe_plurals)} safe plural keys.")
     
     # 4. Iterate and sync every language
-    languages = [d for d in os.listdir(ANIZEN_I18N) if os.path.isdir(os.path.join(ANIZEN_I18N, d)) and d != "base"]
+    languages = [d for d in os.listdir(HIKARU_I18N) if os.path.isdir(os.path.join(HIKARU_I18N, d)) and d != "base"]
     languages.sort()
     
     total_strings_updated = 0
@@ -103,7 +103,7 @@ def main():
     synced_langs = 0
     
     for lang in languages:
-        anizen_lang_dir = os.path.join(ANIZEN_I18N, lang)
+        hikaru_lang_dir = os.path.join(HIKARU_I18N, lang)
         mihon_lang_dir = os.path.join(mihon_i18n, lang)
         
         if not os.path.exists(mihon_lang_dir):
@@ -113,63 +113,63 @@ def main():
         lang_plurals_updated = 0
         
         # A. Strings
-        anizen_strings_path = os.path.join(anizen_lang_dir, "strings.xml")
+        hikaru_strings_path = os.path.join(hikaru_lang_dir, "strings.xml")
         mihon_strings_path = os.path.join(mihon_lang_dir, "strings.xml")
         
         if os.path.exists(mihon_strings_path):
-            if os.path.exists(anizen_strings_path):
-                anizen_s_tree = ET.parse(anizen_strings_path)
-                anizen_root = anizen_s_tree.getroot()
+            if os.path.exists(hikaru_strings_path):
+                hikaru_s_tree = ET.parse(hikaru_strings_path)
+                hikaru_root = hikaru_s_tree.getroot()
             else:
-                anizen_root = ET.Element("resources")
-                anizen_s_tree = ET.ElementTree(anizen_root)
+                hikaru_root = ET.Element("resources")
+                hikaru_s_tree = ET.ElementTree(hikaru_root)
                 
-            anizen_string_map = {el.attrib['name']: el for el in anizen_root.findall("string") if 'name' in el.attrib}
+            hikaru_string_map = {el.attrib['name']: el for el in hikaru_root.findall("string") if 'name' in el.attrib}
             
             mihon_s_tree = ET.parse(mihon_strings_path)
             for el in mihon_s_tree.getroot().findall("string"):
                 name = el.attrib.get("name")
                 if name in safe_keys and el.text:
-                    if name in anizen_string_map:
-                        if anizen_string_map[name].text != el.text:
-                            anizen_string_map[name].text = el.text
+                    if name in hikaru_string_map:
+                        if hikaru_string_map[name].text != el.text:
+                            hikaru_string_map[name].text = el.text
                             lang_strings_updated += 1
                     else:
-                        new_el = ET.SubElement(anizen_root, "string", attrib={"name": name})
+                        new_el = ET.SubElement(hikaru_root, "string", attrib={"name": name})
                         new_el.text = el.text
                         lang_strings_updated += 1
                         
-            with open(anizen_strings_path, "w", encoding="utf-8") as f:
-                f.write(format_xml(anizen_root))
+            with open(hikaru_strings_path, "w", encoding="utf-8") as f:
+                f.write(format_xml(hikaru_root))
                 
         # B. Plurals
-        anizen_plurals_path = os.path.join(anizen_lang_dir, "plurals.xml")
+        hikaru_plurals_path = os.path.join(hikaru_lang_dir, "plurals.xml")
         mihon_plurals_path = os.path.join(mihon_lang_dir, "plurals.xml")
         
         if os.path.exists(mihon_plurals_path):
-            if os.path.exists(anizen_plurals_path):
-                anizen_p_tree = ET.parse(anizen_plurals_path)
-                anizen_p_root = anizen_p_tree.getroot()
+            if os.path.exists(hikaru_plurals_path):
+                hikaru_p_tree = ET.parse(hikaru_plurals_path)
+                hikaru_p_root = hikaru_p_tree.getroot()
             else:
-                anizen_p_root = ET.Element("resources")
-                anizen_p_tree = ET.ElementTree(anizen_p_root)
+                hikaru_p_root = ET.Element("resources")
+                hikaru_p_tree = ET.ElementTree(hikaru_p_root)
                 
-            anizen_plural_map = {el.attrib['name']: el for el in anizen_p_root.findall("plurals") if 'name' in el.attrib}
+            hikaru_plural_map = {el.attrib['name']: el for el in hikaru_p_root.findall("plurals") if 'name' in el.attrib}
             
             mihon_p_tree = ET.parse(mihon_plurals_path)
             for el in mihon_p_tree.getroot().findall("plurals"):
                 name = el.attrib.get("name")
                 if name in safe_plurals:
-                    if name in anizen_plural_map:
-                        anizen_p_root.remove(anizen_plural_map[name])
-                    new_plural = ET.SubElement(anizen_p_root, "plurals", attrib={"name": name})
+                    if name in hikaru_plural_map:
+                        hikaru_p_root.remove(hikaru_plural_map[name])
+                    new_plural = ET.SubElement(hikaru_p_root, "plurals", attrib={"name": name})
                     for item in el.findall("item"):
                         item_el = ET.SubElement(new_plural, "item", attrib={"quantity": item.attrib.get("quantity", "other")})
                         item_el.text = item.text
                     lang_plurals_updated += 1
                     
-            with open(anizen_plurals_path, "w", encoding="utf-8") as f:
-                f.write(format_xml(anizen_p_root))
+            with open(hikaru_plurals_path, "w", encoding="utf-8") as f:
+                f.write(format_xml(hikaru_p_root))
                 
         if lang_strings_updated > 0 or lang_plurals_updated > 0:
             synced_langs += 1

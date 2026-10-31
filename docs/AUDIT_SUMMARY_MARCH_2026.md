@@ -1,7 +1,7 @@
-# AniZen Architecture & Performance Audit - March 20, 2026
+# Hikaru Architecture & Performance Audit - March 20, 2026
 
 ## 1. Summary
-AniZen's core engine is highly optimized for modern Android hardware, focusing on fluidity (120Hz/144Hz support) and high-throughput concurrent operations.
+Hikaru's core engine is highly optimized for modern Android hardware, focusing on fluidity (120Hz/144Hz support) and high-throughput concurrent operations.
 
 ## 2. Key Architecture Wins
 - **Fluidity Layer:** Uses `Precision.INEXACT` for zero-math image scaling.

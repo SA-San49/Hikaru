@@ -1,6 +1,6 @@
 # Installation & Setup Guide
 
-Technical instructions for installing AniZen, adding extension repositories, managing library titles, and performing global searches.
+Technical instructions for installing Hikaru, adding extension repositories, managing library titles, and performing global searches.
 
 ---
 
@@ -14,13 +14,13 @@ Technical instructions for installing AniZen, adding extension repositories, man
 
 ## Installation
 
-1. Download the latest APK matching your device architecture from [GitHub Releases](https://github.com/salmanbappi/AniZen/releases).
+1. Download the latest APK matching your device architecture from [GitHub Releases](https://github.com/SA-San49/Hikaru/releases).
 2. Open the downloaded `.apk` file.
 3. Enable **Install from unknown sources** if prompted by Android OS.
 4. Complete system package installation.
 
 > [!NOTE]
-> AniZen uses package name `app.anizen`. It installs independently alongside Tachiyomi, Aniyomi, or Anikku without shared data collisions.
+> Hikaru uses package name `app.hikaru`. It installs independently alongside Tachiyomi, Aniyomi, or Anikku without shared data collisions.
 
 ---
 

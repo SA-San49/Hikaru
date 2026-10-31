@@ -18,7 +18,7 @@ Frequently asked questions regarding extension repositories, Cloudflare verifica
 1. Open the affected source in **Browse**.
 2. Tap **WebView** in the top toolbar.
 3. Complete the CAPTCHA or verification challenge in WebView.
-4. Return to AniZen. Cloudflare session cookies are saved to the app `CookieJar` automatically.
+4. Return to Hikaru. Cloudflare session cookies are saved to the app `CookieJar` automatically.
 
 ---
 
@@ -26,10 +26,10 @@ Frequently asked questions regarding extension repositories, Cloudflare verifica
 
 Yes.
 
-1. Create an `AniZen/localanime/` directory in primary storage.
+1. Create an `Hikaru/localanime/` directory in primary storage.
 2. Store files inside folders named after the series title:
    ```
-   AniZen/localanime/
+   Hikaru/localanime/
    └── Series Name/
        ├── Episode 01.mp4
        └── Episode 02.mkv

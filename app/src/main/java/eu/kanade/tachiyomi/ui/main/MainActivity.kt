@@ -534,7 +534,7 @@ class MainActivity : BaseActivity() {
                     navigator.push(RestoreBackupScreen(intent.data.toString()))
                 }
                 // Deep link to add anime extension repo
-                else if ((intent.scheme == "anizen" || intent.scheme == "aniyomi" || intent.scheme == "mihon" || intent.scheme == "tachiyomi") && intent.data?.host == "add-repo") {
+                else if ((intent.scheme == "hikaru" || intent.scheme == "aniyomi" || intent.scheme == "mihon" || intent.scheme == "tachiyomi") && intent.data?.host == "add-repo") {
                     intent.data?.getQueryParameter("url")?.let { repoUrl ->
                         navigator.popUntilRoot()
                         navigator.push(ExtensionReposScreen(repoUrl))

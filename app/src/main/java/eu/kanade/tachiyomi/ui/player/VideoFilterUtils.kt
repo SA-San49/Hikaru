@@ -48,7 +48,7 @@ object MpvVideoTuner {
     private const val APPLY_INTERVAL_MS = 50L
 
     private val executor = Executors.newSingleThreadExecutor { runnable ->
-        Thread(runnable, "AniZen-mpv-video").apply { isDaemon = true }
+        Thread(runnable, "Hikaru-mpv-video").apply { isDaemon = true }
     }
     private val scope = CoroutineScope(SupervisorJob() + executor.asCoroutineDispatcher())
     private val sequence = AtomicLong()
@@ -98,7 +98,7 @@ object MpvVideoTuner {
  * picture identical while removing the wasted work.
  */
 object VideoChain {
-    private const val YUV_LABEL = "@anizen_yuv420p"
+    private const val YUV_LABEL = "@hikaru_yuv420p"
     private const val YUV_FILTER = "$YUV_LABEL:format=yuv420p"
     private const val DEBAND_LABEL = "@deband"
     private const val DEBAND_FILTER = "$DEBAND_LABEL:gradfun=radius=12"

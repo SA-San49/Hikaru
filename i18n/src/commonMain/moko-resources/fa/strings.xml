@@ -576,7 +576,7 @@
     <string name="sort_category_confirmation">آیا مایلید که دسته بندی ها را به ترتیب الفبا منظم کنید؟</string>
     <string name="action_ok">باشه</string>
     <string name="action_sort_next_updated">به روز رسانی مورد انتظار بعدی</string>
-    <string name="download_queue_size_warning">هشدار: حجم زیاد بارگیری ممکن است باعث اهسته تر شدن سرعت ویا مسدود کردن AniZen از منبع شود. برای اطلاعات بیشتر لمس کنید.</string>
+    <string name="download_queue_size_warning">هشدار: حجم زیاد بارگیری ممکن است باعث اهسته تر شدن سرعت ویا مسدود کردن Hikaru از منبع شود. برای اطلاعات بیشتر لمس کنید.</string>
     <string name="skipped_reason_not_always_update">به دلیل این که این مجموعه نیازی به به روز رسانی نداشت رد شد</string>
     <string name="skipped_reason_not_caught_up">به دلیل وجود چپتر های خوانده نشده رد شد</string>
     <string name="skipped_reason_not_started">به دلیل این که هیچ چپتری خوانده نشده بود رد شد</string>
@@ -778,7 +778,7 @@
     <string name="action_view_episodes">نمایش قسمت‌ها</string>
     <string name="action_previous_episode">قسمت قبلی</string>
     <string name="action_play">پخش</string>
-    <string name="unofficial_extension_message_anizen">این افزونه از لیست افزونه‌های رسمی آنی‌یومی نیست.</string>
+    <string name="unofficial_extension_message_hikaru">این افزونه از لیست افزونه‌های رسمی آنی‌یومی نیست.</string>
     <string name="rotation_reverse_landscape">دورنما برعکس</string>
     <string name="rotation_sensor_portrait">حسگر پرتره</string>
     <string name="pref_progress_mark_as_seen">در چه نقطه ای اپیزود بعنوان مشاهده شده علامت‌گذاری شود</string>

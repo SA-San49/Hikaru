@@ -1420,7 +1420,7 @@
     <string name="default_anime_category">Default anime category</string>
     <string name="pref_manga_library_update_categories_details">Manga in excluded categories will not be updated even if they are also in included categories.</string>
     <string name="pref_anime_library_update_categories_details">Anime in excluded categories will not be updated even if they are also in included categories.</string>
-    <string name="unofficial_extension_message_anizen">This extension is not from the official list.</string>
+    <string name="unofficial_extension_message_hikaru">This extension is not from the official list.</string>
     <string name="unofficial_anime_extension_message">This extension is not from the official list.</string>
     <string name="episode_download_progress">%1$d%%</string>
     <string name="pref_category_delete_chapters">Delete episodes</string>

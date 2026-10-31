@@ -43,7 +43,7 @@ class AnilistInterceptor(val anilist: Anilist, private var token: String?) : Int
         // Add the authorization header to the original request.
         val authRequest = originalRequest.newBuilder()
             .addHeader("Authorization", "Bearer ${oauth!!.accessToken}")
-            .header("User-Agent", "AniZen v${BuildConfig.VERSION_NAME} (app.anizen)")
+            .header("User-Agent", "Hikaru v${BuildConfig.VERSION_NAME} (app.hikaru)")
             .build()
 
         return chain.proceed(authRequest)

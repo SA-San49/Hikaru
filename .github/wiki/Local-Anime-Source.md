@@ -6,13 +6,13 @@ Technical guide for playing offline video files stored on local device storage, 
 
 ## Directory Structure
 
-AniZen indexes local media files from `AniZen/localanime/` located in root storage.
+Hikaru indexes local media files from `Hikaru/localanime/` located in root storage.
 
-1. Create `AniZen/localanime/` in primary internal storage.
+1. Create `Hikaru/localanime/` in primary internal storage.
 2. Group files into subfolders named after each series:
 
 ```
-AniZen/
+Hikaru/
 └── localanime/
     ├── Frieren/
     │   ├── Episode 01.mp4
@@ -43,10 +43,10 @@ AniZen/
 
 ## Local Metadata Files (`details.json` & `episodes.json`)
 
-Optional JSON configurations inside `AniZen/localanime/<Series Title>/` override default parsed values.
+Optional JSON configurations inside `Hikaru/localanime/<Series Title>/` override default parsed values.
 
 ### `details.json`
-Path: `AniZen/localanime/<Series Title>/details.json`
+Path: `Hikaru/localanime/<Series Title>/details.json`
 ```json
 {
   "title": "Frieren: Beyond Journey's End",
@@ -59,7 +59,7 @@ Path: `AniZen/localanime/<Series Title>/details.json`
 ```
 
 ### `episodes.json`
-Path: `AniZen/localanime/<Series Title>/episodes.json`
+Path: `Hikaru/localanime/<Series Title>/episodes.json`
 ```json
 [
   {

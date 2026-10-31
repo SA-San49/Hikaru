@@ -6,10 +6,10 @@ Codebase layout, module boundaries, and tech stack specification.
 
 ## Architecture Overview
 
-AniZen follows **Clean Architecture** principles, decoupling domain logic, data sources, and presentation across isolated Gradle modules.
+Hikaru follows **Clean Architecture** principles, decoupling domain logic, data sources, and presentation across isolated Gradle modules.
 
 ```
-AniZen/
+Hikaru/
 ├── app/                    # Application entry point, Koin DI bindings, Voyager Navigation, tracker implementations
 ├── core/                   # Shared utilities and core submodules (:core:common, :core:archive)
 ├── core-metadata/          # Metadata parsers and serialization schemas

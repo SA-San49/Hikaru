@@ -140,7 +140,7 @@
     <string name="storage_failed_to_create_directory">Failed to create directory: %s</string>
     <string name="pref_display_images_description_anime">Render images in anime descriptions</string>
 
-    <!-- Mihon, AniZen, Komikku & SY which need to replace manga => anime -->
+    <!-- Mihon, Hikaru, Komikku & SY which need to replace manga => anime -->
         <!-- Mihon -->
     <string name="action_sort_last_update_check">Last update check</string>
     <string name="action_display_show_continue_watching_button">Continue watching button</string>
@@ -187,7 +187,7 @@
     <string name="pref_discord_show_progress_summary_episode">Display the current episode progress</string>
     <string name="pref_discord_show_timestamp_summary_episode">Display elapsed/remaining time</string>
 
-        <!-- AniZen -->
+        <!-- Hikaru -->
     <string name="pref_library_summary_episode">Categories, global update, episode swipe</string>
     <string name="pref_category_delete_episodes">Delete episodes</string>
     <string name="pref_remove_bookmarked_episodes">Allow deleting bookmarked episodes</string>

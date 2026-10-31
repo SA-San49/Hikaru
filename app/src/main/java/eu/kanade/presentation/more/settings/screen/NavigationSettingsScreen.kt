@@ -174,28 +174,28 @@ class NavigationSettingsScreen(
                                             behaviorMap = behaviorMap
                                         )
                                         val serialized = NavConfigSerializer.serialize(config)
-                                        context.copyToClipboard("AniZen Layout", serialized)
+                                        context.copyToClipboard("Hikaru Layout", serialized)
                                         context.toast("Layout string copied to clipboard")
                                     }
                                 ),
                                 AppBar.OverflowAction(
                                     title = "Default Preset",
                                     onClick = { 
-                                        Log.d("AniZenNav", "Preset applied: Default")
+                                        Log.d("HikaruNav", "Preset applied: Default")
                                         uiPreferences.updateNavConfig(NavPresets.DEFAULT) 
                                     },
                                 ),
                                 AppBar.OverflowAction(
                                     title = "Minimal Preset",
                                     onClick = { 
-                                        Log.d("AniZenNav", "Preset applied: Minimal")
+                                        Log.d("HikaruNav", "Preset applied: Minimal")
                                         uiPreferences.updateNavConfig(NavPresets.MINIMAL) 
                                     },
                                 ),
                                 AppBar.OverflowAction(
                                     title = "Power Preset",
                                     onClick = { 
-                                        Log.d("AniZenNav", "Preset applied: Power")
+                                        Log.d("HikaruNav", "Preset applied: Power")
                                         uiPreferences.updateNavConfig(NavPresets.POWER) 
                                     },
                                 ),
@@ -207,7 +207,7 @@ class NavigationSettingsScreen(
                                     title = stringResource(MR.strings.pref_bottom_nav_reset_layout),
                                     icon = Icons.Outlined.RestartAlt,
                                     onClick = {
-                                        Log.d("AniZenNav", "Layout Reset triggered")
+                                        Log.d("HikaruNav", "Layout Reset triggered")
                                         uiPreferences.updateNavConfig(NavPresets.DEFAULT)
                                         uiPreferences.bottomNavBehaviors().delete()
                                     },
@@ -229,7 +229,7 @@ class NavigationSettingsScreen(
             }
 
             val onMoveToHidden = { item: NavItem ->
-                Log.d("AniZenNav", "Hiding tab: ${item.id}")
+                Log.d("HikaruNav", "Hiding tab: ${item.id}")
                 val newVisible = visibleItems.filter { it != item }.map { n -> n.id }.toImmutableList()
                 val newHidden = (hiddenItems.map { n -> n.id } + item.id).distinct().toImmutableList()
                 uiPreferences.updateNavConfig(NavConfig(visibleTabs = newVisible, hiddenTabs = newHidden, behaviorMap = behaviorMap))
@@ -237,7 +237,7 @@ class NavigationSettingsScreen(
 
             val onMoveToVisible = { item: NavItem ->
                 if (visibleItems.size < NavConfigValidator.MAX_BOTTOM_TABS) {
-                    Log.d("AniZenNav", "Showing tab: ${item.id}")
+                    Log.d("HikaruNav", "Showing tab: ${item.id}")
                     val newHidden = hiddenItems.filter { it != item }.map { n -> n.id }.toImmutableList()
                     val newVisible = (visibleItems.map { n -> n.id } + item.id).distinct().toImmutableList()
                     uiPreferences.updateNavConfig(NavConfig(visibleTabs = newVisible, hiddenTabs = newHidden, behaviorMap = behaviorMap))
@@ -534,7 +534,7 @@ class NavigationSettingsScreen(
                         modifier = with(reorderableScope) {
                             Modifier.draggableHandle(
                                 onDragStarted = {
-                                    Log.d("AniZenNav", "Drag started: ${item.id}")
+                                    Log.d("HikaruNav", "Drag started: ${item.id}")
                                 },
                             )
                         }

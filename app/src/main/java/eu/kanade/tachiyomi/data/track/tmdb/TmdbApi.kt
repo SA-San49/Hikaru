@@ -52,7 +52,7 @@ class TmdbApi(private val client: OkHttpClient, private val apiKey: String, priv
     }
 
     suspend fun getRequestToken(language: String? = null): JSONObject {
-        val params = mutableMapOf("redirect_to" to "anizen://tmdb-auth")
+        val params = mutableMapOf("redirect_to" to "hikaru://tmdb-auth")
         if (!language.isNullOrBlank()) params["language"] = language
         val url = buildUrl("3/authentication/token/new", params)
         return executeUrl(url)

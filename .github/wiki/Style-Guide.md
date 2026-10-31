@@ -1,6 +1,6 @@
 # Wiki Style Guide
 
-Formatting and writing standards for the AniZen wiki.
+Formatting and writing standards for the Hikaru wiki.
 
 > [!NOTE]
 > These rules apply exclusively to pages within the Wiki (`.github/wiki/` and the GitHub Wiki repository). They do not affect root project documentation, source code comments, or external repository files.
@@ -34,7 +34,7 @@ Single concise sentence explaining what this page covers.
 ## Voice, Tone & UI Formatting
 
 - **Voice & Tone**: Direct, concise, technical, and neutral.
-- **Action Verbs**: Use direct imperative verbs for step-by-step instructions (*"Open AniZen"*, *"Navigate to Settings"*, *"Select the APK"*).
+- **Action Verbs**: Use direct imperative verbs for step-by-step instructions (*"Open Hikaru"*, *"Navigate to Settings"*, *"Select the APK"*).
 - **UI Elements**: **Bold** all UI labels, button names, tab titles, and screen names.
 - **Navigation Paths**: Format in-app navigation paths with bold text and right arrows (`→`):
   - **More → Settings → Advanced**
@@ -49,7 +49,7 @@ Single concise sentence explaining what this page covers.
 - Keep each step single-sentence or focused on a single actionable step.
 
 ```markdown
-1. Open **AniZen** and navigate to **More → Settings → Browse**.
+1. Open **Hikaru** and navigate to **More → Settings → Browse**.
 2. Select **Extension Repositories** from the top menu.
 3. Paste your repository URL and tap **Add**.
 ```
@@ -93,5 +93,5 @@ Use clean Markdown tables for presenting option comparisons, performance profile
 
 ## Scope & Isolation
 
-- **Wiki Scope Only**: These guidelines strictly govern `.github/wiki/*.md` and `AniZen.wiki.git`.
+- **Wiki Scope Only**: These guidelines strictly govern `.github/wiki/*.md` and `Hikaru.wiki.git`.
 - **Non-Interference**: Do not apply or enforce these rules to `README.md`, code comments, pull request titles, or commit messages outside the wiki folder.

@@ -28,7 +28,7 @@ To configure background execution:
 
 1. Go to **More → Settings → Advanced**.
 2. Select **Disable battery optimization**.
-3. Allow AniZen to run unrestricted in system settings.
+3. Allow Hikaru to run unrestricted in system settings.
 
 > [!NOTE]
 > For device-specific configuration, see [Don't Kill My App](https://dontkillmyapp.com/).

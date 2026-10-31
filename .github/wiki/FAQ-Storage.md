@@ -4,10 +4,10 @@ Frequently asked questions regarding download locations, cache clearing, and sto
 
 ---
 
-## Where does AniZen store application data and downloads?
+## Where does Hikaru store application data and downloads?
 
-- **Database & Cache**: `/data/data/app.anizen/` (internal app storage).
-- **Storage Location Subdirectories**: `AniZen/` in primary shared storage by default, containing:
+- **Database & Cache**: `/data/data/app.hikaru/` (internal app storage).
+- **Storage Location Subdirectories**: `Hikaru/` in primary shared storage by default, containing:
   - `downloads/`: Episode video downloads (contains `.nomedia` file to exclude from gallery apps).
   - `autobackup/`: Automatic library backup files.
   - `localanime/`: Local media files.
@@ -40,6 +40,6 @@ To store downloads or local anime files on an external SD card:
 2. Select **Custom location** or **External SD card**.
 3. In the Android Storage Access Framework picker, open the navigation drawer (top left menu).
 4. Select the SD card.
-5. Select or create an `AniZen` folder on the SD card, then select **Use this folder**.
+5. Select or create an `Hikaru` folder on the SD card, then select **Use this folder**.
 6. Select **Allow** to grant persistent SAF read/write permissions.
 

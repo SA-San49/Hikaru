@@ -285,7 +285,7 @@
     <string name="pref_skip_filtered_chapters">Bỏ qua các chương đã lọc</string>
     <string name="filter_mode_screen">Màn hình</string>
     <string name="pref_cutout_short">Hiển thị nội dung ở phần rìa</string>
-    <string name="obsolete_extension_message">Phần mở rộng này không khả dụng. Nó có thể không chạy và có thể gây ra lỗi với AniZen. Kiến nghị nên Gỡ cài đặt.</string>
+    <string name="obsolete_extension_message">Phần mở rộng này không khả dụng. Nó có thể không chạy và có thể gây ra lỗi với Hikaru. Kiến nghị nên Gỡ cài đặt.</string>
     <string name="ext_obsolete">Lỗi thời</string>
     <string name="ext_updates_pending">Đang chờ cập nhật</string>
     <string name="pref_category_library_update">Cập nhật toàn bộ</string>
@@ -774,7 +774,7 @@
     <string name="also_set_chapter_settings_for_library">Ngoài ra có hiệu lực với tất cả truyện trong thư viện</string>
     <string name="dialog_with_checkbox_reset">Đặt lại mọi chương của manga này</string>
     <string name="download_insufficient_space">Không thể tãi chương vì dung lượng bộ nhớ xuống thấp</string>
-    <string name="download_queue_size_warning">Cảnh báo: các tải xuống hàng loạt lớn có thể dẫn đến các nguồn trở nên chậm hơn và / hoặc chặn AniZen. Nhấn vào để tìm hiểu thêm.</string>
+    <string name="download_queue_size_warning">Cảnh báo: các tải xuống hàng loạt lớn có thể dẫn đến các nguồn trở nên chậm hơn và / hoặc chặn Hikaru. Nhấn vào để tìm hiểu thêm.</string>
     <string name="information_webview_required">Cần có WebView để ứng dụng hoạt động</string>
     <string name="download_notifier_download_paused_chapters">Tải xuống đã tạm dừng</string>
     <string name="channel_new_chapters_episodes">Cập nhật chương</string>
@@ -785,7 +785,7 @@
     <string name="confirm_exit">Hãy nhấn lại nút quay lại để thoát</string>
     <string name="information_empty_repos">Bạn chưa đặt repo.</string>
     <string name="action_add_repo">Thêm repo</string>
-    <string name="action_add_repo_message">Thêm repo bên ngoài vào AniZen. Link này có đuôi URL kết thúc với \"index.min.json\".</string>
+    <string name="action_add_repo_message">Thêm repo bên ngoài vào Hikaru. Link này có đuôi URL kết thúc với \"index.min.json\".</string>
     <string name="error_repo_exists">Repo này đã tồn tại!</string>
     <string name="action_delete_repo">Xoá repo</string>
     <string name="invalid_repo_name">Repo URL không hợp lệ</string>
@@ -887,7 +887,7 @@
     <string name="action_sort_total_episodes">Tổng số tập</string>
     <string name="action_sort_last_seen">Xem gần nhất</string>
     <string name="pref_bottom_nav_style">Kiểu điều hướng bên dưới</string>
-    <string name="unofficial_extension_message_anizen">Tiện ích mở rộng này không có trong danh sách chính thức.</string>
+    <string name="unofficial_extension_message_hikaru">Tiện ích mở rộng này không có trong danh sách chính thức.</string>
     <string name="pref_pip_replace_with_previous">Thay tua 10 giây bằng Tập trước</string>
     <string name="pref_pip_on_exit">Tự động chuyển sang chế độ PiP khi thoát trình phát</string>
     <string name="pref_anime_storage_usage">Mức sử dụng Bộ nhớ cho anime</string>
@@ -999,7 +999,7 @@
     <string name="bandwidth_hero">Bandwidth Hero (yêu cầu máy chủ Bandwidth Hero Proxy)</string>
     <string name="resmush">resmush.it</string>
     <string name="bandwidth_data_saver_server">Máy chủ Bandwidth Hero Proxy</string>
-    <string name="onboarding_storage_action_create_folder">Tạo thư mục AniZen mặc định</string>
+    <string name="onboarding_storage_action_create_folder">Tạo thư mục Hikaru mặc định</string>
     <string name="download_speed_limit">Giới hạn tốc độ tải xuống</string>
     <string name="download_speed_limit_hint">Đặt thành 0 để tắt giới hạn tốc độ.</string>
     <string name="pref_mpv_scripts_summary">Cần có quyền truy cập bộ nhớ ngoài.</string>

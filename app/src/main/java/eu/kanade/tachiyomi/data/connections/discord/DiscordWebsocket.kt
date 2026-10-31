@@ -174,7 +174,7 @@ open class DiscordWebSocketImpl(
     }
 
     private fun log(message: String) {
-        Log.i("discord_rpc_anizen", message)
+        Log.i("discord_rpc_hikaru", message)
     }
 }
 // <-- AM (DISCORD)

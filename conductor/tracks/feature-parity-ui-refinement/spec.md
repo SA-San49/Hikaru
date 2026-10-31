@@ -1,7 +1,7 @@
 # Track: Feature Parity & UI Refinement
 
 ## Specification
-Replicate key features from Komikku into AniZen to improve UX fluidity and control, focusing on the Migration and Notes components.
+Replicate key features from Komikku into Hikaru to improve UX fluidity and control, focusing on the Migration and Notes components.
 
 ### 1. Migration Source Selection
 - **Multi-Selection UI**:

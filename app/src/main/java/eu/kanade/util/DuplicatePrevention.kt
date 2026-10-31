@@ -5,7 +5,7 @@ import logcat.LogPriority
 import tachiyomi.core.common.util.system.logcat
 
 /**
- * Centralized duplicate-prevention system for AniZen.
+ * Centralized duplicate-prevention system for Hikaru.
  *
  * Based on prompt-file requirements (step 3, 4, 6, 14):
  * - Canonical identity includes provider (source) + entity ID.

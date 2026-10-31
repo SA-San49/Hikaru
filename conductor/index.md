@@ -1,4 +1,4 @@
-# AniZen Project Conductor
+# Hikaru Project Conductor
 
 ## Index
 - [Tracks Registry](./tracks.md)

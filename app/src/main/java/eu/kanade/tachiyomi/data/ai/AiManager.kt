@@ -92,7 +92,7 @@ class AiManager(
 
         val customPrompt = aiPreferences.aiSystemPrompt().get()
         val defaultSystemInstruction = """
-            You are the 'AniZen System Assistant', a senior systems engineer.
+            You are the 'Hikaru System Assistant', a senior systems engineer.
             You have access to native diagnostic tools for logs, system maps, the user's anime library, and EverythingMoe extension intelligence.
             
             OPERATIONAL PROTOCOLS:
@@ -282,7 +282,7 @@ class AiManager(
             val pinnedBlocks = mutableListOf<List<String>>()
             val currentBlock = mutableListOf<String>()
             
-            val packagePattern = "(eu\\.kanade|app\\.anizen|mpv|ffmpeg|AndroidRuntime|libc|DEBUG|System\\.err|XLog|FileUtils|ActivityThread|InputDispatcher)".toRegex()
+            val packagePattern = "(eu\\.kanade|app\\.hikaru|mpv|ffmpeg|AndroidRuntime|libc|DEBUG|System\\.err|XLog|FileUtils|ActivityThread|InputDispatcher)".toRegex()
             val piiRedaction = "(?i)(?:authorization|cookie|set-cookie):\\s*[^\\n\\r]+|(?<=\\?|&)[^=]+=[^&\\s]*|(?:[a-zA-Z0-9+_.-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,})|(?:auth|token|key|password|secret|sid|session)=[a-zA-Z0-9._-]+".toRegex()
             
             // Only trigger analysis on serious events
@@ -374,7 +374,7 @@ class AiManager(
         if (installed.isEmpty()) {
             val sources = try { sourceManager.getOnlineSources() } catch (e: Exception) { emptyList() }
             return if (sources.isEmpty()) {
-                "No extensions or sources currently installed in AniZen."
+                "No extensions or sources currently installed in Hikaru."
             } else {
                 "Registered Sources in App:\n" + sources.joinToString("\n") { s ->
                     val bUrl = (s as? eu.kanade.tachiyomi.animesource.online.AnimeHttpSource)?.baseUrl ?: (s as? eu.kanade.tachiyomi.source.online.HttpSource)?.baseUrl ?: "N/A"
@@ -424,7 +424,7 @@ class AiManager(
         return toolContext.toString().trim()
     }
 
-    private fun getDeviceInfo(): String = "Model: ${android.os.Build.MODEL}, SDK: ${android.os.Build.VERSION.SDK_INT}, App: AniZen"
+    private fun getDeviceInfo(): String = "Model: ${android.os.Build.MODEL}, SDK: ${android.os.Build.VERSION.SDK_INT}, App: Hikaru"
 
     suspend fun getErrorCount(): Int = withIOContext {
         try {
@@ -853,8 +853,8 @@ class AiManager(
         val request = Request.Builder()
             .url("https://openrouter.ai/api/v1/chat/completions")
             .header("Authorization", "Bearer $apiKey")
-            .header("HTTP-Referer", "https://github.com/salmanbappi/AniZen")
-            .header("X-Title", "AniZen")
+            .header("HTTP-Referer", "https://github.com/SA-San49/Hikaru")
+            .header("X-Title", "Hikaru")
             .header("Content-Type", "application/json")
             .post(json.encodeToString(GroqRequest.serializer(), requestBody).toRequestBody(jsonMediaType))
             .build()

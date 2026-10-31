@@ -470,7 +470,7 @@ private fun AnimeScreenSmallImpl(
     // Defer applying a new color seed to DynamicTachiyomiTheme while the list is actively
     // scrolling. When vibrantColorState first emits (palette extraction completing on first open),
     // it triggers a full recomposition of everything under DynamicTachiyomiTheme. Coinciding with
-    // an active scroll fling causes the first-scroll freeze unique to AniZen (upstream has no
+    // an active scroll fling causes the first-scroll freeze unique to Hikaru (upstream has no
     // dynamic theme wrapper). The color is applied immediately when the user is not scrolling.
     var deferredVibrantColor by remember(state.anime.id) {
         mutableStateOf(vibrantColorState)

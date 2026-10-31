@@ -2,7 +2,7 @@ import os
 import re
 
 def map_project():
-    project_map = "# 🧠 AniZen Project Mind (Auto-Generated Map)\n\n"
+    project_map = "# 🧠 Hikaru Project Mind (Auto-Generated Map)\n\n"
     project_map += "## 📂 Module Structure\n"
     
     modules = [d for d in os.listdir('.') if os.path.isdir(d) and not d.startswith('.')]

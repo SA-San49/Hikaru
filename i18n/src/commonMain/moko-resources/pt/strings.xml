@@ -727,7 +727,7 @@
     <string name="default_anime_category">Categoria de anime padrão</string>
     <string name="pref_manga_library_update_categories_details">Os mangás nas categorias excluídas não serão atualizados, mesmo que também estejam nas categorias incluídas.</string>
     <string name="pref_anime_library_update_categories_details">Os animes nas categorias excluídas não serão atualizados, mesmo que também estejam nas categorias incluídas.</string>
-    <string name="unofficial_extension_message_anizen">Esta extensão não está na lista oficial de extensões do AniZen.</string>
+    <string name="unofficial_extension_message_hikaru">Esta extensão não está na lista oficial de extensões do Hikaru.</string>
     <string name="pref_progress_mark_as_seen">Em que ponto marcar o episódio como visto</string>
     <string name="pref_preserve_watching_position">Lembrar a posição de reprodução nos episódios vistos</string>
     <string name="pref_category_player_orientation">Orientação</string>
@@ -791,7 +791,7 @@
     <string name="screenshot_show_subs">Mostrar legendas na captura de ecrã</string>
     <string name="recent_anime_time">Ep. %1$s - %2$s</string>
     <string name="download_insufficient_space">Não foi possível transferir devido a falta de espaço de armazenamento</string>
-    <string name="download_queue_size_warning">Aviso: descargas grandes em massa podem levar as fontes a ficarem lentas e/ou começarem a bloquear o AniZen. Toque para saber mais.</string>
+    <string name="download_queue_size_warning">Aviso: descargas grandes em massa podem levar as fontes a ficarem lentas e/ou começarem a bloquear o Hikaru. Toque para saber mais.</string>
     <string name="video_list_empty_error">Nenhum vídeo encontrado</string>
     <string name="notification_new_episodes">Novos episódios encontrados</string>
     <string name="information_no_recent_anime">Nada assistido recentemente</string>
@@ -864,7 +864,7 @@
     <string name="pref_bottom_nav_style">Estilo de navegação inferior</string>
     <string name="rotation_reverse_landscape">Paisagem reversa</string>
     <string name="rotation_sensor_portrait">Retrato (Sensor)</string>
-    <string name="unofficial_anime_extension_message">Esta extensão não está na lista oficial de extensões do AniZen.</string>
+    <string name="unofficial_anime_extension_message">Esta extensão não está na lista oficial de extensões do Hikaru.</string>
     <string name="pref_category_player_seeking">A buscar</string>
     <string name="pref_default_intro_length">Duração padrão do salto de abertura</string>
     <string name="pref_category_pip">Picture-in-Picture (PiP)</string>
@@ -961,7 +961,7 @@
     <string name="data_saver_server_summary">Coloque o URL do servidor Proxy Bandwidth Hero aqui</string>
     <string name="label_anime_extension_repos">Repositórios de extensão de anime</string>
     <string name="label_manga_extension_repos">Repositórios de extensão de mangá</string>
-    <string name="onboarding_storage_action_create_folder">Criar a pasta padrão para AniZen</string>
+    <string name="onboarding_storage_action_create_folder">Criar a pasta padrão para Hikaru</string>
     <string name="pref_gpu_next_title">Ativar renderização prévia</string>
     <string name="data_saver_image_format">Comprimir para Jpeg</string>
     <string name="bandwidth_hero">Bandwidth Hero (requer um servidor Bandwidth Hero Proxy)</string>
@@ -1020,7 +1020,7 @@
     <string name="pref_relative_format_summary">\"%1$s\" ao invés de \"%2$s\"</string>
     <string name="information_empty_repos">Você não tem repositórios definidos.</string>
     <string name="action_add_repo">Adicionar repositório</string>
-    <string name="action_add_repo_message">Adicione repositórios adicionais ao AniZen. Este deve ser um URL que termina com “index.min.json”.</string>
+    <string name="action_add_repo_message">Adicione repositórios adicionais ao Hikaru. Este deve ser um URL que termina com “index.min.json”.</string>
     <string name="action_delete_repo">Deletar repositório</string>
     <string name="invalid_repo_name">URL de repositório inválido</string>
     <string name="delete_repo_confirmation">Deseja excluir o repositório \"%s\"?</string>

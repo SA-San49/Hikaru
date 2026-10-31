@@ -765,7 +765,7 @@
     <string name="also_set_chapter_settings_for_library">تطبيق أيضًا على جميع المانجا في المكتبة</string>
     <string name="dialog_with_checkbox_reset">إعادة تعيين جميع الفصول لهذه المانجا</string>
     <string name="download_insufficient_space">تعذّر تنزيل الفصول بسبب انخفاض مساحة التخزين</string>
-    <string name="download_queue_size_warning">تحذير: يمكن أن تؤدِّي التنزيلات كبيرة الحجم والعدد إلى إبطاء المصادر، وقد يُحظر AniZen منها بسبب ذلك. اضغط لمعرفة المزيد۔</string>
+    <string name="download_queue_size_warning">تحذير: يمكن أن تؤدِّي التنزيلات كبيرة الحجم والعدد إلى إبطاء المصادر، وقد يُحظر Hikaru منها بسبب ذلك. اضغط لمعرفة المزيد۔</string>
     <string name="information_webview_required">إن وجود WebView لازم ليعمل التطبيق</string>
     <string name="download_notifier_download_paused_chapters">تم إيقاف التنزيل مؤقتاً</string>
     <string name="channel_new_chapters_episodes">تحديثات الفصول</string>
@@ -783,7 +783,7 @@
     <string name="action_edit_manga_categories">تعديل فئات المانغا</string>
     <string name="action_previous_episode">الحلقة السابقة</string>
     <string name="action_start_download_internally">إستخدام أداة التحميل الداخلية</string>
-    <string name="unofficial_extension_message_anizen">هذا الامتداد ليس من قائمة ملحقات \"AniZen\" الرسمية.</string>
+    <string name="unofficial_extension_message_hikaru">هذا الامتداد ليس من قائمة ملحقات \"Hikaru\" الرسمية.</string>
     <string name="pref_progress_mark_as_seen">في أي نسبة تحدد الحلقة كـ\"تم مشاهدتها\"</string>
     <string name="pref_category_player_orientation">التوجيه</string>
     <string name="pref_skip_disable">تعطيل</string>
@@ -1058,7 +1058,7 @@
     <string name="label_extension_repos">مستودعات التمديد</string>
     <string name="information_empty_repos">ليس لديك أي مستودعات محددة.</string>
     <string name="action_add_repo">إضافة مستودع</string>
-    <string name="action_add_repo_message">أضف مستودعات إضافية إلى AniZen. يجب أن يكون هذا عنوان URL ينتهي بـ \"index.min.json\".</string>
+    <string name="action_add_repo_message">أضف مستودعات إضافية إلى Hikaru. يجب أن يكون هذا عنوان URL ينتهي بـ \"index.min.json\".</string>
     <string name="error_repo_exists">هذا المستودع موجود بالفعل!</string>
     <string name="action_delete_repo">حذف المستودع</string>
     <string name="delete_repo_confirmation">هل ترغب بحذف المستودع \"%s\"؟</string>
@@ -1074,7 +1074,7 @@
     <string name="mpv_media_title">%1$s - الحلقة %2$s - %3$s</string>
     <string name="pref_debanding_yuv420p">YUV420P</string>
     <string name="anime_interval_expected_update">من المتوقع إصدار حلقات جديدة بعد %1$s، سيتم التحقق كل %2$s.</string>
-    <string name="onboarding_storage_action_create_folder">إنشاء مجلد AniZen افتراضي</string>
+    <string name="onboarding_storage_action_create_folder">إنشاء مجلد Hikaru افتراضي</string>
     <string name="download_speed_limit">حد سرعة التنزيل</string>
     <string name="download_speed_limit_hint">اضبطه على 0 لتعطيل حد السرعة.</string>
     <string name="pref_mpv_scripts">تمكين سكربتات MPV</string>

@@ -1,6 +1,6 @@
 # ⚙️ Pro Player Settings & Filters Guide
 
-This mod unlocks the full potential of `mpv-android`. While the official version uses conservative settings, AniZen is tuned for maximum fidelity and responsiveness.
+This mod unlocks the full potential of `mpv-android`. While the official version uses conservative settings, Hikaru is tuned for maximum fidelity and responsiveness.
 
 ---
 
@@ -9,10 +9,10 @@ This mod unlocks the full potential of `mpv-android`. While the official version
 ### 🔊 Performance-First Video Sync
 *   **The Change:** Default `video-sync` has been switched to **`audio`**.
 *   **Why?** The official app uses `display-resample`, which is extremely CPU-intensive on Android and often causes stuttering (lag) when skipping or playing high-bitrate files.
-*   **AniZen Logic:** We use standard `audio` sync for smooth, lag-free performance. **`display-resample`** is automatically enabled **only** when you turn on **Interpolation**, as it is technically required for that feature.
+*   **Hikaru Logic:** We use standard `audio` sync for smooth, lag-free performance. **`display-resample`** is automatically enabled **only** when you turn on **Interpolation**, as it is technically required for that feature.
 
 ### ⏱️ Smart Font Caching
-*   **The Improvement:** Unlike the original app which copies fonts from storage on every launch, AniZen checks if fonts are already cached.
+*   **The Improvement:** Unlike the original app which copies fonts from storage on every launch, Hikaru checks if fonts are already cached.
 *   **Result:** Opening the player is now **near-instant**, even if you have hundreds of custom fonts.
 
 ### 📊 Low-Overhead Technical Stats (Page 6)
@@ -25,7 +25,7 @@ This mod unlocks the full potential of `mpv-android`. While the official version
 
 *   **What is it?** Replaces standard bilinear scaling with a **Jinc-based scaler**.
 *   **Why use it?** Standard scaling makes diagonals look "jagged." This preserves sharpness and removes jaggies from anime lines.
-*   **⚠️ Compatibility:** Do **NOT** use `gpu-next` with Anime4K. AniZen will automatically switch you to the standard `gpu` renderer when Anime4K is enabled to prevent crashes.
+*   **⚠️ Compatibility:** Do **NOT** use `gpu-next` with Anime4K. Hikaru will automatically switch you to the standard `gpu` renderer when Anime4K is enabled to prevent crashes.
 *   **⚠️ The Cost:** Triple the GPU load compared to standard playback. Disable if your device gets hot.
 
 ---
@@ -46,7 +46,7 @@ This mod unlocks the full potential of `mpv-android`. While the official version
 ### 🔓 Intelligent "Copy Mode" Switching
 Normally, Android's hardware decoder is a "black box." To apply filters like **Sharpen** or **Saturation**, we must force the decoder to copy image data back to memory (`mediacodec-copy`).
 
-*   **AniZen Smart Logic:**
+*   **Hikaru Smart Logic:**
     *   **Filters OFF:** Uses standard, ultra-efficient hardware decoding.
     *   **Filters ON:** Automatically enables `mediacodec-copy`.
 *   **Pro-Tip:** For maximum battery life during long trips, ensure all Video Filter sliders are set to **0**.

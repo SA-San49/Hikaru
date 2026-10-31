@@ -15,7 +15,7 @@ Configure Shizuku to allow silent background installation and updating of extens
 
 1. Install **Shizuku** from Google Play or F-Droid.
 2. Start the Shizuku service via Wireless Debugging or ADB.
-3. In AniZen, go to **Settings → Advanced → Extension installer**.
+3. In Hikaru, go to **Settings → Advanced → Extension installer**.
 4. Select **Shizuku**.
 5. Grant permission when the Shizuku authorization prompt appears.
 
@@ -27,4 +27,4 @@ Configure Shizuku to allow silent background installation and updating of extens
 2. Navigate to **Developer options → Wireless debugging** and enable it.
 3. Open **Shizuku** and select **Start via Wireless Debugging**.
 4. Tap **Pairing** and enter the 6-digit code shown in the system notification.
-5. Confirm Shizuku status reports `Running`, then set **Extension installer** to **Shizuku** in AniZen.
+5. Confirm Shizuku status reports `Running`, then set **Extension installer** to **Shizuku** in Hikaru.

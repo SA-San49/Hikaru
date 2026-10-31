@@ -6,7 +6,7 @@ Shader-based upscaling modes, performance presets, and configuration options.
 
 ## Overview
 
-**Anime4K** is an open-source set of GLSL upscaling and denoising shaders optimized for anime. AniZen applies these shaders directly inside the MPV player rendering pipeline.
+**Anime4K** is an open-source set of GLSL upscaling and denoising shaders optimized for anime. Hikaru applies these shaders directly inside the MPV player rendering pipeline.
 
 ---
 
@@ -54,7 +54,7 @@ If video stutters or audio desynchronizes during playback:
 1. Reduce profile quality from **High (L)** to **Balanced (M)** or **Fast (S)** in **Settings → Player → Anime4K**.
 2. Switch from **Plus (+)** variants to standard modes (e.g., Mode A+ to Mode A).
 3. Disable **High-quality scaling** (`spline36`) to lower total GPU load.
-4. Enable **Adaptive Shader Scaling** in **Settings → Player → Anime4K** so AniZen can automatically reduce shader complexity when frame drops are detected.
+4. Enable **Adaptive Shader Scaling** in **Settings → Player → Anime4K** so Hikaru can automatically reduce shader complexity when frame drops are detected.
 
 > [!NOTE]
-> Anime4K shaders require the standard `gpu` renderer. If `gpu-next` is active, AniZen bypasses Anime4K shaders to avoid pipeline conflicts. Select the `gpu` renderer to use Anime4K.
+> Anime4K shaders require the standard `gpu` renderer. If `gpu-next` is active, Hikaru bypasses Anime4K shaders to avoid pipeline conflicts. Select the `gpu` renderer to use Anime4K.

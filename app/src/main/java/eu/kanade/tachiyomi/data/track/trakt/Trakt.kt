@@ -55,7 +55,7 @@ class Trakt(
         // Replace these with your app credentials (user provided values are filled here)
         const val CLIENT_ID = "b11cdc911e0a7b3c211d1afe4f3487f0e145a905d3369c0a42d5b5d2326e93c7"
         private const val CLIENT_SECRET = "c3677fd800bdfe3e51ba93b77c159487f08c13fc9bda388d52e67992e6f89dbd"
-        const val REDIRECT_URI = "anizen://trakt-auth"
+        const val REDIRECT_URI = "hikaru://trakt-auth"
         const val SCOPES = "public"
     }
 

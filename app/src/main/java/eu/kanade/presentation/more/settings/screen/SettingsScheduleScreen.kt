@@ -201,7 +201,7 @@ object SettingsScheduleScreen : SearchableSettings {
                         title = if (exactAlarmsAllowed) {
                             "Exact alarm permission is granted — the notification bell will fire at the precise air time, even in the background with battery optimization enabled."
                         } else {
-                            "Exact alarm permission is not granted. On Android 13+, the notification bell may fire late without it. Tap Settings → Apps → AniZen → Alarms & reminders to allow it, or tap below."
+                            "Exact alarm permission is not granted. On Android 13+, the notification bell may fire late without it. Tap Settings → Apps → Hikaru → Alarms & reminders to allow it, or tap below."
                         },
                     ),
                     Preference.PreferenceItem.TextPreference(

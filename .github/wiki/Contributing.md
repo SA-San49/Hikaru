@@ -10,7 +10,7 @@ Pull requests are welcome. Comment on an issue ticket before starting work to av
 
 ### Prerequisites
 
-AniZen development requires familiarity with:
+Hikaru development requires familiarity with:
 
 - **Android Development** using Android Studio and Gradle.
 - **Kotlin** (Coroutines, Flow).
@@ -20,7 +20,7 @@ AniZen development requires familiarity with:
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/salmanbappi/AniZen.git
+   git clone https://github.com/SA-San49/Hikaru.git
    ```
 2. Open the project in **Android Studio**.
 3. Connect an Android device or launch an emulator.
@@ -30,11 +30,11 @@ AniZen development requires familiarity with:
 
 ## Reporting issues
 
-Check existing [GitHub Issues](https://github.com/salmanbappi/AniZen/issues) before opening a new ticket.
+Check existing [GitHub Issues](https://github.com/SA-San49/Hikaru/issues) before opening a new ticket.
 
 Include the following details in bug reports:
 - Device model and Android version.
-- Exact AniZen version string.
+- Exact Hikaru version string.
 - Steps to reproduce the issue.
 - Relevant logs or export files from **More → Settings → Diagnostics**.
 

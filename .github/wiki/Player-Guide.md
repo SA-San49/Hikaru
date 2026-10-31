@@ -8,7 +8,7 @@ Internal player configuration, performance defaults, video filters, and gesture 
 
 ### Performance Defaults
 
-AniZen defaults player options for lower resource usage:
+Hikaru defaults player options for lower resource usage:
 
 - **Audio Sync**: Default `video-sync` is set to `audio`. `display-resample` is automatically enabled only when **Motion Interpolation** is active.
 - **Font Caching**: Caches subtitle fonts across player sessions to reduce player launch time.
@@ -56,7 +56,7 @@ Adjust video controls in the player using the **Filters (MPVFX)** panel.
 
 Custom MPV settings can be loaded via a configuration file:
 
-- **Path**: Place `mpv.conf` at `AniZen/mpv-config/mpv.conf` in your selected storage location.
+- **Path**: Place `mpv.conf` at `Hikaru/mpv-config/mpv.conf` in your selected storage location.
 - **Directives**: Supports MPV options such as `demuxer-max-bytes`, `sub-font`, `sub-color`, `audio-delay`, and hardware decoder properties.
 - **Runtime Adjustments**: Audio delay (ms) and subtitle offset can also be adjusted on the fly in the player controls overlay.
 

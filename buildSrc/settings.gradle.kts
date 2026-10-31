@@ -18,4 +18,4 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "anizen-buildSrc"
+rootProject.name = "hikaru-buildSrc"

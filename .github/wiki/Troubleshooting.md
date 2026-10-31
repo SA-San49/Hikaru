@@ -1,6 +1,6 @@
 # Troubleshooting
 
-Diagnostics and solutions for playback, extension source, download, and system issues in **AniZen**.
+Diagnostics and solutions for playback, extension source, download, and system issues in **Hikaru**.
 
 ---
 
@@ -20,7 +20,7 @@ Diagnostics and solutions for playback, extension source, download, and system i
 
 ### Download Fails Immediately (0 MB)
 - **Cause**: Expired playback session tokens or unresolved HLS master playlist URL.
-- **Solution**: Update AniZen to the latest release to use updated HLS variant resolving, or re-fetch the stream link from the source.
+- **Solution**: Update Hikaru to the latest release to use updated HLS variant resolving, or re-fetch the stream link from the source.
 
 ---
 
@@ -39,7 +39,7 @@ Options located under **Settings → Data and storage** and **Settings → Advan
 
 ### Extension Health Monitor
 
-1. Open **AniZen** and navigate to **More → Extension Health**.
+1. Open **Hikaru** and navigate to **More → Extension Health**.
 2. The health monitor tests active sources for latency, IP endpoints, TLS versions, and availability.
 3. Tap **Copy Report** to copy the diagnostics report to the clipboard.
 
@@ -47,7 +47,7 @@ Options located under **Settings → Data and storage** and **Settings → Advan
 
 1. Navigate to **More → Settings → Advanced**.
 2. Tap **Dump crash logs** (or select **Dump crash logs** on the crash handler overlay if app crashes).
-3. AniZen exports `anizen_crash_logs.txt` containing system specs, installed extension versions, and recent `logcat` error entries.
-4. Attach `anizen_crash_logs.txt` when opening a [GitHub Issue](https://github.com/salmanbappi/AniZen/issues).
+3. Hikaru exports `hikaru_crash_logs.txt` containing system specs, installed extension versions, and recent `logcat` error entries.
+4. Attach `hikaru_crash_logs.txt` when opening a [GitHub Issue](https://github.com/SA-San49/Hikaru/issues).
 
 

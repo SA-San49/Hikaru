@@ -79,6 +79,7 @@ class CloudflareInterceptor(
         return userAgent
             .replace(Regex("\\s+Aniyomi/\\S+", RegexOption.IGNORE_CASE), "")
             .replace(Regex("\\s+AniZen/\\S+", RegexOption.IGNORE_CASE), "")
+            .replace(Regex("\\s+Hikaru/\\S+", RegexOption.IGNORE_CASE), "")
             .replace(Regex("\\s+Tachiyomi/\\S+", RegexOption.IGNORE_CASE), "")
             .trim()
     }

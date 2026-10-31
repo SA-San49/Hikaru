@@ -1,6 +1,6 @@
 # Frequently Asked Questions
 
-Answers to common questions regarding AniZen features, configuration, playback, and troubleshooting.
+Answers to common questions regarding Hikaru features, configuration, playback, and troubleshooting.
 
 ---
 

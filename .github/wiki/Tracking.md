@@ -1,12 +1,12 @@
 # Tracking
 
-Configuration and synchronization details for external tracking services in **AniZen**.
+Configuration and synchronization details for external tracking services in **Hikaru**.
 
 ---
 
 ## Supported Services
 
-AniZen integrates with the following tracking services:
+Hikaru integrates with the following tracking services:
 
 - **MyAnimeList (MAL)**
 - **AniList**
@@ -22,10 +22,10 @@ AniZen integrates with the following tracking services:
 
 ## Tracker Authentication
 
-1. Open **AniZen** and navigate to **More → Settings → Tracking**.
+1. Open **Hikaru** and navigate to **More → Settings → Tracking**.
 2. Select the target service (e.g., **AniList**).
 3. Tap **Log in** to open the OAuth authorization flow in the browser.
-4. Authorize AniZen. Upon redirection, status will update to **Logged in**.
+4. Authorize Hikaru. Upon redirection, status will update to **Logged in**.
 
 ---
 
@@ -51,7 +51,7 @@ Settings path: **More → Settings → Tracking**
 
 ## Multi-Service Sync & Status Mapping
 
-AniZen supports binding a title to multiple services concurrently (e.g., AniList and Trakt):
+Hikaru supports binding a title to multiple services concurrently (e.g., AniList and Trakt):
 
 - **Status Mapping**: Watch status (*Watching*, *Completed*, *On Hold*, *Dropped*, *Plan to Watch*) synchronizes across all bound accounts.
 - **Score Synchronization**: Ratings map to each platform's scoring system (10-point decimal for MAL/AniList, 5-star, or 100-point scales).

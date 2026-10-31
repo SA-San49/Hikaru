@@ -1,6 +1,6 @@
 # Changelog
 
-Release notes and version history for AniZen.
+Release notes and version history for Hikaru.
 
 ---
 

@@ -75,7 +75,7 @@ data class NavLayoutPack(
     val name: String,
     val description: String,
     val config: NavConfig,
-    val author: String = "AniZen"
+    val author: String = "Hikaru"
 )
 
 object NavCommunityRegistry {

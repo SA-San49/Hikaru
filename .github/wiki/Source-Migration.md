@@ -29,7 +29,7 @@ Source migration allows transferring series data between extensions when:
 2. Select the source to migrate from (or use long-press selection for multiple sources).
 3. Select titles to transfer.
 4. Choose the target source.
-5. Confirm batch migration. AniZen maps episode numbers and watch progress automatically.
+5. Confirm batch migration. Hikaru maps episode numbers and watch progress automatically.
 
 ---
 

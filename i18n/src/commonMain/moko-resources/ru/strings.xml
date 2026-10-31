@@ -547,7 +547,7 @@
     <string name="rotation_reverse_portrait">Портретная наоборот</string>
     <string name="action_move_to_top_all_for_series">Переместить серию в начало</string>
     <string name="disabled_nav">Отключено</string>
-    <string name="update_check_fdroid_migration_info">Новая версия доступна на оф. странице AniZen. Коснитесь для подробностей, как перенестись с неофициальной версии из F-Droid.</string>
+    <string name="update_check_fdroid_migration_info">Новая версия доступна на оф. странице Hikaru. Коснитесь для подробностей, как перенестись с неофициальной версии из F-Droid.</string>
     <string name="error_saving_picture">Не удалось сохранить изображение</string>
     <string name="empty_backup_error">Нет элементов в библиотеке для резервирования</string>
     <string name="update_check_open">Открыть в GitHub</string>
@@ -752,7 +752,7 @@
     <string name="error_repo_exists">Этот репозиторий уже существует!</string>
     <string name="pref_library_update_smart_update">Умное обновление</string>
     <string name="invalid_repo_name">Недопустимый URL-адрес репозитория</string>
-    <string name="action_add_repo_message">Добавить дополнительные репозитории в AniZen. Это должны быть URL-адреса, которые заканчиваются на «index.min.json».</string>
+    <string name="action_add_repo_message">Добавить дополнительные репозитории в Hikaru. Это должны быть URL-адреса, которые заканчиваются на «index.min.json».</string>
     <string name="delete_repo_confirmation">Вы хотите удалить репозиторий «%s»?</string>
     <string name="action_delete_repo">Удалить репозиторий</string>
     <string name="action_add_repo">Добавить репозиторий</string>
@@ -792,7 +792,7 @@
     <string name="also_set_chapter_settings_for_library">Также применить для всей манги в моей библиотеке</string>
     <string name="dialog_with_checkbox_reset">Сбросить все главы для этой манги</string>
     <string name="download_insufficient_space">Не удалось скачать из-за нехватки места для хранения</string>
-    <string name="download_queue_size_warning">Предупреждение: большие объёмы загрузки могут привести к замедлению работы источников и/или блокировке AniZen. Коснитесь для подробностей.</string>
+    <string name="download_queue_size_warning">Предупреждение: большие объёмы загрузки могут привести к замедлению работы источников и/или блокировке Hikaru. Коснитесь для подробностей.</string>
     <string name="information_webview_required">Для работы приложения необходимо WebView</string>
     <string name="download_notifier_download_paused_chapters">Загрузка главы приостановлена</string>
     <string name="channel_new_chapters_episodes">Обновления глав/эпизодов</string>
@@ -830,7 +830,7 @@
     <string name="video_list_empty_error">Видео не найдено</string>
     <string name="settings">Настройки</string>
     <string name="action_start_download_internally">Использовать внутренний загрузчик</string>
-    <string name="unofficial_extension_message_anizen">Это расширение не входит в официальный список расширений AniZen.</string>
+    <string name="unofficial_extension_message_hikaru">Это расширение не входит в официальный список расширений Hikaru.</string>
     <string name="pref_remove_exclude_categories_anime">Исключённые категории аниме</string>
     <string name="pref_category_external_downloader">Внешний загрузчик</string>
     <string name="downloaded_episodes">Загруженные эпизоды</string>
@@ -859,7 +859,7 @@
     <string name="pref_pip_episode_toasts">Показывать уведомление эпизода при переходе на другой эпизод в режиме «картинка в картинке»</string>
     <string name="pref_category_external_player">Внешний проигрыватель</string>
     <string name="pref_pip_on_exit">Автоматическое переключение в режим «картинка в картинке» при выходе из проигрывателя</string>
-    <string name="unofficial_anime_extension_message">Это расширение не входит в официальный список расширений AniZen.</string>
+    <string name="unofficial_anime_extension_message">Это расширение не входит в официальный список расширений Hikaru.</string>
     <string name="not_interesting">Не интересно</string>
     <string name="action_sort_last_checked">Последняя проверка</string>
     <string name="data_saver_exclude">Исключить из сохранения данных</string>
@@ -1020,7 +1020,7 @@
     <string name="action_mark_previous_as_seen">Пометить предыдущее как просмотренное</string>
     <string name="action_play_externally">Смотреть в другом плеере</string>
     <string name="action_download_unseen">Скачать непросмотренные эпизоды</string>
-    <string name="onboarding_storage_action_create_folder">Создать папку AniZen по умолчанию</string>
+    <string name="onboarding_storage_action_create_folder">Создать папку Hikaru по умолчанию</string>
     <string name="action_filter_started">Начато</string>
     <string name="action_sort_airing_time">По времени выпуска</string>
     <string name="theme_cloudflare">Cloudflare</string>

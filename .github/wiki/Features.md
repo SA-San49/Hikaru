@@ -1,6 +1,6 @@
 # Features
 
-Technical overview of media playback, download pipeline, UI components, and diagnostic tools in **AniZen**.
+Technical overview of media playback, download pipeline, UI components, and diagnostic tools in **Hikaru**.
 
 ---
 
