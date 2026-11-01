@@ -163,8 +163,8 @@ class ShikimoriApi(
 
         private const val REDIRECT_URL = "hikaru://shikimori-auth"
 
-        private const val CLIENT_ID = "4ANcy0ijWh0GjgeSzEwoXqF00ioZpqB_qnGXaTRpilU"
-        private const val CLIENT_SECRET = "2-CbjKSBPMxm16AMhFQeTFz1eapfDvvLXjGBc3XCch8"
+        private const val CLIENT_ID = "VY2yzvER0LUJHy1ESf8d0tP8ldmmx061tPU1R1ZD4ck"
+        private const val CLIENT_SECRET = "lx5CymzBOg5NxqcGvHiNkuCmACsHfixvHC8jDwKT0oc"
 
         fun authUrl(): Uri = LOGIN_URL.toUri().buildUpon()
             .appendQueryParameter("client_id", CLIENT_ID)
