@@ -137,10 +137,17 @@ class Kitsu(id: Long) :
     }
 
     override suspend fun login(username: String, password: String) {
-        val token = api.login(username, password)
-        interceptor.newAuth(token)
-        val userId = api.getCurrentUser()
-        saveCredentials(username, userId)
+        val email = username.trim()
+        try {
+            val token = api.login(email, password)
+            interceptor.newAuth(token)
+            val userId = api.getCurrentUser()
+            saveCredentials(email, userId)
+        } catch (e: Throwable) {
+            // Don't leave a half-authenticated state behind (token saved but no user id).
+            logout()
+            throw e
+        }
     }
 
     override fun logout() {

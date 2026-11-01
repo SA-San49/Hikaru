@@ -450,7 +450,7 @@ class AiAssistantScreen : Screen() {
                     modifier = Modifier.size(14.dp)
                 )
                 Text(
-                    text = "ANI-ZEN OS // ANALYSIS",
+                    text = "HIKARU OS // ANALYSIS",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.primary,
                     fontWeight = FontWeight.ExtraBold,

@@ -9,8 +9,12 @@ import android.annotation.SuppressLint
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.text.InputType
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.Button
+import android.widget.EditText
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import androidx.lifecycle.lifecycleScope
 import eu.kanade.domain.connections.service.ConnectionsPreferences
 import eu.kanade.tachiyomi.R
@@ -57,9 +61,17 @@ class DiscordLoginActivity : BaseActivity() {
             }
         }
 
+        findViewById<Button>(R.id.discord_token_login).setOnClickListener { showTokenDialog() }
+
         webView.webViewClient = object : WebViewClient() {
+            override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
+                super.onPageStarted(view, url, favicon)
+                view?.evaluateJavascript(DISABLE_WEBAUTHN_JS, null)
+            }
+
             override fun onPageFinished(view: WebView?, url: String?) {
                 super.onPageFinished(view, url)
+                view?.evaluateJavascript(DISABLE_WEBAUTHN_JS, null)
                 checkToken(webView)
                 if (url != null && (url.contains("/channels/") || url.contains("/app") || url.contains("/login"))) {
                     handler.post(checkRunnable)
@@ -73,6 +85,42 @@ class DiscordLoginActivity : BaseActivity() {
     override fun onDestroy() {
         handler.removeCallbacksAndMessages(null)
         super.onDestroy()
+    }
+
+    /**
+     * Manual fallback for accounts that can only finish MFA with a passkey/security key, which an
+     * embedded WebView cannot do (Discord only trusts real browsers / its own app for WebAuthn).
+     */
+    private fun showTokenDialog() {
+        val input = EditText(this).apply {
+            hint = "Discord token"
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+            isSingleLine = true
+        }
+        val padding = (20 * resources.displayMetrics.density).toInt()
+        val container = android.widget.FrameLayout(this).apply {
+            setPadding(padding, padding / 2, padding, 0)
+            addView(input)
+        }
+        MaterialAlertDialogBuilder(this)
+            .setTitle("Log in with token")
+            .setMessage(
+                "Log in to discord.com in your browser (passkeys work there), then copy your account token " +
+                    "and paste it here. Never share your token with anyone else.",
+            )
+            .setView(container)
+            .setPositiveButton(android.R.string.ok) { _, _ ->
+                val token = input.text.toString().trim().removeSurrounding("\"")
+                if (token.length > 10 && !isLoggingIn) {
+                    isLoggingIn = true
+                    handler.removeCallbacksAndMessages(null)
+                    login(token)
+                } else if (token.length <= 10) {
+                    toast("Invalid token")
+                }
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
     }
 
     private fun checkToken(webView: WebView) {
@@ -197,6 +245,30 @@ class DiscordLoginActivity : BaseActivity() {
                 }
             }
         }
+    }
+
+    companion object {
+        /**
+         * Android WebView has no WebAuthn support for discord.com, so choosing "passkey or security key"
+         * always ends in "An error occurred". Hiding the WebAuthn API makes Discord treat the browser as
+         * not supporting passkeys and offer the remaining MFA methods (authenticator app, SMS, backup code).
+         */
+        private val DISABLE_WEBAUTHN_JS = """
+            (function() {
+                try {
+                    if (window.__hikaruNoWebAuthn) return;
+                    window.__hikaruNoWebAuthn = true;
+                    try { Object.defineProperty(window, 'PublicKeyCredential', { value: undefined, configurable: true }); } catch (e) {}
+                    if (navigator.credentials) {
+                        var unsupported = function() {
+                            return Promise.reject(new DOMException('Passkeys are not supported in this browser', 'NotSupportedError'));
+                        };
+                        try { navigator.credentials.get = unsupported; } catch (e) {}
+                        try { navigator.credentials.create = unsupported; } catch (e) {}
+                    }
+                } catch (e) {}
+            })();
+        """.trimIndent()
     }
 }
 // <-- AM (DISCORD)

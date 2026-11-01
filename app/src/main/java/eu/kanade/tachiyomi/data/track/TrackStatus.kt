@@ -3,7 +3,6 @@ package eu.kanade.tachiyomi.data.track
 import androidx.annotation.StringRes
 import eu.kanade.tachiyomi.R
 import eu.kanade.tachiyomi.data.track.anilist.Anilist
-import eu.kanade.tachiyomi.data.track.bangumi.Bangumi
 import eu.kanade.tachiyomi.data.track.kitsu.Kitsu
 import eu.kanade.tachiyomi.data.track.myanimelist.MyAnimeList
 import eu.kanade.tachiyomi.data.track.shikimori.Shikimori
@@ -75,16 +74,6 @@ enum class TrackStatus(val int: Long, @StringRes val res: Int) {
                         Shikimori.PLAN_TO_READ -> PLAN_TO_READ
                         Shikimori.DROPPED -> DROPPED
                         Shikimori.REREADING -> REPEATING
-                        else -> null
-                    }
-                }
-                (5L) -> {
-                    when (statusLong) {
-                        Bangumi.READING -> READING
-                        Bangumi.COMPLETED -> COMPLETED
-                        Bangumi.ON_HOLD -> PAUSED
-                        Bangumi.PLAN_TO_READ -> PLAN_TO_READ
-                        Bangumi.DROPPED -> DROPPED
                         else -> null
                     }
                 }

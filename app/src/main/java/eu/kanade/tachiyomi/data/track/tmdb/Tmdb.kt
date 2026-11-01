@@ -38,7 +38,7 @@ class Tmdb(id: Long) : BaseTracker(id, "TMDB"), AnimeTracker {
         get() = networkService.client
 
     private val apiKey: String
-        get() = trackPreferences.trackApiKey(this).get()
+        get() = trackPreferences.trackApiKey(this).get().trim()
 
     private val sessionId: String
         get() = trackPreferences.trackToken(this).get()
@@ -228,7 +228,8 @@ class Tmdb(id: Long) : BaseTracker(id, "TMDB"), AnimeTracker {
             }
         } catch (e: Throwable) {
             logcat(LogPriority.ERROR) { "TMDB login: failed with error ${e.message}" }
-            logout()
+            // Keep the user's API key so they don't have to re-enter it; only drop the session.
+            clearSession()
         }
     }
 
@@ -237,6 +238,7 @@ class Tmdb(id: Long) : BaseTracker(id, "TMDB"), AnimeTracker {
         if (apiKey.isBlank()) throw Exception("TMDB API key required. Please save your API key first.")
         val tokenJson = api.getRequestToken()
         val requestToken = tokenJson.optString("request_token")
+        if (requestToken.isBlank()) throw Exception("TMDB did not return a request token. Check your API key (v3).")
         return "https://www.themoviedb.org/authenticate/$requestToken?redirect_to=hikaru://tmdb-auth"
     }
 
@@ -244,6 +246,12 @@ class Tmdb(id: Long) : BaseTracker(id, "TMDB"), AnimeTracker {
         super.logout()
         trackPreferences.trackToken(this).delete()
         trackPreferences.trackApiKey(this).delete()
+    }
+
+    /** Clears the session (e.g. after a failed or cancelled login) but keeps the saved API key. */
+    fun clearSession() {
+        super.logout()
+        trackPreferences.trackToken(this).delete()
     }
 
     private suspend fun updateRating(track: Track, mediaType: String) {

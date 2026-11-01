@@ -58,7 +58,19 @@ android {
         buildConfigField("String", "COMMIT_COUNT", "\"${getCommitCount()}\"")
         buildConfigField("String", "COMMIT_SHA", "\"${getGitSha()}\"")
         buildConfigField("String", "DISCORD_INVITE_URL", "\"${System.getenv("DISCORD_INVITE_URL") ?: "https://discord.gg/XbYhAzsrPR"}\"")
-        buildConfigField("String", "DISCORD_RPC_APP_ID", "\"${System.getenv("DISCORD_RPC_APP_ID") ?: ""}\"")
+        // Discord application used for Rich Presence. Override with the DISCORD_RPC_APP_ID env var / CI variable
+        // (e.g. your own "Hikaru" app from https://discord.com/developers/applications). It must never be blank:
+        // DiscordRPCService turns Rich Presence back off immediately when it is.
+        buildConfigField(
+            "String",
+            "DISCORD_RPC_APP_ID",
+            "\"${System.getenv("DISCORD_RPC_APP_ID")?.takeIf { it.isNotBlank() } ?: "1471263338934566972"}\"",
+        )
+        buildConfigField(
+            "String",
+            "MAL_CLIENT_SECRET",
+            "\"${(project.findProperty("malClientSecret") as String?) ?: System.getenv("MAL_CLIENT_SECRET").orEmpty()}\"",
+        )
         buildConfigField("String", "BUILD_TIME", "\"${getBuildTime(useLastCommitTime = false)}\"")
         buildConfigField("boolean", "TELEMETRY_INCLUDED", "${Config.includeTelemetry}")
 

@@ -2,13 +2,11 @@ package eu.kanade.tachiyomi.data.track
 
 import android.content.Context
 import eu.kanade.tachiyomi.data.track.anilist.Anilist
-import eu.kanade.tachiyomi.data.track.bangumi.Bangumi
 import eu.kanade.tachiyomi.data.track.jellyfin.Jellyfin
 import eu.kanade.tachiyomi.data.track.kitsu.Kitsu
 import eu.kanade.tachiyomi.data.track.myanimelist.MyAnimeList
 import eu.kanade.tachiyomi.data.track.shikimori.Shikimori
 import eu.kanade.tachiyomi.data.track.simkl.Simkl
-import eu.kanade.tachiyomi.data.track.trakt.Trakt
 import eu.kanade.tachiyomi.data.track.tmdb.Tmdb
 import kotlinx.coroutines.flow.combine
 
@@ -19,7 +17,6 @@ class TrackerManager(context: Context) {
         const val KITSU = 3L
         const val SIMKL = 101L
         const val JELLYFIN = 102L
-        const val TRAKT = 201L
         const val TMDB = 202L
     }
 
@@ -27,10 +24,8 @@ class TrackerManager(context: Context) {
     val aniList = Anilist(ANILIST)
     val kitsu = Kitsu(KITSU)
     val shikimori = Shikimori(4L)
-    val bangumi = Bangumi(5L)
     val simkl = Simkl(SIMKL)
     val jellyfin = Jellyfin(JELLYFIN)
-    val trakt = Trakt(TRAKT)
     val tmdb = Tmdb(TMDB)
 
     val trackers: List<BaseTracker> = listOf(
@@ -38,10 +33,8 @@ class TrackerManager(context: Context) {
         aniList,
         kitsu,
         shikimori,
-        bangumi,
         simkl,
         jellyfin,
-        trakt,
         tmdb,
     )
 

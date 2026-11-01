@@ -26,7 +26,6 @@ import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material.icons.outlined.CallToAction
 import androidx.compose.material.icons.outlined.CloudOff
 import androidx.compose.material.icons.outlined.Code
-import androidx.compose.material.icons.outlined.Favorite
 import androidx.compose.material.icons.outlined.GetApp
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.LocalLibrary
@@ -283,11 +282,6 @@ fun MoreScreen(
                         title = stringResource(MR.strings.label_help),
                         icon = Icons.AutoMirrored.Outlined.HelpOutline,
                         onClick = { uriHandler.openUri(Constants.URL_HELP) }
-                    )
-                    MoreItem(
-                        title = stringResource(MR.strings.label_sponsor_me),
-                        icon = Icons.Outlined.Favorite,
-                        onClick = { uriHandler.openUri("https://www.patreon.com/10625779/join") }
                     )
                 }
             }

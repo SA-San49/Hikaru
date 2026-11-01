@@ -182,6 +182,8 @@ jobs:
           SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
           SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
           SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
+          MAL_CLIENT_SECRET: ${{ secrets.MAL_CLIENT_SECRET }}
+          DISCORD_RPC_APP_ID: ${{ vars.DISCORD_RPC_APP_ID }}
 
       - name: Rename & Filter APKs
         run: |

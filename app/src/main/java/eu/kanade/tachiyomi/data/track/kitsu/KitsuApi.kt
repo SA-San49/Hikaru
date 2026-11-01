@@ -17,6 +17,8 @@ import eu.kanade.tachiyomi.network.jsonMime
 import eu.kanade.tachiyomi.network.parseAs
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonObject
 import okhttp3.FormBody
@@ -233,14 +235,39 @@ class KitsuApi(private val client: OkHttpClient, interceptor: KitsuInterceptor) 
             val url = "${BASE_URL}users".toUri().buildUpon()
                 .encodedQuery("filter[self]=true")
                 .build()
-            with(json) {
-                authClient.newCall(GET(url.toString()))
-                    .awaitSuccess()
-                    .parseAs<KitsuCurrentUserResult>()
-                    .data[0]
-                    .id
-            }
+            val restId = runCatching {
+                with(json) {
+                    authClient.newCall(GET(url.toString()))
+                        .awaitSuccess()
+                        .parseAs<KitsuCurrentUserResult>()
+                        .data
+                        .firstOrNull()
+                        ?.id
+                }
+            }.getOrNull()
+
+            // The REST "self" filter can return an empty list; fall back to Kitsu's GraphQL API,
+            // which is what upstream (Mihon) now uses to resolve the logged-in account.
+            restId ?: getCurrentUserGraphQl()
         }
+    }
+
+    private suspend fun getCurrentUserGraphQl(): String {
+        val body = buildJsonObject {
+            put("query", "query { currentAccount { id } }")
+        }
+        val response = authClient.newCall(
+            POST(
+                GRAPHQL_URL,
+                headers = headersOf("Accept", "application/json"),
+                body = body.toString().toRequestBody(jsonMime),
+            ),
+        ).awaitSuccess()
+        val root = json.parseToJsonElement(response.body.string()).jsonObject
+        return root["data"]?.jsonObject
+            ?.get("currentAccount")?.jsonObject
+            ?.get("id")?.jsonPrimitive?.content
+            ?: throw Exception("Failed to get Kitsu user data")
     }
 
     companion object {
@@ -251,6 +278,7 @@ class KitsuApi(private val client: OkHttpClient, interceptor: KitsuInterceptor) 
 
         private const val BASE_URL = "https://kitsu.app/api/edge/"
         private const val LOGIN_URL = "https://kitsu.app/api/oauth/token"
+        private const val GRAPHQL_URL = "https://kitsu.app/api/graphql"
         private const val BASE_ANIME_URL = "https://kitsu.app/anime/"
         private const val ALGOLIA_KEY_URL = "https://kitsu.app/api/edge/algolia-keys/media/"
 
