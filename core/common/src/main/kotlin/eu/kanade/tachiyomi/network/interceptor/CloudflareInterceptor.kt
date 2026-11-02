@@ -110,6 +110,15 @@ class CloudflareInterceptor(
         var isWebViewOutdated = false
 
         val origRequestUrl = originalRequest.url.toString()
+        // A WebView can only load a page with GET. Loading the URL of a POST/PUT/PATCH request (e.g. the
+        // Kitsu OAuth token endpoint) usually reaches an endpoint that answers GET without a challenge, so
+        // the clearance cookie is never earned. The clearance covers the whole site, so earn it on the
+        // site's root page instead.
+        val challengeUrl = if (originalRequest.method == "GET") {
+            origRequestUrl
+        } else {
+            originalRequest.url.newBuilder().encodedPath("/").query(null).fragment(null).build().toString()
+        }
         val headers = parseHeaders(originalRequest.headers)
 
         executor.execute {
@@ -179,7 +188,7 @@ class CloudflareInterceptor(
                         latch.countDown()
                     }
 
-                    if (url == origRequestUrl && !challengeFound) {
+                    if (url == challengeUrl && !challengeFound) {
                         // The first request didn't return the challenge, abort.
                         latch.countDown()
                     }
@@ -271,7 +280,7 @@ class CloudflareInterceptor(
                 }
             }
 
-            webview?.loadUrl(origRequestUrl, headers)
+            webview?.loadUrl(challengeUrl, headers)
         }
 
         val pollTimer = java.util.Timer()

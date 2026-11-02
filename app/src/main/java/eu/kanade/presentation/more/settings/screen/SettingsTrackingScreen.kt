@@ -56,7 +56,6 @@ import eu.kanade.tachiyomi.data.track.EnhancedTracker
 import eu.kanade.tachiyomi.data.track.Tracker
 import eu.kanade.tachiyomi.data.track.TrackerManager
 import eu.kanade.tachiyomi.data.track.anilist.AnilistApi
-import eu.kanade.tachiyomi.data.track.bangumi.BangumiApi
 import eu.kanade.tachiyomi.data.track.myanimelist.MyAnimeListApi
 import eu.kanade.tachiyomi.data.track.shikimori.ShikimoriApi
 import eu.kanade.tachiyomi.data.track.simkl.SimklApi
@@ -103,7 +102,6 @@ object SettingsTrackingScreen : SearchableSettings {
         val isAnilistLoggedIn by trackerManager.aniList.isLoggedInFlow.collectAsState(trackerManager.aniList.isLoggedIn)
         val isMyanimelistLoggedIn by trackerManager.myAnimeList.isLoggedInFlow.collectAsState(trackerManager.myAnimeList.isLoggedIn)
         val isSimklLoggedIn by trackerManager.simkl.isLoggedInFlow.collectAsState(trackerManager.simkl.isLoggedIn)
-        val isTraktLoggedIn by trackerManager.trakt.isLoggedInFlow.collectAsState(trackerManager.trakt.isLoggedIn)
 
         var dialog by remember { mutableStateOf<Any?>(null) }
         dialog?.run {
@@ -335,52 +333,6 @@ object SettingsTrackingScreen : SearchableSettings {
                         emptyList()
                     }) + listOf(
                         Preference.PreferenceItem.TrackerPreference(
-                            title = trackerManager.trakt.name,
-                            tracker = trackerManager.trakt,
-                            login = {
-                                context.openInBrowser(
-                                    eu.kanade.tachiyomi.data.track.trakt.TraktApi.authUrl(),
-                                    forceDefaultBrowser = true,
-                                )
-                            },
-                            logout = { dialog = LogoutDialog(trackerManager.trakt) },
-                        ),
-                    ) + (if (isTraktLoggedIn) {
-                        listOf(
-                            Preference.PreferenceItem.CustomPreference(
-                                title = stringResource(MR.strings.pref_import_from_trakt),
-                            ) {
-                                BasePreferenceWidget(
-                                    subcomponent = {
-                                        OutlinedButton(
-                                            onClick = {
-                                                navigator?.push(eu.kanade.tachiyomi.ui.trackerimport.TrackerImportScreen(trackerManager.trakt.id))
-                                            },
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .padding(horizontal = PrefsHorizontalPadding),
-                                            shape = CircleShape,
-                                            border = BorderStroke(
-                                                width = 1.dp,
-                                                color = MaterialTheme.colorScheme.primary,
-                                            ),
-                                            colors = ButtonDefaults.outlinedButtonColors(
-                                                contentColor = MaterialTheme.colorScheme.primary,
-                                            ),
-                                        ) {
-                                            Text(
-                                                text = stringResource(MR.strings.pref_import_from_trakt),
-                                                style = MaterialTheme.typography.bodyLarge,
-                                            )
-                                        }
-                                    }
-                                )
-                            }
-                        )
-                    } else {
-                        emptyList()
-                    }) + listOf(
-                        Preference.PreferenceItem.TrackerPreference(
                             title = trackerManager.tmdb.name,
                             tracker = trackerManager.tmdb,
                             login = {
@@ -404,17 +356,6 @@ object SettingsTrackingScreen : SearchableSettings {
                                 }
                             },
                             logout = { dialog = LogoutDialog(trackerManager.tmdb) },
-                        ),
-                        Preference.PreferenceItem.TrackerPreference(
-                            title = trackerManager.bangumi.name,
-                            tracker = trackerManager.bangumi,
-                            login = {
-                                context.openInBrowser(
-                                    BangumiApi.authUrl(),
-                                    forceDefaultBrowser = true,
-                                )
-                            },
-                            logout = { dialog = LogoutDialog(trackerManager.bangumi) },
                         ),
                         Preference.PreferenceItem.InfoPreference(stringResource(MR.strings.tracking_info)),
                     )

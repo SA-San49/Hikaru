@@ -1,7 +1,10 @@
 package eu.kanade.tachiyomi.data.track.myanimelist
 
+import android.app.Application
+import android.content.Context
 import android.net.Uri
 import androidx.core.net.toUri
+import eu.kanade.tachiyomi.BuildConfig
 import eu.kanade.tachiyomi.data.database.models.Track
 import eu.kanade.tachiyomi.data.track.model.TrackSearch
 import eu.kanade.tachiyomi.data.track.myanimelist.dto.MALAnime
@@ -30,6 +33,8 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody
 import tachiyomi.core.common.util.lang.withIOContext
+import uy.kohesive.injekt.Injekt
+import uy.kohesive.injekt.api.get
 import uy.kohesive.injekt.injectLazy
 import java.text.SimpleDateFormat
 import java.util.Locale
@@ -49,8 +54,9 @@ class MyAnimeListApi(
         return withIOContext {
             val formBody: RequestBody = FormBody.Builder()
                 .add("client_id", CLIENT_ID)
+                .addClientSecret()
                 .add("code", authCode)
-                .add("code_verifier", codeVerifier)
+                .add("code_verifier", loadCodeVerifier())
                 .add("grant_type", "authorization_code")
                 .build()
             with(json) {
@@ -304,13 +310,40 @@ class MyAnimeListApi(
 
         private const val LIST_PAGINATION_AMOUNT = 250
 
+        // Only needed when the MAL API client was registered as a "web" app. Clients registered as
+        // "android"/"other" use PKCE only and must leave this empty. Provided at build time.
+        private val CLIENT_SECRET: String = BuildConfig.MAL_CLIENT_SECRET
+
+        private const val PREFS_NAME = "myanimelist_oauth"
+        private const val PREF_CODE_VERIFIER = "code_verifier"
+
+        @Volatile
         private var codeVerifier: String = ""
 
         fun authUrl(): Uri = "$BASE_OAUTH_URL/authorize".toUri().buildUpon()
             .appendQueryParameter("client_id", CLIENT_ID)
             .appendQueryParameter("code_challenge", getPkceChallengeCode())
+            .appendQueryParameter("code_challenge_method", "plain")
             .appendQueryParameter("response_type", "code")
             .build()
+
+        private fun FormBody.Builder.addClientSecret(): FormBody.Builder = apply {
+            if (CLIENT_SECRET.isNotBlank()) add("client_secret", CLIENT_SECRET)
+        }
+
+        private fun prefs() = Injekt.get<Application>()
+            .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+
+        /**
+         * The PKCE verifier must survive the trip to the browser. Android often kills the app process
+         * while the user is logging in on myanimelist.net, which wiped the in-memory verifier and made
+         * the token exchange fail silently (user redirected back but never connected).
+         */
+        private fun loadCodeVerifier(): String {
+            return codeVerifier.ifEmpty {
+                runCatching { prefs().getString(PREF_CODE_VERIFIER, null) }.getOrNull().orEmpty()
+            }
+        }
 
         fun animeUrl(id: Long): Uri = "$BASE_API_URL/anime".toUri().buildUpon()
             .appendPath(id.toString())
@@ -320,6 +353,7 @@ class MyAnimeListApi(
         fun refreshTokenRequest(oauth: MALOAuth): Request {
             val formBody: RequestBody = FormBody.Builder()
                 .add("client_id", CLIENT_ID)
+                .addClientSecret()
                 .add("refresh_token", oauth.refreshToken)
                 .add("grant_type", "refresh_token")
                 .build()
@@ -333,6 +367,7 @@ class MyAnimeListApi(
 
         private fun getPkceChallengeCode(): String {
             codeVerifier = PkceUtil.generateCodeVerifier()
+            runCatching { prefs().edit().putString(PREF_CODE_VERIFIER, codeVerifier).apply() }
             return codeVerifier
         }
     }

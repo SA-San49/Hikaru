@@ -3,7 +3,6 @@ package eu.kanade.tachiyomi.data.backup.create
 import android.content.Context
 import android.net.Uri
 import com.hippo.unifile.UniFile
-import eu.kanade.tachiyomi.BuildConfig
 import eu.kanade.tachiyomi.data.backup.BackupFileValidator
 import eu.kanade.tachiyomi.data.backup.create.creators.AnimeBackupCreator
 import eu.kanade.tachiyomi.data.backup.create.creators.CategoriesBackupCreator
@@ -164,11 +163,17 @@ class BackupCreator(
 
     companion object {
         private const val MAX_AUTO_BACKUPS: Int = 4
-        private val FILENAME_REGEX = """${BuildConfig.APPLICATION_ID}_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}.tachibk""".toRegex()
+        // Use the base application id so build-type suffixes (".dev", ".beta", ...) don't leak into
+        // backup names: app.hikaru_2026-11-01_12-00.tachibk instead of app.hikaru.dev_2026-11-01_12-00.tachibk
+        private const val BACKUP_FILE_PREFIX = "app.hikaru"
+
+        // Also matches older names that still contain a build-type suffix so they're rotated out.
+        private val FILENAME_REGEX =
+            """${Regex.escape(BACKUP_FILE_PREFIX)}(\.[A-Za-z]+)?_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}\.tachibk""".toRegex()
 
         fun getFilename(): String {
             val date = SimpleDateFormat("yyyy-MM-dd_HH-mm", Locale.ENGLISH).format(Date())
-            return "${BuildConfig.APPLICATION_ID}_$date.tachibk"
+            return "${BACKUP_FILE_PREFIX}_$date.tachibk"
         }
     }
 }

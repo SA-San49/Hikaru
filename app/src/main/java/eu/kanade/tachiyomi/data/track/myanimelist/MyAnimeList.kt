@@ -16,6 +16,8 @@ import kotlinx.collections.immutable.ImmutableList
 import kotlinx.collections.immutable.toImmutableList
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import logcat.LogPriority
+import tachiyomi.core.common.util.system.logcat
 import tachiyomi.i18n.MR
 import uy.kohesive.injekt.injectLazy
 import tachiyomi.domain.track.model.Track as DomainAnimeTrack
@@ -174,6 +176,7 @@ class MyAnimeList(id: Long) :
             val username = api.getCurrentUser()
             saveCredentials(username, oauth.accessToken)
         } catch (e: Throwable) {
+            logcat(LogPriority.ERROR, e) { "MyAnimeList login failed" }
             logout()
         }
     }
