@@ -4,8 +4,8 @@ on:
   workflow_dispatch:
   push:
     branches: [main, fix/discord-restore-rebrand]
-    paths:
-      - ".github/workflows/release-test.yml"
+  pull_request:
+    branches: [main]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -13,6 +13,8 @@ concurrency:
 
 jobs:
   build-release-test:
+    # Use signing secrets only for same-repository PRs.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     name: Build releaseTest APK (signed with hikaru.jks)
     runs-on: ubuntu-latest
     permissions:
@@ -36,10 +38,21 @@ jobs:
       - name: Decode signing keystore
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
+          SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
+          SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
         run: |
+          set -euo pipefail
+          : "${KEYSTORE_BASE64:?Configure the GitHub secret KEYSTORE_BASE64}"
+          : "${SIGNING_STORE_PASSWORD:?Configure the GitHub secret SIGNING_STORE_PASSWORD}"
+          : "${SIGNING_KEY_ALIAS:?Configure the GitHub secret SIGNING_KEY_ALIAS}"
+          : "${SIGNING_KEY_PASSWORD:?Configure the GitHub secret SIGNING_KEY_PASSWORD}"
           test -n "$KEYSTORE_BASE64"
           printf '%s' "$KEYSTORE_BASE64" | base64 --decode > app/hikaru.jks
           test -s app/hikaru.jks
+          keytool -list -keystore app/hikaru.jks \
+            -storepass "$SIGNING_STORE_PASSWORD" \
+            -alias "$SIGNING_KEY_ALIAS" >/dev/null
 
       - name: Build releaseTest APK
         run: ./gradlew :app:assembleReleaseTest -Pinclude-telemetry=false -Penable-updater=false --no-daemon
