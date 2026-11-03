@@ -1,0 +1,58 @@
+name: Hikaru ReleaseTest Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, fix/discord-restore-rebrand]
+    paths:
+      - ".github/workflows/release-test.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-release-test:
+    name: Build releaseTest APK (signed with hikaru.jks)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Clone repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          java-version: 17
+          distribution: temurin
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Decode signing keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          test -n "$KEYSTORE_BASE64"
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > app/hikaru.jks
+          test -s app/hikaru.jks
+
+      - name: Build releaseTest APK
+        run: ./gradlew :app:assembleReleaseTest -Pinclude-telemetry=false -Penable-updater=false --no-daemon
+        env:
+          SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
+          SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
+          SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
+          MAL_CLIENT_SECRET: ${{ secrets.MAL_CLIENT_SECRET }}
+          DISCORD_RPC_APP_ID: ${{ vars.DISCORD_RPC_APP_ID }}
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Hikaru-releaseTest
+          path: app/build/outputs/apk/releaseTest/**/*.apk
+          if-no-files-found: error

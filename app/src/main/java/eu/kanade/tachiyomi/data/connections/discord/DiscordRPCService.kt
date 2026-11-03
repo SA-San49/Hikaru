@@ -16,7 +16,6 @@ import android.os.Looper
 import android.util.Log
 import androidx.compose.ui.util.fastAny
 import eu.kanade.domain.connections.service.ConnectionsPreferences
-import eu.kanade.tachiyomi.BuildConfig
 import eu.kanade.tachiyomi.R
 import eu.kanade.tachiyomi.data.connections.ConnectionsManager
 import eu.kanade.tachiyomi.data.notification.NotificationReceiver
@@ -43,11 +42,6 @@ class DiscordRPCService : Service() {
     @OptIn(DelicateCoroutinesApi::class)
     override fun onCreate() {
         super.onCreate()
-        if (BuildConfig.DISCORD_RPC_APP_ID.isBlank()) {
-            stopSelf()
-            connectionsPreferences.enableDiscordRPC().set(false)
-            return
-        }
         val token = connectionsPreferences.connectionsToken(connectionsManager.discord).get()
         val status = when (connectionsPreferences.discordRPCStatus().get()) {
             -1 -> "dnd"
@@ -278,7 +272,7 @@ class DiscordRPCService : Service() {
             val buttons = if (showButtons) {
                 buildList {
                     if (showDownloadButton) add(DOWNLOAD_BUTTON_LABEL)
-                    if (showDiscordButton && DISCORD_BUTTON_URL.isNotBlank()) add(DISCORD_BUTTON_LABEL)
+                    if (showDiscordButton) add(DISCORD_BUTTON_LABEL)
                 }.takeIf { it.isNotEmpty() }
             } else {
                 null
@@ -288,14 +282,14 @@ class DiscordRPCService : Service() {
                 Activity.Metadata(
                     buttonUrls = buildList {
                         if (showDownloadButton) add(DOWNLOAD_BUTTON_URL)
-                        if (showDiscordButton && DISCORD_BUTTON_URL.isNotBlank()) add(DISCORD_BUTTON_URL)
+                        if (showDiscordButton) add(DISCORD_BUTTON_URL)
                     },
                 )
             }
 
             rpc?.updateRPC(
                 activity = Activity(
-                    applicationId = BuildConfig.DISCORD_RPC_APP_ID,
+                    applicationId = RICH_PRESENCE_APPLICATION_ID,
                     name = name,
                     details = details,
                     state = state,
@@ -346,7 +340,7 @@ class DiscordRPCService : Service() {
             val buttons = if (showButtons) {
                 buildList {
                     if (showDownloadButton) add(DOWNLOAD_BUTTON_LABEL)
-                    if (showDiscordButton && DISCORD_BUTTON_URL.isNotBlank()) add(DISCORD_BUTTON_LABEL)
+                    if (showDiscordButton) add(DISCORD_BUTTON_LABEL)
                 }.takeIf { it.isNotEmpty() }
             } else {
                 null
@@ -356,14 +350,14 @@ class DiscordRPCService : Service() {
                 Activity.Metadata(
                     buttonUrls = buildList {
                         if (showDownloadButton) add(DOWNLOAD_BUTTON_URL)
-                        if (showDiscordButton && DISCORD_BUTTON_URL.isNotBlank()) add(DISCORD_BUTTON_URL)
+                        if (showDiscordButton) add(DISCORD_BUTTON_URL)
                     },
                 )
             }
 
             rpc?.updateRPC(
                 activity = Activity(
-                    applicationId = BuildConfig.DISCORD_RPC_APP_ID,
+                    applicationId = RICH_PRESENCE_APPLICATION_ID,
                     name = name,
                     details = details,
                     state = state,
@@ -546,7 +540,7 @@ class DiscordRPCService : Service() {
             val networkService: NetworkHelper by injectLazy()
             val client = networkService.client
             return RPCExternalAsset(
-                applicationId = BuildConfig.DISCORD_RPC_APP_ID,
+                applicationId = RICH_PRESENCE_APPLICATION_ID,
                 token = connectionsPreferences.connectionsToken(connectionsManager.discord).get(),
                 client = client,
                 json = json,
