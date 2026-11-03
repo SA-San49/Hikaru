@@ -77,7 +77,8 @@ class CreateExtensionRepo(
     }
 
     companion object {
-        const val OFFICIAL_REPO_WEBSITE = "https://github.com/salmanbappi/AniZen"
+        const val OFFICIAL_REPO_WEBSITE = "https://github.com/SA-San49/Hikaru"
+        // Keep the existing upstream extension feed until Hikaru publishes a replacement feed.
         const val OFFICIAL_REPO_BASE_URL = "https://raw.githubusercontent.com/anizen-app/extensions/repo"
 
         // cuong-tran's key

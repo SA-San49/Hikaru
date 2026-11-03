@@ -42,4 +42,4 @@ Include the following details in bug reports:
 
 ## Translations
 
-Translations are managed via [Weblate](https://hosted.weblate.org/projects/salmanbappi/anizen/). Submitted strings are automatically synchronized to the repository.
+Translations are managed through Hikaru's configured [Weblate project](https://hosted.weblate.org/projects/salmanbappi/anizen/). Submitted strings are automatically synchronized to the repository.
