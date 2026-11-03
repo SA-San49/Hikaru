@@ -57,7 +57,14 @@ jobs:
           printf '%s' "$KEYSTORE_BASE64" | base64 --decode > app/hikaru.jks
           test -s app/hikaru.jks
 
-      - name: Validate keystore credentials and alias
+      - name: Validate keystore store password
+        env:
+          SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          keytool -list -keystore app/hikaru.jks -storepass "$SIGNING_STORE_PASSWORD" >/dev/null
+
+      - name: Validate signing key alias
         env:
           SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
           SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
