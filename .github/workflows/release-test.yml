@@ -35,7 +35,7 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v6
 
-      - name: Decode signing keystore
+      - name: Validate signing secrets
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
           SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
@@ -47,9 +47,22 @@ jobs:
           : "${SIGNING_STORE_PASSWORD:?Configure the GitHub secret SIGNING_STORE_PASSWORD}"
           : "${SIGNING_KEY_ALIAS:?Configure the GitHub secret SIGNING_KEY_ALIAS}"
           : "${SIGNING_KEY_PASSWORD:?Configure the GitHub secret SIGNING_KEY_PASSWORD}"
+
+      - name: Decode signing keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          set -euo pipefail
           test -n "$KEYSTORE_BASE64"
           printf '%s' "$KEYSTORE_BASE64" | base64 --decode > app/hikaru.jks
           test -s app/hikaru.jks
+
+      - name: Validate keystore credentials and alias
+        env:
+          SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
+          SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
+        run: |
+          set -euo pipefail
           keytool -list -keystore app/hikaru.jks \
             -storepass "$SIGNING_STORE_PASSWORD" \
             -alias "$SIGNING_KEY_ALIAS" >/dev/null
