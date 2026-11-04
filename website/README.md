@@ -1,16 +1,25 @@
 # Hikaru website
 
-A small static site built with Node.js and `marked`. No client-side framework or runtime data fetches are used.
+A lightweight static website built with Node.js and `marked`. There is no client-side framework, backend, or runtime data fetch. The source lives under `website/`; the Android application, its build configuration, and its existing workflows are left alone.
 
-## Build locally
+## Build and check locally
 
 ```sh
+cd website
 npm ci
-SITE_BASE_PATH= SITE_URL=https://sa-san49.github.io npm run build
+SITE_BASE_PATH=/Hikaru SITE_URL=https://sa-san49.github.io npm run build
+npm test
 ```
 
-The build writes the complete static site to `../_site`. It copies the original app icon and screenshot strip from `.github/assets/icon.png` and `.github/readme-images/screens.png`. The privacy route is generated from the repository-root `policy.md`; when that source file is missing, the page states that it has not been published rather than inventing policy text.
+The build writes the complete static site to the repository-root `_site/` directory. It uses the existing Hikaru app icon and screenshot strip from `.github/assets/icon.png` and `.github/readme-images/screens.png`; no application screenshots are fabricated. The `/privacy/` route is generated directly from repository-root `policy.md` on each build. When that source file is absent, the page clearly reports that approved policy text has not been published; no privacy claims are invented.
 
 ## GitHub Pages
 
-`.github/workflows/pages.yml` builds from `main` and deploys the artifact with GitHub Pages Actions. The workflow uses `/Hikaru` as the project-site base path. If the repository's Pages source is still set to a branch, switch **Settings → Pages → Build and deployment → Source** to **GitHub Actions** before the first Actions deployment.
+`.github/workflows/pages.yml` builds and tests on pull requests and deploys on pushes to `main` or a manual workflow dispatch. The project-site base path is `/Hikaru`, and the workflow uses GitHub Pages Actions deployment.
+
+The repository's Pages API currently reports the older **Deploy from a branch (`main` / `/`)** configuration. Before the Actions workflow can publish, switch **Settings → Pages → Build and deployment → Source** to **GitHub Actions**. The workflow does not alter any Android build or release workflows.
+
+Target addresses once Pages deployment is enabled:
+
+- Website: <https://SA-San49.github.io/Hikaru/>
+- Privacy: <https://SA-San49.github.io/Hikaru/privacy/>
