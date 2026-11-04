@@ -7,6 +7,7 @@ const websiteDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(websiteDir, "..");
 const outputDir = resolve(repoRoot, "_site");
 const basePath = (process.env.SITE_BASE_PATH ?? "/Hikaru").replace(/\/$/, "");
+const assetBase = basePath ? `${basePath}/` : "/";
 const publicOrigin = (process.env.SITE_URL ?? "https://sa-san49.github.io").replace(/\/$/, "");
 const canonicalRoot = `${publicOrigin}${basePath}`;
 
@@ -22,7 +23,8 @@ await cp(resolve(repoRoot, ".github/assets/icon.png"), resolve(outputDir, "asset
 const homepage = await readFile(resolve(outputDir, "index.html"), "utf8");
 await writeFile(resolve(outputDir, "index.html"), homepage
   .replaceAll("{{CANONICAL_HOME}}", `${canonicalRoot}/`)
-  .replaceAll("{{SOCIAL_IMAGE}}", `${canonicalRoot}/assets/hikaru-icon.png`));
+  .replaceAll("{{SOCIAL_IMAGE}}", `${canonicalRoot}/assets/hikaru-icon.png`)
+  .replaceAll("{{ASSET_BASE}}", assetBase));
 
 let policyHtml;
 try {
@@ -38,7 +40,8 @@ const privacyTemplate = await readFile(resolve(websiteDir, "privacy.html"), "utf
 const privacyPage = privacyTemplate
   .replace("<!-- POLICY_CONTENT -->", policyHtml)
   .replaceAll("{{CANONICAL_PRIVACY}}", `${canonicalRoot}/privacy/`)
-  .replaceAll("{{SOCIAL_IMAGE}}", `${canonicalRoot}/assets/hikaru-icon.png`);
+  .replaceAll("{{SOCIAL_IMAGE}}", `${canonicalRoot}/assets/hikaru-icon.png`)
+  .replaceAll("{{ASSET_BASE}}", assetBase);
 await writeFile(resolve(outputDir, "privacy/index.html"), privacyPage);
 
 console.log(`Built ${outputDir} (base path: ${basePath || "/"}; policy source: ${policyHtml.includes("policy-missing") ? "missing" : "policy.md"})`);

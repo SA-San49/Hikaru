@@ -6,6 +6,8 @@ import { fileURLToPath } from "node:url";
 const websiteDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(websiteDir, "..");
 const outputDir = resolve(repoRoot, "_site");
+const basePath = (process.env.SITE_BASE_PATH ?? "/Hikaru").replace(/\/$/, "");
+const assetBase = basePath ? `${basePath}/` : "/";
 const htmlFiles = ["index.html", "privacy/index.html"];
 const pages = new Map();
 
@@ -22,6 +24,8 @@ assert.match(home, /https:\/\/github\.com\/komikku-app\/anikku/);
 assert.match(home, /https:\/\/github\.com\/salmanbappi\/AniZen/);
 assert.doesNotMatch(home, /github\.com\/SA-San49\/Hikaru\/releases\/download\//);
 assert.doesNotMatch(home, /screens-image|hikaru-screens|REAL APP SCREENS/i);
+assert.ok(home.includes(`href="${assetBase}assets/site.css"`), "Homepage must use the deployment-base stylesheet URL");
+assert.ok(privacy.includes(`href="${assetBase}assets/site.css"`), "Privacy page must use the deployment-base stylesheet URL");
 await assert.rejects(access(resolve(outputDir, "assets/hikaru-screens.png")));
 assert.match(privacy, /Privacy Policy/);
 assert.match(privacy, /<article class="policy-content[\s\S]*?<\/article>/);
@@ -44,7 +48,11 @@ for (const [pagePath, html] of pages) {
     if (/^(?:https?:|mailto:|tel:|data:|javascript:)/i.test(reference)) continue;
     const [pathOnly] = reference.split(/[?#]/, 1);
     if (!pathOnly) continue;
-    const destination = resolve(pageDir, pathOnly);
+    const destination = pathOnly.startsWith(assetBase)
+      ? resolve(outputDir, pathOnly.slice(assetBase.length))
+      : pathOnly.startsWith("/")
+        ? resolve(outputDir, pathOnly.slice(1))
+        : resolve(pageDir, pathOnly);
     assert.ok(
       destination === outputDir || destination.startsWith(`${outputDir}${sep}`),
       `Internal reference escapes generated site: ${pagePath} -> ${reference}`,
