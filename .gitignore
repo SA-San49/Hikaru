@@ -1,5 +1,7 @@
 # Build files
 .gradle
+/_site/
+/website/node_modules/
 #.vscode
 .kotlin
 build
