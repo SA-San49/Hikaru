@@ -21,6 +21,8 @@ assert.match(home, /https:\/\/github\.com\/aniyomiorg\/aniyomi/);
 assert.match(home, /https:\/\/github\.com\/komikku-app\/anikku/);
 assert.match(home, /https:\/\/github\.com\/salmanbappi\/AniZen/);
 assert.doesNotMatch(home, /github\.com\/SA-San49\/Hikaru\/releases\/download\//);
+assert.doesNotMatch(home, /screens-image|hikaru-screens|REAL APP SCREENS/i);
+await assert.rejects(access(resolve(outputDir, "assets/hikaru-screens.png")));
 assert.match(privacy, /Privacy Policy/);
 assert.match(privacy, /<article class="policy-content[\s\S]*?<\/article>/);
 
