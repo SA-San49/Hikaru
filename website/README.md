@@ -11,7 +11,7 @@ SITE_BASE_PATH=/Hikaru SITE_URL=https://sa-san49.github.io npm run build
 npm test
 ```
 
-The build writes the complete static site to the repository-root `_site/` directory. It uses Hikaru's existing app icon from `.github/assets/icon.png` and a CSS-built abstract brand illustration in the hero; it does not display or ship an app screenshot. The `/privacy/` route is generated directly from repository-root `policy.md` on each build. When that source file is absent, the page clearly reports that approved policy text has not been published; no privacy claims are invented.
+The build writes the complete static site to the repository-root `_site/` directory. The homepage gallery uses five real Hikaru app screenshots, optimized as WebP; the Library screen is first. It advances every three seconds, pauses while hovered or focused, and any manual navigation pauses autoplay until the visitor explicitly resumes it. Tapping a screenshot opens a zoomable viewer with buttons, wheel zoom, and double-click support. The `/privacy/` route is generated directly from repository-root `policy.md` on each build.
 
 ## GitHub Pages
 

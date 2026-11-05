@@ -11,6 +11,12 @@ const assetBase = basePath ? `${basePath}/` : "/";
 const htmlFiles = ["index.html", "privacy/index.html"];
 const pages = new Map();
 
+const outputPathFor = (pathOnly, pageDir) => {
+  if (pathOnly.startsWith(assetBase)) return resolve(outputDir, pathOnly.slice(assetBase.length));
+  if (pathOnly.startsWith("/")) return resolve(outputDir, pathOnly.slice(1));
+  return resolve(pageDir, pathOnly);
+};
+
 for (const relativePath of htmlFiles) {
   pages.set(relativePath, await readFile(resolve(outputDir, relativePath), "utf8"));
 }
@@ -30,6 +36,16 @@ await assert.rejects(access(resolve(outputDir, "assets/hikaru-screens.png")));
 assert.match(privacy, /Privacy Policy/);
 assert.match(privacy, /<article class="policy-content[\s\S]*?<\/article>/);
 
+const galleryImages = [...home.matchAll(/data-image="([^"]+)"/g)].map(([, path]) => path);
+assert.equal(galleryImages.length, 5, "The homepage carousel must include all five supplied screenshots");
+assert.equal(galleryImages[0], `${assetBase}assets/gallery/library.webp`, "The Library screenshot must be first");
+for (const reference of galleryImages) {
+  await access(outputPathFor(reference, resolve(outputDir)));
+}
+const generatedScript = await readFile(resolve(outputDir, "assets/site.js"), "utf8");
+assert.match(generatedScript, /setTimeout\(\(\) => showSlide\(currentIndex \+ 1, \{ automatic: true \}\), 3000\)/);
+assert.match(generatedScript, /data-zoom-in/);
+
 const policySource = await readFile(resolve(repoRoot, "policy.md"), "utf8").catch((error) => {
   if (error.code === "ENOENT") return null;
   throw error;
@@ -48,11 +64,7 @@ for (const [pagePath, html] of pages) {
     if (/^(?:https?:|mailto:|tel:|data:|javascript:)/i.test(reference)) continue;
     const [pathOnly] = reference.split(/[?#]/, 1);
     if (!pathOnly) continue;
-    const destination = pathOnly.startsWith(assetBase)
-      ? resolve(outputDir, pathOnly.slice(assetBase.length))
-      : pathOnly.startsWith("/")
-        ? resolve(outputDir, pathOnly.slice(1))
-        : resolve(pageDir, pathOnly);
+    const destination = outputPathFor(pathOnly, pageDir);
     assert.ok(
       destination === outputDir || destination.startsWith(`${outputDir}${sep}`),
       `Internal reference escapes generated site: ${pagePath} -> ${reference}`,

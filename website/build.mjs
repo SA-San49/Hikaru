@@ -19,6 +19,7 @@ for (const name of ["index.html", "assets/site.css", "assets/site.js"]) {
   await cp(resolve(websiteDir, name), resolve(outputDir, name), { recursive: true });
 }
 await cp(resolve(repoRoot, ".github/assets/icon.png"), resolve(outputDir, "assets/hikaru-icon.png"));
+await cp(resolve(websiteDir, "assets/gallery"), resolve(outputDir, "assets/gallery"), { recursive: true });
 
 const homepage = await readFile(resolve(outputDir, "index.html"), "utf8");
 await writeFile(resolve(outputDir, "index.html"), homepage
