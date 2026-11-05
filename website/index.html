@@ -7,7 +7,7 @@
     <meta name="description" content="Hikaru is a personal anime and movie client for Android, with flexible discovery, a customizable player, and an open-source spirit.">
     <meta name="robots" content="index,follow">
     <link rel="canonical" href="{{CANONICAL_HOME}}">
-    <link rel="icon" type="image/png" href="assets/hikaru-icon.png">
+    <link rel="icon" type="image/png" href="{{ASSET_BASE}}assets/hikaru-icon.png">
     <link rel="preconnect" href="https://github.com">
     <meta property="og:type" content="website">
     <meta property="og:site_name" content="Hikaru">
@@ -21,18 +21,18 @@
     <meta name="twitter:description" content="A personal anime and movie client for Android.">
     <meta name="twitter:image" content="{{SOCIAL_IMAGE}}">
     <title>Hikaru — A Brighter Way to Experience Anime</title>
-    <link rel="stylesheet" href="assets/site.css">
+    <link rel="stylesheet" href="{{ASSET_BASE}}assets/site.css">
     <script type="application/ld+json">
       {"@context":"https://schema.org","@type":"SoftwareApplication","name":"Hikaru","applicationCategory":"MultimediaApplication","operatingSystem":"Android","url":"{{CANONICAL_HOME}}","description":"A personal anime and movie client for Android."}
     </script>
-    <script src="assets/site.js" defer></script>
+    <script src="{{ASSET_BASE}}assets/site.js" defer></script>
   </head>
   <body>
     <a class="skip-link" href="#main">Skip to content</a>
     <header class="site-header">
       <div class="nav-wrap">
         <a class="brand" href="./" aria-label="Hikaru home">
-          <img src="assets/hikaru-icon.png" alt="" width="42" height="42">
+          <img src="{{ASSET_BASE}}assets/hikaru-icon.png" alt="" width="42" height="42">
           <span class="brand-copy"><strong>Hikaru</strong><small>光 <span aria-hidden="true">·</span> ANDROID</small></span>
         </a>
         <button class="menu-toggle" type="button" aria-expanded="false" aria-controls="site-navigation" aria-label="Open navigation">
@@ -71,23 +71,71 @@
             <span><span class="meta-mark" aria-hidden="true">光</span> Made to feel personal</span>
           </div>
         </div>
-        <figure class="hero-art" aria-labelledby="hero-art-caption">
-          <div class="art-topline"><span><i aria-hidden="true"></i> MADE TO FEEL LIKE YOURS</span><span lang="ja">光 / HIKARU</span></div>
-          <div class="art-stage" aria-hidden="true">
-            <span class="art-ring ring-outer"></span>
-            <span class="art-ring ring-inner"></span>
-            <span class="art-spark spark-one"></span>
-            <span class="art-spark spark-two"></span>
-            <span class="art-spark spark-three"></span>
-            <span class="art-ray ray-one"></span>
-            <span class="art-ray ray-two"></span>
-            <span class="art-tag tag-discover">DISCOVER <b>01</b></span>
-            <span class="art-tag tag-play">PLAY <b>02</b></span>
-            <span class="art-tag tag-personal">PERSONALIZE <b>03</b></span>
-            <div class="art-emblem"><img src="assets/hikaru-icon.png" alt="" width="420" height="420"></div>
+        <figure class="hero-art" aria-labelledby="gallery-heading">
+          <div class="art-topline"><span><i aria-hidden="true"></i> INSIDE HIKARU</span><span lang="ja">光 / HIKARU</span></div>
+          <div class="gallery" data-gallery role="region" aria-roledescription="carousel" aria-label="Hikaru app preview">
+            <div class="gallery-stage" role="group" aria-roledescription="slide" aria-label="1 of 5: Library" aria-describedby="gallery-keyboard-help" tabindex="0">
+              <div class="gallery-copy" aria-live="polite" aria-atomic="true">
+                <p class="gallery-kicker" data-gallery-kicker>01 / THE DEFAULT HOME</p>
+                <h2 id="gallery-heading" data-gallery-title>Your home for the anime you follow.</h2>
+                <p class="gallery-description" data-gallery-description>Hikaru opens to your Library, where you organize anime and keep track of what you’re watching.</p>
+                <button class="gallery-zoom-link" type="button" data-open-zoom>View this screen <span aria-hidden="true">↗</span></button>
+              </div>
+              <button class="gallery-screen" type="button" data-open-zoom aria-label="Enlarge the Library screenshot">
+                <img data-gallery-image src="{{ASSET_BASE}}assets/gallery/library.webp" alt="Hikaru Library, the default home page, displaying an organized collection of anime" width="720" height="1555" fetchpriority="high">
+                <span class="gallery-screen-hint" aria-hidden="true">Tap to zoom <span>↗</span></span>
+              </button>
+            </div>
+            <p id="gallery-keyboard-help" class="visually-hidden">Use the left and right arrow keys to change screenshots. Choose a dot to jump directly to a screenshot.</p>
+            <div class="gallery-controls">
+              <div class="gallery-controls-left">
+                <button class="gallery-transport" type="button" data-gallery-toggle aria-label="Pause automatic slideshow" title="Pause automatic slideshow">
+                  <svg class="icon-pause" aria-hidden="true" viewBox="0 0 20 20" fill="currentColor"><path d="M5.5 4.5h3v11h-3zm6 0h3v11h-3z"/></svg>
+                  <svg class="icon-play" aria-hidden="true" viewBox="0 0 20 20" fill="currentColor"><path d="M6 3.8v12.4L16 10 6 3.8Z"/></svg>
+                </button>
+                <button class="gallery-arrow" type="button" data-gallery-previous aria-label="Previous screenshot">
+                  <svg aria-hidden="true" viewBox="0 0 24 24" fill="none"><path d="m15 18-6-6 6-6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                </button>
+                <div class="gallery-dots" role="group" aria-label="Choose a screenshot">
+                  <button type="button" class="gallery-dot is-active" data-gallery-dot="0" aria-label="Show Library screenshot" aria-pressed="true"></button>
+                  <button type="button" class="gallery-dot" data-gallery-dot="1" aria-label="Show Anime Details and Episode Page screenshot" aria-pressed="false"></button>
+                  <button type="button" class="gallery-dot" data-gallery-dot="2" aria-label="Show Weekly Airing Schedule screenshot" aria-pressed="false"></button>
+                  <button type="button" class="gallery-dot" data-gallery-dot="3" aria-label="Show Announcements screenshot" aria-pressed="false"></button>
+                  <button type="button" class="gallery-dot" data-gallery-dot="4" aria-label="Show Diagnostic Assistant screenshot" aria-pressed="false"></button>
+                </div>
+                <button class="gallery-arrow" type="button" data-gallery-next aria-label="Next screenshot">
+                  <svg aria-hidden="true" viewBox="0 0 24 24" fill="none"><path d="m9 18 6-6-6-6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                </button>
+                <span class="gallery-count" data-gallery-count aria-live="polite">01 <i>/</i> 05</span>
+              </div>
+              <span class="gallery-autoplay-note">Auto-plays every 3 seconds</span>
+            </div>
+            <div class="gallery-data" hidden>
+              <span data-image="{{ASSET_BASE}}assets/gallery/library.webp" data-alt="Hikaru Library, the default home page, displaying an organized collection of anime" data-kicker="01 / THE DEFAULT HOME" data-title="Your home for the anime you follow." data-description="Hikaru opens to your Library, where you organize anime and keep track of what you’re watching." data-label="Library"></span>
+              <span data-image="{{ASSET_BASE}}assets/gallery/details.webp" data-alt="Hikaru anime details and episode page for Solo Leveling Season 2" data-kicker="02 / ANIME DETAILS + EPISODES" data-title="Open a title. Find the episode." data-description="Choose an anime to see its details and episode page, then pick what you want to watch." data-label="Anime Details and Episode Page"></span>
+              <span data-image="{{ASSET_BASE}}assets/gallery/schedule.webp" data-alt="Hikaru weekly Airing Schedule listing episodes by day and time" data-kicker="03 / THIS WEEK" data-title="Your weekly airing schedule." data-description="See which anime episodes are scheduled to air this week, organized by day and time." data-label="Weekly Airing Schedule"></span>
+              <span data-image="{{ASSET_BASE}}assets/gallery/announcements.webp" data-alt="Hikaru Browse announcements screen with filters and anime confirmation updates" data-kicker="04 / CONFIRMED TITLES" data-title="Know when an anime is confirmed." data-description="Announcements let you know when an anime gets confirmed." data-label="Announcements"></span>
+              <span data-image="{{ASSET_BASE}}assets/gallery/assistant.webp" data-alt="Hikaru AI Diagnostic Assistant ready to help with troubleshooting" data-kicker="05 / YOUR AI AGENT" data-title="An AI agent that works with your keys." data-description="Bring your own AI keys and use the Diagnostic Assistant like an agent for troubleshooting." data-label="Diagnostic Assistant"></span>
+            </div>
           </div>
-          <figcaption id="hero-art-caption" class="art-caption"><span>Anime, with room to make it your own.</span><span aria-hidden="true">✳</span></figcaption>
+          <figcaption class="art-caption"><span>Real screens from the Hikaru app.</span><span aria-hidden="true">✳</span></figcaption>
         </figure>
+        <dialog class="gallery-dialog" data-gallery-dialog aria-label="Screenshot viewer">
+          <div class="gallery-dialog-toolbar">
+            <p data-zoom-label>Library</p>
+            <div class="gallery-zoom-controls" aria-label="Zoom controls">
+              <button type="button" data-zoom-out aria-label="Zoom out" title="Zoom out">−</button>
+              <output data-zoom-value aria-live="polite">100%</output>
+              <button type="button" data-zoom-in aria-label="Zoom in" title="Zoom in">+</button>
+              <button type="button" data-zoom-reset aria-label="Reset zoom" title="Reset zoom">Reset</button>
+            </div>
+            <button class="gallery-dialog-close" type="button" data-close-zoom aria-label="Close screenshot viewer" title="Close">×</button>
+          </div>
+          <div class="gallery-dialog-canvas" data-zoom-canvas>
+            <img data-zoom-image alt="">
+          </div>
+          <p class="gallery-dialog-tip">Use + or − to zoom. Press Escape to close.</p>
+        </dialog>
       </section>
 
       <section class="feature-section section-shell" id="features" aria-labelledby="features-title">
@@ -127,7 +175,7 @@
 
       <section class="about-section" id="about" aria-labelledby="about-title">
         <div class="section-shell about-grid">
-          <div class="about-mark" aria-hidden="true"><img src="assets/hikaru-icon.png" alt="" width="184" height="184"><i></i></div>
+          <div class="about-mark" aria-hidden="true"><img src="{{ASSET_BASE}}assets/hikaru-icon.png" alt="" width="184" height="184"><i></i></div>
           <div class="about-copy">
             <p class="eyebrow">ABOUT HIKARU</p>
             <h2 id="about-title">Independent in spirit.<br><span>Open by design.</span></h2>
@@ -186,7 +234,7 @@
       <div class="section-shell footer-top">
         <div class="footer-brand">
           <a class="brand" href="./" aria-label="Hikaru home">
-            <img src="assets/hikaru-icon.png" alt="" width="40" height="40">
+            <img src="{{ASSET_BASE}}assets/hikaru-icon.png" alt="" width="40" height="40">
             <span class="brand-copy"><strong>Hikaru</strong><small>光 <span aria-hidden="true">·</span> ANDROID</small></span>
           </a>
           <p>A personal anime and movie client for Android.</p>
