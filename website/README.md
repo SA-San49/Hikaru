@@ -11,7 +11,7 @@ SITE_BASE_PATH=/Hikaru SITE_URL=https://sa-san49.github.io npm run build
 npm test
 ```
 
-The build writes the complete static site to the repository-root `_site/` directory. The homepage gallery uses five real Hikaru app screenshots, optimized as WebP; the Library screen is first. It advances every three seconds, pauses while hovered or focused, and any manual navigation pauses autoplay until the visitor explicitly resumes it. Tapping a screenshot opens a zoomable viewer with buttons, wheel zoom, and double-click support. The `/privacy/` route is generated directly from repository-root `policy.md` on each build.
+The build writes the complete static site to the repository-root `_site/` directory. The homepage gallery uses five correctly named, real Hikaru app screenshots, optimized as WebP, in this order: Library, anime details and episode page, weekly airing schedule, Announcements, and Diagnostic Assistant. It advances every three seconds, pauses while hovered or focused, and any manual navigation pauses autoplay until the visitor explicitly resumes it. Tapping a screenshot opens a zoomable viewer with buttons, wheel zoom, and double-click support. The `/privacy/` route is generated directly from repository-root `policy.md` on each build.
 
 ## GitHub Pages
 

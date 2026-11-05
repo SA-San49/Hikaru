@@ -37,8 +37,17 @@ assert.match(privacy, /Privacy Policy/);
 assert.match(privacy, /<article class="policy-content[\s\S]*?<\/article>/);
 
 const galleryImages = [...home.matchAll(/data-image="([^"]+)"/g)].map(([, path]) => path);
-assert.equal(galleryImages.length, 5, "The homepage carousel must include all five supplied screenshots");
-assert.equal(galleryImages[0], `${assetBase}assets/gallery/library.webp`, "The Library screenshot must be first");
+const galleryLabels = [...home.matchAll(/data-label="([^"]+)"/g)].map(([, label]) => label);
+const galleryTitles = [...home.matchAll(/data-title="([^"]+)"/g)].map(([, title]) => title);
+assert.deepEqual(galleryImages, ["library", "details", "schedule", "announcements", "assistant"].map((name) => `${assetBase}assets/gallery/${name}.webp`), "The carousel must follow Library, Details, Schedule, Announcements, Assistant order");
+assert.deepEqual(galleryLabels, ["Library", "Anime Details and Episode Page", "Weekly Airing Schedule", "Announcements", "Diagnostic Assistant"]);
+assert.deepEqual(galleryTitles, [
+  "Your home for the anime you follow.",
+  "Open a title. Find the episode.",
+  "Your weekly airing schedule.",
+  "Know when an anime is confirmed.",
+  "An AI agent that works with your keys.",
+]);
 for (const reference of galleryImages) {
   await access(outputPathFor(reference, resolve(outputDir)));
 }
