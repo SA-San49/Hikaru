@@ -44,8 +44,8 @@ val gitHubUsernameMentionRegex =
 
 // KMK -->
 /**
- * Convert from: https://github.com/salmanbappi/AniZen/compare/23d862d17...48fb4a2e6
- * to: [salmanbappi/AniZen@23d862d17...48fb4a2e6](https://github.com/salmanbappi/AniZen/compare/23d862d17...48fb4a2e6)
+ * Convert from: https://github.com/SA-San49/Hikaru/compare/ab632e765a8c...9bd16067f3f6
+ * to: [SA-San49/Hikaru@ab632e765a8c...9bd16067f3f6](https://github.com/SA-San49/Hikaru/compare/ab632e765a8c...9bd16067f3f6)
  */
 val gitHubCommitsCompareRegex =
     """(\[[^]]+]\()?https://github.com/(?<owner>[^/]+)/(?<repo>[^/]+)/compare/(?<from>[0-9a-f.rv]+)\.\.\.(?<to>[0-9a-f.rv]+)\)?"""

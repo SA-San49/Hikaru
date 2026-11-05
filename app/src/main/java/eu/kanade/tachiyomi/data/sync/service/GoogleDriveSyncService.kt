@@ -57,7 +57,8 @@ class GoogleDriveSyncService(context: Context, json: Json, syncPreferences: Sync
         ERROR,
     }
 
-    private val remoteFileName = "AniZen_sync.proto.gz"
+    private val remoteFileName = "Hikaru_sync.proto.gz"
+    private val legacyRemoteFileName = "AniZen_sync.proto.gz"
 
     private val googleDriveService = GoogleDriveService(context)
 
@@ -107,7 +108,10 @@ class GoogleDriveSyncService(context: Context, json: Json, syncPreferences: Sync
         val drive = googleDriveService.driveService
             ?: throw Exception(context.stringResource(SYMR.strings.google_drive_not_signed_in))
 
-        val fileList = getAppDataFileList(drive)
+        val fileList = getAppDataFileList(drive).ifEmpty {
+            // Import an existing backup once, then pushSyncData renames it to the Hikaru filename.
+            getAppDataFileList(drive, legacyRemoteFileName)
+        }
         if (fileList.isEmpty()) {
             logcat(LogPriority.INFO) { "No files found in app data" }
             return null
@@ -135,7 +139,9 @@ class GoogleDriveSyncService(context: Context, json: Json, syncPreferences: Sync
         val drive = googleDriveService.driveService
             ?: throw Exception(context.stringResource(SYMR.strings.google_drive_not_signed_in))
 
-        val fileList = getAppDataFileList(drive)
+        val fileList = getAppDataFileList(drive).ifEmpty {
+            getAppDataFileList(drive, legacyRemoteFileName)
+        }
         val backup = syncData.backup ?: return
 
         val byteArray = protoBuf.encodeToByteArray(Backup.serializer(), backup)
@@ -184,10 +190,14 @@ class GoogleDriveSyncService(context: Context, json: Json, syncPreferences: Sync
         }
     }
 
-    private fun getAppDataFileList(drive: Drive): MutableList<File> {
+    private fun getAppDataFileList(
+        drive: Drive,
+        fileName: String = remoteFileName,
+    ): MutableList<File> {
         try {
             // Search for the existing file by name in the appData folder
-            val query = "mimeType='application/x-gzip' and name = '$remoteFileName'"
+            // Do not filter by MIME type: files are uploaded as application/octet-stream.
+            val query = "trashed = false and name = '$fileName'"
             val fileList = drive.files()
                 .list()
                 .setSpaces("appDataFolder")
@@ -215,7 +225,10 @@ class GoogleDriveSyncService(context: Context, json: Json, syncPreferences: Sync
 
         return withIOContext {
             try {
-                val appDataFileList = getAppDataFileList(drive)
+                val appDataFileList = (
+                    getAppDataFileList(drive) +
+                        getAppDataFileList(drive, legacyRemoteFileName)
+                    ).distinctBy { it.id }
 
                 if (appDataFileList.isEmpty()) {
                     this@GoogleDriveSyncService

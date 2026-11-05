@@ -61,10 +61,20 @@ object SubtitleDownloader {
         }
 
         // Fallback to public device downloads directory
-        val fallback = File(
-            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
-            "AniZen/subtitles/$safeSource/$safeAnime",
-        )
+        val downloadsDirectory = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+        val hikaruDirectory = File(downloadsDirectory, "Hikaru")
+        val legacyDirectory = File(downloadsDirectory, "AniZen")
+        if (!hikaruDirectory.exists() && legacyDirectory.exists()) {
+            // Preserve existing subtitle downloads while moving the fallback folder to the new app name.
+            legacyDirectory.renameTo(hikaruDirectory)
+        }
+        val hikaruFallback = File(hikaruDirectory, "subtitles/$safeSource/$safeAnime")
+        val legacyFallback = File(legacyDirectory, "subtitles/$safeSource/$safeAnime")
+        val fallback = if (hikaruFallback.exists() || !legacyFallback.exists()) {
+            hikaruFallback
+        } else {
+            legacyFallback
+        }
         if (!fallback.exists()) {
             fallback.mkdirs()
         }

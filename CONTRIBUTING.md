@@ -30,7 +30,7 @@ Before you start, please note that the ability to use following technologies is 
 
 # Translations
 
-Translations are done externally via [Weblate](https://hosted.weblate.org/projects/salmanbappi/anizen/). See [our GitHub](https://github.com/SA-San49/Hikaru) for more details.
+Translations are managed through Hikaru's configured [Weblate project](https://hosted.weblate.org/projects/salmanbappi/anizen/). See [the Hikaru repository](https://github.com/SA-San49/Hikaru) for more details.
 
 
 # Forks

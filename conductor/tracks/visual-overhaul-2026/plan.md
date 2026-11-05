@@ -19,4 +19,4 @@
     - [x] Increased image loading parallelism to 12 threads.
     - [x] Optimized player cache for instant startup.
 - [x] **Automation**:
-    - [x] Established automated releases to `salmanbappi/anizen-preview`.
+    - [x] Established automated GitHub releases for Hikaru.

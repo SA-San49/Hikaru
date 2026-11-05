@@ -1,6 +1,6 @@
 # Fix spec: MAL (Jikan) fallback for Prequel/Sequel + Character cards
 
-Repo: `shan-test-project/AniZen`
+Repo: `SA-San49/Hikaru`
 Branch: `master`
 
 Goal: when AniList can't produce relations or character cards for an anime,

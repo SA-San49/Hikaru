@@ -19,7 +19,7 @@
 
 ## 📖 About Hikaru
 
-Hikaru is an independent fork of the AniZen source, built on upstream work from Aniyomi and Anikku. It is developing its own app identity while retaining the Apache-2.0 license and required attributions. 
+Hikaru is an independent Android app built on upstream work from Aniyomi and Anikku. It is developing its own identity while retaining the Apache-2.0 license and required attributions.
 
 It aims to offer a premium, responsive, and completely personalized viewing space while remaining lightweight and respectful of hardware resources.
 

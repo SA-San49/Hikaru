@@ -71,7 +71,7 @@ private fun ComingUpdatesScreenPreview() {
                 Foobar
 
                 ### More info
-                [salmanbappi/AniZen@23d862d17...48fb4a2e6](https://github.com/salmanbappi/AniZen/compare/23d862d17...48fb4a2e6)
+                [SA-San49/Hikaru@ab632e765a8c...9bd16067f3f6](https://github.com/SA-San49/Hikaru/compare/ab632e765a8c...9bd16067f3f6)
                 - Hello ([@salmanbappi](@https://github.com/salmanbappi))
                 - World
             """.trimIndent(),

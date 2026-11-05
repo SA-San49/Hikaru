@@ -1,6 +1,6 @@
 # Feature spec: Text-to-Speech for anime description
 
-Repo: `shan-test-project/AniZen`
+Repo: `SA-San49/Hikaru`
 Branch: `master`
 
 Reads the anime description aloud on the anime details screen, with the

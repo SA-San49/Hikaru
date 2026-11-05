@@ -1,12 +1,12 @@
 # Fix spec: AI diagnosis assistant appears completely unresponsive
 
-Repo: `shan-test-project/AniZen` (fork of `salmanbappi/AniZen`)
+Repo: `SA-San49/Hikaru`
 File: `app/src/main/java/eu/kanade/tachiyomi/data/ai/AiManager.kt`
 Branch: `master`
 
 ## Symptom
 
-The in-app "AniZen System Assistant" (AI diagnostics chat, under
+The in-app "Hikaru System Assistant" (AI diagnostics chat, under
 Settings → Advanced Analytics / AI Config) sometimes does nothing at all when
 a message is sent — no reply, no error message, no toast, nothing visibly
 happens.
