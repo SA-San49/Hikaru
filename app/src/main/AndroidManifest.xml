@@ -268,7 +268,7 @@
                 <data
                     android:scheme="eu.kanade.google.oauth" />
                 <data
-                    android:scheme="com.googleusercontent.apps.829411958060-g184f7okrn33eikd2842av2qrs31tmm" />
+                    android:scheme="com.googleusercontent.apps.705695545139-mmm6o1b0c10li512pleehqgs4pgahn8k" />
             </intent-filter>
         </activity>
 
