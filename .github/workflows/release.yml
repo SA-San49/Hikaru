@@ -58,7 +58,8 @@ jobs:
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
-          set -uo pipefail
+          set -eo pipefail
+          trap 'rc=$?; echo "::error::check failed at line $LINENO (rc=$rc)"' ERR
 
           if [[ -z "${GEMINI_API_KEY:-}" ]]; then
             echo "::error::GEMINI_API_KEY secret is not set"
