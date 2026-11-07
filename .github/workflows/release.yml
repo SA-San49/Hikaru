@@ -282,6 +282,7 @@ jobs:
                 | sed -e '/./,$!d' > .github/ai/changelog.md
               echo "Using hand-written notes from RELEASE_NOTES.md (${DECLARED:-unversioned})"
               echo "::notice::Release notes source: hand-written RELEASE_NOTES.md (${DECLARED:-unversioned})"
+              echo "NOTES_SOURCE=hand" >> "${GITHUB_ENV:-/dev/null}"
               exit 0
             fi
             echo "::warning::RELEASE_NOTES.md targets v$DECLARED but this release is v$VERSION - ignoring it and generating notes instead"
@@ -348,6 +349,7 @@ jobs:
               if [[ -n "$summary" ]]; then
                 echo "Notes generated with $model"
                 echo "USED_MODEL=$model" >> "${GITHUB_ENV:-/dev/null}"
+                echo "NOTES_SOURCE=gemini" >> "${GITHUB_ENV:-/dev/null}"
                 break 2
               fi
 
@@ -365,6 +367,7 @@ jobs:
 
           if [[ -z "$summary" ]]; then
             echo "::warning::AI changelog unavailable, using fallback text"
+            echo "NOTES_SOURCE=fallback" >> "${GITHUB_ENV:-/dev/null}"
             echo "::notice::Release notes source: built-in generic text (no usable notes were available)"
             exit 0
           fi
@@ -402,13 +405,24 @@ jobs:
             printf '| %s | `Hikaru-v%s-%s-release.apk` |\n' "$1" "$VERSION" "$2"
           }
 
+          # Hand-written notes bring their own opening line (a first release
+          # should not say "we've got a fresh update"); generated notes get the
+          # standard friendly greeting instead.
+          if [[ "${NOTES_SOURCE:-auto}" == "hand" ]]; then
+            GREETING=""
+          else
+            GREETING="Hey everyone! We've got a fresh update for you 🚀"
+          fi
+
           # $1 = output file, $2 = "table" to include the per-ABI table.
           write_body() {
             {
               echo "## Hikaru v${VERSION}"
               echo
-              echo "Hey everyone! We've got a fresh update for you 🚀"
-              echo
+              if [[ -n "$GREETING" ]]; then
+                echo "$GREETING"
+                echo
+              fi
               echo "$CHANGELOG"
               echo
               echo "---"
