@@ -176,7 +176,9 @@ jobs:
           fi
 
           git log $RANGE --pretty=format:'- %s' \
-            | grep -v 'chore(release): prepare' > .github/ai/commits.txt || true
+            | grep -v 'chore(release): prepare' \
+            | grep -v -E '^- Merge (pull request|branch|remote-tracking)' \
+            > .github/ai/commits.txt || true
           git diff --stat $RANGE > .github/ai/files.txt || true
 
           if [[ ! -s .github/ai/commits.txt ]]; then
@@ -189,6 +191,25 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
           set -euo pipefail
+          mkdir -p .github/ai
+
+          # 1. Hand-written notes win, as long as they are meant for this version.
+          if [[ -s RELEASE_NOTES.md ]]; then
+            DECLARED=$(sed -n 's/.*<!-- *version: *\([^ >]*\) *-->.*/\1/p' RELEASE_NOTES.md | head -n1)
+            if [[ -z "$DECLARED" || "$DECLARED" == "$VERSION" ]]; then
+              # Strip the HTML comment blocks (version marker + maintainer notes)
+              # and any leading blank lines, so only the notes are published.
+              awk '/<!--/ { in_comment = 1 }
+                   in_comment && /-->/ { in_comment = 0; next }
+                   !in_comment' RELEASE_NOTES.md \
+                | sed -e '/./,$!d' > .github/ai/changelog.md
+              echo "Using hand-written notes from RELEASE_NOTES.md (${DECLARED:-unversioned})"
+              exit 0
+            fi
+            echo "::warning::RELEASE_NOTES.md targets v$DECLARED but this release is v$VERSION - ignoring it and generating notes instead"
+          fi
+
+          # 2. No usable hand-written notes, so ask Gemini.
           COMMITS=$(cat .github/ai/commits.txt)
           FILES=$(cat .github/ai/files.txt)
 
@@ -219,7 +240,7 @@ jobs:
           printf '%s\n' "$COMMITS" >> .github/ai/prompt.txt
 
           if [[ -z "${GEMINI_API_KEY:-}" ]]; then
-            echo "::warning::GEMINI_API_KEY is not set, skipping AI changelog"
+            echo "::warning::No hand-written notes for v$VERSION and GEMINI_API_KEY is not set - falling back to generic notes. Add RELEASE_NOTES.md or the GEMINI_API_KEY secret."
             exit 0
           fi
 
