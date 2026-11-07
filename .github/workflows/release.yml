@@ -28,6 +28,10 @@ on:
         description: 'Ignore RELEASE_NOTES.md and always generate notes with Gemini (for testing the key)'
         type: boolean
         default: false
+      gemini_check:
+        description: 'Only test the GEMINI_API_KEY against the API (~30s, no build, publishes nothing)'
+        type: boolean
+        default: false
   push:
     tags:
       - 'v*'
@@ -41,8 +45,56 @@ env:
   ABIS: armeabi-v7a,arm64-v8a,x86,x86_64
 
 jobs:
+  gemini-check:
+    name: Gemini API key check
+    if: ${{ inputs.gemini_check }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call Gemini
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          set -uo pipefail
+
+          if [[ -z "${GEMINI_API_KEY:-}" ]]; then
+            echo "::error::GEMINI_API_KEY secret is not set"
+            exit 1
+          fi
+
+          PAYLOAD=$(jq -n '{contents: [{parts: [{text: "Reply with exactly: OK"}]}], generationConfig: {temperature: 0, maxOutputTokens: 16}}')
+
+          HTTP=$(curl -sS -o /tmp/resp.json -w '%{http_code}' -X POST \
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}" \
+            -H 'Content-Type: application/json' -d "$PAYLOAD")
+
+          echo "HTTP status: $HTTP"
+          echo "--- response body ---"
+          cat /tmp/resp.json || true
+          echo
+          echo "----------------------"
+
+          TEXT=$(jq -r '.candidates[0].content.parts[0].text // empty' /tmp/resp.json 2>/dev/null)
+
+          if [[ "$HTTP" != "200" ]]; then
+            MSG=$(jq -r '.error.message // "unknown error"' /tmp/resp.json 2>/dev/null)
+            STATUS=$(jq -r '.error.status // "?"' /tmp/resp.json 2>/dev/null)
+            REASON=$(jq -r '.error.details[]?.reason // empty' /tmp/resp.json 2>/dev/null | head -n1)
+            echo "::error::Gemini HTTP $HTTP ($STATUS${REASON:+ / $REASON}): $MSG"
+            exit 1
+          fi
+
+          if [[ -z "$TEXT" ]]; then
+            FINISH=$(jq -r '.candidates[0].finishReason // "none"' /tmp/resp.json 2>/dev/null)
+            BLOCK=$(jq -r '.promptFeedback.blockReason // "none"' /tmp/resp.json 2>/dev/null)
+            echo "::error::Gemini returned 200 but no text. finishReason=$FINISH blockReason=$BLOCK"
+            exit 1
+          fi
+
+          echo "::notice::Gemini key works - model replied: $TEXT"
+
   build-release:
     name: Build & Public Release
+    if: ${{ !inputs.gemini_check }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -259,10 +311,14 @@ jobs:
           sleep_s=10
           summary=""
           while [[ $attempt -lt 4 ]]; do
-            response=$(curl -sS -X POST \
+            http=$(curl -sS -o /tmp/gemini.json -w '%{http_code}' -X POST \
               "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}" \
               -H 'Content-Type: application/json' -d "$PAYLOAD")
+            response=$(cat /tmp/gemini.json)
             summary=$(echo "$response" | jq -r '.candidates[0].content.parts[0].text // empty')
+            if [[ -z "$summary" ]]; then
+              echo "Gemini HTTP $http: $(echo "$response" | jq -r '.error.message // .promptFeedback.blockReason // "no text returned"' 2>/dev/null)"
+            fi
 
             if [[ -n "$summary" ]]; then
               break
