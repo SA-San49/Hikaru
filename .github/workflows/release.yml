@@ -63,34 +63,29 @@ jobs:
 
           PAYLOAD=$(jq -n '{contents: [{parts: [{text: "Reply with exactly: OK"}]}], generationConfig: {temperature: 0, maxOutputTokens: 16}}')
 
-          HTTP=$(curl -sS -o /tmp/resp.json -w '%{http_code}' -X POST \
-            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}" \
-            -H 'Content-Type: application/json' -d "$PAYLOAD")
+          # Google retires model names for new API keys, so try newest first.
+          MODELS="${GEMINI_MODELS:-gemini-3.8-flash gemini-flash-latest gemini-2.5-flash}"
+          LAST_ERROR=""
 
-          echo "HTTP status: $HTTP"
-          echo "--- response body ---"
-          cat /tmp/resp.json || true
-          echo
-          echo "----------------------"
+          for model in $MODELS; do
+            HTTP=$(curl -sS -o /tmp/resp.json -w '%{http_code}' -X POST \
+              "https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}" \
+              -H 'Content-Type: application/json' -d "$PAYLOAD")
 
-          TEXT=$(jq -r '.candidates[0].content.parts[0].text // empty' /tmp/resp.json 2>/dev/null)
+            TEXT=$(jq -r '.candidates[0].content.parts[0].text // empty' /tmp/resp.json 2>/dev/null)
+            echo "$model -> HTTP $HTTP, text: ${TEXT:-<none>}"
 
-          if [[ "$HTTP" != "200" ]]; then
-            MSG=$(jq -r '.error.message // "unknown error"' /tmp/resp.json 2>/dev/null)
-            STATUS=$(jq -r '.error.status // "?"' /tmp/resp.json 2>/dev/null)
-            REASON=$(jq -r '.error.details[]?.reason // empty' /tmp/resp.json 2>/dev/null | head -n1)
-            echo "::error::Gemini HTTP $HTTP ($STATUS${REASON:+ / $REASON}): $MSG"
-            exit 1
-          fi
+            if [[ "$HTTP" == "200" && -n "$TEXT" ]]; then
+              echo "::notice::Gemini key works. Use model '$model'. It replied: $TEXT"
+              exit 0
+            fi
 
-          if [[ -z "$TEXT" ]]; then
-            FINISH=$(jq -r '.candidates[0].finishReason // "none"' /tmp/resp.json 2>/dev/null)
-            BLOCK=$(jq -r '.promptFeedback.blockReason // "none"' /tmp/resp.json 2>/dev/null)
-            echo "::error::Gemini returned 200 but no text. finishReason=$FINISH blockReason=$BLOCK"
-            exit 1
-          fi
+            LAST_ERROR="$model -> HTTP $HTTP: $(jq -r '.error.message // .promptFeedback.blockReason // "no text returned"' /tmp/resp.json 2>/dev/null | head -c 300)"
+            echo "  $LAST_ERROR"
+          done
 
-          echo "::notice::Gemini key works - model replied: $TEXT"
+          echo "::error::No Gemini model worked. Last error: $LAST_ERROR"
+          exit 1
 
   build-release:
     name: Build & Public Release
@@ -307,28 +302,37 @@ jobs:
           PAYLOAD=$(jq -n --rawfile prompt .github/ai/prompt.txt \
             '{contents: [{parts: [{text: $prompt}]}], generationConfig: {temperature: 0.6, maxOutputTokens: 1024}}')
 
-          attempt=0
-          sleep_s=10
+          # Google retires model names for new API keys, so try newest first and
+          # keep going if one of them is unavailable.
+          MODELS="${GEMINI_MODELS:-gemini-3.8-flash gemini-flash-latest gemini-2.5-flash}"
           summary=""
-          while [[ $attempt -lt 4 ]]; do
-            http=$(curl -sS -o /tmp/gemini.json -w '%{http_code}' -X POST \
-              "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}" \
-              -H 'Content-Type: application/json' -d "$PAYLOAD")
-            response=$(cat /tmp/gemini.json)
-            summary=$(echo "$response" | jq -r '.candidates[0].content.parts[0].text // empty')
-            if [[ -z "$summary" ]]; then
-              echo "Gemini HTTP $http: $(echo "$response" | jq -r '.error.message // .promptFeedback.blockReason // "no text returned"' 2>/dev/null)"
-            fi
+          for model in $MODELS; do
+            echo "Trying model: $model"
+            attempt=0
+            sleep_s=10
+            while [[ $attempt -lt 3 ]]; do
+              http=$(curl -sS -o /tmp/gemini.json -w '%{http_code}' -X POST \
+                "https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}" \
+                -H 'Content-Type: application/json' -d "$PAYLOAD")
+              response=$(cat /tmp/gemini.json)
+              summary=$(echo "$response" | jq -r '.candidates[0].content.parts[0].text // empty')
 
-            if [[ -n "$summary" ]]; then
-              break
-            fi
-            if echo "$response" | grep -q 'RESOURCE_EXHAUSTED\|429'; then
-              echo "Rate limited, retrying in ${sleep_s}s (attempt $((attempt + 1))/4)"
-              sleep "$sleep_s"
-              sleep_s=$((sleep_s * 2))
-            fi
-            attempt=$((attempt + 1))
+              if [[ -n "$summary" ]]; then
+                echo "Notes generated with $model"
+                break 2
+              fi
+
+              echo "  HTTP $http: $(echo "$response" | jq -r '.error.message // .promptFeedback.blockReason // "no text returned"' 2>/dev/null | head -c 200)"
+
+              if echo "$response" | grep -q 'RESOURCE_EXHAUSTED\|429'; then
+                echo "  Rate limited, retrying in ${sleep_s}s"
+                sleep "$sleep_s"
+                sleep_s=$((sleep_s * 2))
+                attempt=$((attempt + 1))
+              else
+                break
+              fi
+            done
           done
 
           if [[ -z "$summary" ]]; then
