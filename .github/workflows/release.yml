@@ -398,32 +398,51 @@ jobs:
             printf '| %s | `Hikaru-v%s-%s-release.apk` |\n' "$1" "$VERSION" "$2"
           }
 
-          {
-            echo "## Hikaru v${VERSION}"
-            echo
-            echo "Hey everyone! We've got a fresh update for you 🚀"
-            echo
-            echo "$CHANGELOG"
-            echo
-            echo "---"
-            echo
-            echo "**📥 Download:** choose the file for your device. Most modern phones need **arm64-v8a**."
-            echo
-            echo "| Device | File |"
-            echo "| --- | --- |"
-            awk_row "Most phones (64-bit ARM)" "arm64-v8a"
-            awk_row "Older phones (32-bit ARM)" "armeabi-v7a"
-            awk_row "x86 emulators / devices" "x86"
-            awk_row "x86_64 emulators / devices" "x86_64"
-            awk_row "Not sure? Works everywhere" "universal"
-            echo
-            echo "**Install:** open the \`.apk\` on your device and allow installation from unknown sources if prompted."
-            echo
-            echo "_Version ${VERSION} · versionCode ${VERSION_CODE}_"
-          } > .github/ai/release_body.md
+          # $1 = output file, $2 = "table" to include the per-ABI table.
+          write_body() {
+            {
+              echo "## Hikaru v${VERSION}"
+              echo
+              echo "Hey everyone! We've got a fresh update for you 🚀"
+              echo
+              echo "$CHANGELOG"
+              echo
+              echo "---"
+              echo
+              if [[ "$2" == "table" ]]; then
+                echo "**📥 Download:** choose the file for your device. Most modern phones need **arm64-v8a**."
+                echo
+                echo "| Device | File |"
+                echo "| --- | --- |"
+                awk_row "Most phones (64-bit ARM)" "arm64-v8a"
+                awk_row "Older phones (32-bit ARM)" "armeabi-v7a"
+                awk_row "x86 emulators / devices" "x86"
+                awk_row "x86_64 emulators / devices" "x86_64"
+                awk_row "Not sure? Works everywhere" "universal"
+              else
+                echo "**📥 Download:** tap the button below and pick the file for your device."
+                echo
+                echo "Most modern phones need **arm64-v8a**; older ones need **armeabi-v7a**."
+              fi
+              echo
+              echo "**Install:** open the \`.apk\` on your device and allow installation from unknown sources if prompted."
+              echo
+              echo "_Version ${VERSION} · versionCode ${VERSION_CODE}_"
+            } > "$1"
+          }
 
-          echo "Release notes composed:"
+          # GitHub renders the APK table, so the release body keeps it.
+          write_body .github/ai/release_body.md table
+
+          # Discord cannot render Markdown tables, so the embed body drops it and
+          # the download becomes a link button instead.
+          write_body .github/ai/discord_body.md button
+
+          echo "Release body:"
           cat .github/ai/release_body.md
+          echo
+          echo "Discord body:"
+          cat .github/ai/discord_body.md
 
       - name: Create GitHub Release
         if: ${{ !inputs.dry_run && !inputs.notes_only }}
@@ -504,23 +523,38 @@ jobs:
           fi
 
           # Discord caps an embed description at 4096 characters.
-          BODY=$(cat .github/ai/release_body.md)
+          # discord_body.md already has the per-ABI table removed, because
+          # Discord cannot render Markdown tables.
+          BODY=$(cat .github/ai/discord_body.md)
           if [[ ${#BODY} -gt 4090 ]]; then
             BODY="${BODY:0:4090}"
           fi
 
+          # Brand colour #fd0101 = 16580865.
+          # type 1 = action row, type 2 = button, style 5 = link button.
+          # Webhooks may only send link buttons (style 5), never interactive ones.
           PAYLOAD=$(jq -n \
             --arg title "⚙️ New Update is Available" \
             --arg desc "$BODY" \
             --arg url "$RELEASE_URL" \
+            --arg label "📥 Download Hikaru v${VERSION}" \
             '{
               content: null,
               embeds: [{
                 title: $title,
                 description: $desc,
                 url: $url,
-                color: 76285,
+                color: 16580865,
                 footer: { text: " ⚙️ New Update is Available" }
+              }],
+              components: [{
+                type: 1,
+                components: [{
+                  type: 2,
+                  style: 5,
+                  label: $label,
+                  url: $url
+                }]
               }],
               attachments: []
             }')
