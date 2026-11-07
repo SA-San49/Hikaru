@@ -96,7 +96,7 @@ object NavCommunityRegistry {
             id = "classic",
             name = "Classic Tachi",
             description = "The familiar layout you know and love.",
-            config = NavPresets.DEFAULT
+            config = NavPresets.CLASSIC
         )
     )
 }
@@ -230,7 +230,14 @@ object NavConfigValidator {
 }
 
 object NavPresets {
+    // Hikaru default: Library, History, Schedule, Browse, More. Updates and Feed live under More.
     val DEFAULT = NavConfig(
+        visibleTabs = persistentListOf(NavItem.LIBRARY.id, NavItem.HISTORY.id, NavItem.SCHEDULE.id, NavItem.BROWSE.id, NavItem.MORE.id),
+        hiddenTabs = persistentListOf(NavItem.FEED.id, NavItem.UPDATES.id)
+    )
+
+    // Kept explicit so the "Classic Tachi" community pack does not follow the DEFAULT layout.
+    val CLASSIC = NavConfig(
         visibleTabs = persistentListOf(NavItem.LIBRARY.id, NavItem.UPDATES.id, NavItem.HISTORY.id, NavItem.BROWSE.id, NavItem.MORE.id),
         hiddenTabs = persistentListOf(NavItem.FEED.id, NavItem.SCHEDULE.id)
     )
