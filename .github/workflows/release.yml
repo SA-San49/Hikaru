@@ -20,6 +20,10 @@ on:
         description: 'Build only — skip the GitHub Release, version bump and Discord post'
         type: boolean
         default: false
+      notify_test:
+        description: 'Also send the Discord notification (use with dry_run to test the webhook)'
+        type: boolean
+        default: false
   push:
     tags:
       - 'v*'
@@ -361,10 +365,11 @@ jobs:
       # (DISCORD_UPDATE_WEBHOOK, falling back to DISCORD_WEBHOOK_URL), never in
       # this file. This is the only Discord notification the release sends.
       - name: Send update notification to Discord
-        if: ${{ !inputs.dry_run }}
+        if: ${{ !inputs.dry_run || inputs.notify_test }}
         continue-on-error: true
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_UPDATE_WEBHOOK || secrets.DISCORD_WEBHOOK_URL }}
+          NOTIFY_TEST: ${{ inputs.notify_test }}
         run: |
           set -euo pipefail
           if [[ -z "${DISCORD_WEBHOOK_URL:-}" ]]; then
@@ -372,7 +377,13 @@ jobs:
             exit 0
           fi
 
-          RELEASE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/tag/v${VERSION}"
+          if [[ "${NOTIFY_TEST:-false}" == "true" ]]; then
+            # Nothing is published during a test, so link the releases page instead
+            # of a tag that does not exist yet.
+            RELEASE_URL="https://github.com/${GITHUB_REPOSITORY}/releases"
+          else
+            RELEASE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/tag/v${VERSION}"
+          fi
 
           # Discord caps an embed description at 4096 characters.
           BODY=$(cat .github/ai/release_body.md)
