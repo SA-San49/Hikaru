@@ -359,7 +359,7 @@ jobs:
           # Flatten to one line so the generated text is visible as an annotation
           # without needing the raw job log.
           PREVIEW=$(printf '%s' "$summary" | tr '\n' '~' | tr -s ' ' | head -c 700)
-          echo "::notice::Gemini notes (${model_used:-auto}): $PREVIEW"
+          echo "::notice::Gemini notes from ${model}: $PREVIEW"
 
       - name: Compose release notes
         run: |
