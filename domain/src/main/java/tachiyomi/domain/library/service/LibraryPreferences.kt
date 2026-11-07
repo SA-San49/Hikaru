@@ -32,7 +32,8 @@ class LibraryPreferences(
 
     fun randomSortSeed() = preferenceStore.getInt("library_random_anime_sort_seed", 0)
 
-    fun portraitColumns() = preferenceStore.getInt("pref_animelib_columns_portrait_key", 0)
+    // Hikaru default: 3 columns in portrait. 0 means "Default" (GridCells.Adaptive(128.dp)).
+    fun portraitColumns() = preferenceStore.getInt("pref_animelib_columns_portrait_key", 3)
 
     fun landscapeColumns() = preferenceStore.getInt("pref_animelib_columns_landscape_key", 0)
 
