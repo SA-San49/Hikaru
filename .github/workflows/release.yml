@@ -424,9 +424,10 @@ jobs:
                 awk_row "x86_64 emulators / devices" "x86_64"
                 awk_row "Not sure? Works everywhere" "universal"
               else
-                echo "**📥 Download:** tap the button below and pick the file for your device."
+                echo "**📥 Download:** tap the button for your device."
                 echo
                 echo "Most modern phones need **arm64-v8a**; older ones need **armeabi-v7a**."
+                echo "Not sure? Pick **universal** - it works everywhere."
               fi
               echo
               echo "**Install:** open the \`.apk\` on your device and allow installation from unknown sources if prompted."
@@ -545,11 +546,46 @@ jobs:
           # Brand colour #fd0101 = 16580865.
           # type 1 = action row, type 2 = button, style 5 = link button.
           # Webhooks may only send link buttons (style 5), never interactive ones.
+          # One link button per ABI, all in a single action row (Discord allows
+          # up to 5 per row). Real releases point at each APK asset; while
+          # testing every button points at the same real page.
+          if [[ -n "${BUTTON_URL:-}" ]]; then
+            U_ARM64="$RELEASE_URL"
+            U_ARMV7="$RELEASE_URL"
+            U_X86="$RELEASE_URL"
+            U_X8664="$RELEASE_URL"
+            U_UNIVERSAL="$RELEASE_URL"
+          elif [[ "${NOTIFY_TEST:-false}" == "true" ]]; then
+            U_ARM64="$RELEASE_URL"
+            U_ARMV7="$RELEASE_URL"
+            U_X86="$RELEASE_URL"
+            U_X8664="$RELEASE_URL"
+            U_UNIVERSAL="$RELEASE_URL"
+          else
+            ASSET="https://github.com/${GITHUB_REPOSITORY}/releases/download/v${VERSION}"
+            U_ARM64="${ASSET}/Hikaru-v${VERSION}-arm64-v8a-release.apk"
+            U_ARMV7="${ASSET}/Hikaru-v${VERSION}-armeabi-v7a-release.apk"
+            U_X86="${ASSET}/Hikaru-v${VERSION}-x86-release.apk"
+            U_X8664="${ASSET}/Hikaru-v${VERSION}-x86_64-release.apk"
+            U_UNIVERSAL="${ASSET}/Hikaru-v${VERSION}-universal-release.apk"
+          fi
+
+          BUTTONS=$(jq -n \
+            --arg u1 "$U_ARM64" --arg u2 "$U_ARMV7" --arg u3 "$U_X86" \
+            --arg u4 "$U_X8664" --arg u5 "$U_UNIVERSAL" \
+            '[
+               {label: "arm64-v8a",   url: $u1},
+               {label: "armeabi-v7a", url: $u2},
+               {label: "x86",         url: $u3},
+               {label: "x86_64",      url: $u4},
+               {label: "universal",   url: $u5}
+             ] | map({type: 2, style: 5, label: .label, url: .url})')
+
           PAYLOAD=$(jq -n \
             --arg title "⚙️ New Update is Available" \
             --arg desc "$BODY" \
             --arg url "$RELEASE_URL" \
-            --arg label "📥 Download Hikaru v${VERSION}" \
+            --argjson buttons "$BUTTONS" \
             '{
               content: null,
               embeds: [{
@@ -559,15 +595,7 @@ jobs:
                 color: 16580865,
                 footer: { text: " ⚙️ New Update is Available" }
               }],
-              components: [{
-                type: 1,
-                components: [{
-                  type: 2,
-                  style: 5,
-                  label: $label,
-                  url: $url
-                }]
-              }],
+              components: [{ type: 1, components: $buttons }],
               attachments: []
             }')
 
