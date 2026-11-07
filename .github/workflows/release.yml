@@ -32,6 +32,10 @@ on:
         description: 'Only test the GEMINI_API_KEY against the API (~30s, no build, publishes nothing)'
         type: boolean
         default: false
+      button_url:
+        description: "Optional URL for the Discord download button (used for testing). Empty = the release URL."
+        required: false
+        default: ""
       notes_only:
         description: 'Skip the APK build entirely — just generate notes (and post them when notify_test is on)'
         type: boolean
@@ -507,6 +511,7 @@ jobs:
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_UPDATE_WEBHOOK || secrets.DISCORD_WEBHOOK_URL }}
           NOTIFY_TEST: ${{ inputs.notify_test }}
+          BUTTON_URL: ${{ inputs.button_url }}
         run: |
           set -euo pipefail
           if [[ -z "${DISCORD_WEBHOOK_URL:-}" ]]; then
@@ -520,6 +525,13 @@ jobs:
             RELEASE_URL="https://github.com/${GITHUB_REPOSITORY}/releases"
           else
             RELEASE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/tag/v${VERSION}"
+          fi
+
+          # Explicit override, so the button can be pointed at any real page
+          # (Actions, a file, the releases list) while testing.
+          if [[ -n "${BUTTON_URL:-}" ]]; then
+            RELEASE_URL="$BUTTON_URL"
+            echo "button_url override: $RELEASE_URL"
           fi
 
           # Discord caps an embed description at 4096 characters.
