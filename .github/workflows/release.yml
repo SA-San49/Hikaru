@@ -388,3 +388,49 @@ jobs:
             echo "- APK naming: \`Hikaru-v${VERSION:-?}-{abi}-release.apk\`"
             echo "- Release: https://github.com/${GITHUB_REPOSITORY}/releases/tag/v${VERSION:-?}"
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # Final step: notify the Discord "update" channel through a webhook.
+      # The URL is a credential, so it lives in the DISCORD_WEBHOOK_URL secret
+      # (Settings -> Secrets and variables -> Actions), never in this file.
+      - name: Send update notification to Discord
+        if: ${{ !inputs.dry_run }}
+        continue-on-error: true
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${DISCORD_WEBHOOK_URL:-}" ]]; then
+            echo "::warning::DISCORD_WEBHOOK_URL is not set, skipping the update notification"
+            exit 0
+          fi
+
+          RELEASE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/tag/v${VERSION}"
+
+          # Discord caps an embed description at 4096 characters.
+          BODY=$(cat .github/ai/release_body.md)
+          if [[ ${#BODY} -gt 4090 ]]; then
+            BODY="${BODY:0:4090}"
+          fi
+
+          PAYLOAD=$(jq -n \
+            --arg title "⚙️ New Update is Available" \
+            --arg desc "$BODY" \
+            --arg url "$RELEASE_URL" \
+            '{
+              content: null,
+              embeds: [{
+                title: $title,
+                description: $desc,
+                url: $url,
+                color: 76285,
+                footer: { text: " ⚙️ New Update is Available" }
+              }],
+              attachments: []
+            }')
+
+          # Fail on 4xx/5xx so a broken webhook is visible in the run.
+          curl -sS --fail --retry 3 --retry-delay 5 \
+            -X POST "$DISCORD_WEBHOOK_URL" \
+            -H 'Content-Type: application/json' \
+            -d "$PAYLOAD"
+          echo "Update notification sent for v${VERSION}"
