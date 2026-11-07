@@ -1,20 +1,36 @@
 name: Official Release
+
+# Triggering
+# ----------
+# workflow_dispatch : the normal way to cut a release. The version is read from
+#                     app/build.gradle.kts, so you control it with one commit.
+#                     `dry_run: true` builds and uploads everything but creates no
+#                     Release, bumps no version and posts nothing — use it to test.
+# push tags v*      : pushing a tag like v0.5.220 releases that version.
+#
+# Deliberately NOT triggered on push to main: a release publishes a tag, five
+# APKs and a Discord announcement, and that should never happen by accident when
+# a PR is merged. To restore auto-release-on-merge, add:
+#     push:
+#       branches: [main]
 on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Build only — skip the GitHub Release, version bump and Discord post'
+        type: boolean
+        default: false
   push:
-    branches:
-      - master
     tags:
       - 'v*'
-    paths-ignore:
-      - '**.md'
-  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  ABIS: armeabi-v7a,arm64-v8a,x86,x86_64
 
 jobs:
   build-release:
@@ -39,33 +55,62 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
         with:
           cache-read-only: false
-          # Persist and share the Gradle dependency + build cache across runs
-          # so subsequent APK builds do not start from scratch
 
-      - name: Run Code Analysis (Detekt)
-        run: ./gradlew detekt --no-daemon
-
-      - name: Bump Version
-        run: ./scripts/bump_version.sh
-
-      - name: Commit and Push Version Bump
+      - name: Determine version
         run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add app/build.gradle.kts
-          git commit -m "chore: bump version to ${{ env.NEW_VN }}"
-          git push origin master
+          set -euo pipefail
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION=$(sed -n 's/.*versionName = "\(.*\)".*/\1/p' app/build.gradle.kts | head -n1)
+          fi
+          VERSION_CODE=$(sed -n 's/.*versionCode = \([0-9][0-9]*\).*/\1/p' app/build.gradle.kts | head -n1)
+
+          if [[ -z "$VERSION" ]]; then
+            echo "::error::Could not determine versionName from app/build.gradle.kts"
+            exit 1
+          fi
+
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "VERSION_CODE=$VERSION_CODE" >> "$GITHUB_ENV"
+          echo "Releasing Hikaru v$VERSION (versionCode $VERSION_CODE) from ${GITHUB_REF}"
+
+      - name: Validate signing secrets
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
+          SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
+          SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          : "${KEYSTORE_BASE64:?Configure the GitHub secret KEYSTORE_BASE64}"
+          : "${SIGNING_STORE_PASSWORD:?Configure the GitHub secret SIGNING_STORE_PASSWORD}"
+          : "${SIGNING_KEY_ALIAS:?Configure the GitHub secret SIGNING_KEY_ALIAS}"
+          : "${SIGNING_KEY_PASSWORD:?Configure the GitHub secret SIGNING_KEY_PASSWORD}"
 
       - name: Decode signing keystore
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
+          SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
         run: |
-          test -n "$KEYSTORE_BASE64"
+          set -euo pipefail
           printf '%s' "$KEYSTORE_BASE64" | base64 --decode > app/hikaru.jks
           test -s app/hikaru.jks
+          keytool -list -keystore app/hikaru.jks -storepass "$SIGNING_STORE_PASSWORD" >/dev/null
+          keytool -list -keystore app/hikaru.jks \
+            -storepass "$SIGNING_STORE_PASSWORD" -alias "$SIGNING_KEY_ALIAS" >/dev/null
 
-      - name: Build Release APK
-        run: ./gradlew assembleRelease -Pinclude-telemetry=false -Penable-updater=true --no-daemon
+      - name: Run Code Analysis (Detekt)
+        run: ./gradlew detekt --no-daemon
+
+      - name: Build release APKs
+        run: >-
+          ./gradlew assembleRelease
+          -PabiList=${{ env.ABIS }}
+          -Pinclude-telemetry=false
+          -Penable-updater=true
+          --no-daemon
         env:
           SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
           SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
@@ -73,156 +118,273 @@ jobs:
           MAL_CLIENT_SECRET: ${{ secrets.MAL_CLIENT_SECRET }}
           DISCORD_RPC_APP_ID: ${{ vars.DISCORD_RPC_APP_ID }}
 
-      - name: Rename APK
+      - name: Rename and validate APKs
         run: |
-          VERSION="${{ env.NEW_VN }}"
-          cd app/build/outputs/apk/release/
-          for f in *.apk; do
-            mv "$f" "Hikaru-v$VERSION-$f"
+          set -euo pipefail
+          cd app/build/outputs/apk/release
+
+          # 4 per-ABI splits + 1 universal APK
+          for abi in armeabi-v7a arm64-v8a x86 x86_64 universal; do
+            src="app-${abi}-release.apk"
+            if [[ ! -f "$src" ]]; then
+              echo "::error::Expected APK '$src' was not produced"
+              ls -l
+              exit 1
+            fi
+            out="Hikaru-v${VERSION}-${abi}-release.apk"
+            mv "$src" "$out"
+            if [[ ! -s "$out" ]]; then
+              echo "::error::$out is empty"
+              exit 1
+            fi
+            echo "✓ $out ($(du -h "$out" | cut -f1))"
           done
 
-      - name: Generate Detailed Context for AI
+          # Nothing may be left behind: the release uploads *.apk from this folder.
+          leftover=$(find . -maxdepth 1 -name '*.apk' | wc -l)
+          if [[ "$leftover" -ne 5 ]]; then
+            echo "::error::Expected 5 APKs, found $leftover"
+            ls -l
+            exit 1
+          fi
+          echo "All 5 release APKs renamed with version $VERSION"
+
+      - name: Upload APKs as workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Hikaru-v${{ env.VERSION }}-release-apks
+          path: app/build/outputs/apk/release/Hikaru-v${{ env.VERSION }}-*-release.apk
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Generate changelog context
         run: |
-          # Get the previous tag
+          set -euo pipefail
+          mkdir -p .github/ai
+
           PREV_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
-          if [ -z "$PREV_TAG" ]; then
-            RANGE="-n 10"
+          if [[ -z "$PREV_TAG" ]]; then
+            RANGE="-n 15"
+            echo "No previous tag found, using the last 15 commits." >&2
           else
             RANGE="$PREV_TAG..HEAD"
+            echo "Changes since $PREV_TAG" >&2
           fi
-          
-          mkdir -p .github/ai
-          # 1. Get commits (subjects and bodies)
-          git log $RANGE --pretty=format:"- %s%n%b" | grep -v "chore: bump version" > .github/ai/commits.txt || echo "New version release." > .github/ai/commits.txt
-          
-          # 2. Get file change statistics
-          git diff --stat $RANGE > .github/ai/files.txt
-          
-          # 3. Get actual code diff (capped at 200 lines for stability)
-          git diff -U1 $RANGE | head -n 200 > .github/ai/diff.txt
 
-      - name: Format Changelog with Gemini AI
+          git log $RANGE --pretty=format:'- %s' \
+            | grep -v 'chore(release): prepare' > .github/ai/commits.txt || true
+          git diff --stat $RANGE > .github/ai/files.txt || true
+
+          if [[ ! -s .github/ai/commits.txt ]]; then
+            echo "- General stability and polish" > .github/ai/commits.txt
+          fi
+
+      - name: Write release changelog
+        continue-on-error: true
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
+          set -euo pipefail
           COMMITS=$(cat .github/ai/commits.txt)
           FILES=$(cat .github/ai/files.txt)
-          DIFF=$(cat .github/ai/diff.txt)
-          
-          cat > .github/ai/full_prompt.txt <<EOF
-          You are an excited team member of Hikaru! Write a friendly and hyped 'Changelog' for our fans. 
-          Summarize WHAT IS NEW and WHAT CHANGED based on the commits and diff below.
-          Use emojis like 🚀, ✨, and 🛠️. Group into 'What's New', 'Fixed', and 'Polished'.
-          CRITICAL: Do NOT mention technical terms like 'code', 'commits', or 'diff'. Focus on improvements!
-          If the diff is truncated, rely on the commit history to tell the story.
-          
-          NEW CHANGES:
-          COMMITS:
-          $COMMITS
 
-          FILE STATS:
-          $FILES
-          
-          DIFF SNIPPET:
-          $DIFF
-          EOF
-          
-          PAYLOAD=$(jq -n \
-            --rawfile prompt .github/ai/full_prompt.txt \
-            '{
-              contents: [{parts: [{text: $prompt}]}],
-              generationConfig: {temperature: 0.7, maxOutputTokens: 1024}
-            }')
-          
-          echo "Requesting AI summary from Gemini (gemini-flash-latest)..."
-          # Retry logic with exponential backoff for 429 Rate Limit
-          RETRY_COUNT=0
-          MAX_RETRIES=5
-          SLEEP_TIME=10
-          while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-            RESPONSE=$(curl -s -X POST "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=$GEMINI_API_KEY" \
-              -H "Content-Type: application/json" \
-              -d "$PAYLOAD")
-            
-            # Check if 429 Too Many Requests or quota error occurred
-            if echo "$RESPONSE" | grep -q "RESOURCE_EXHAUSTED\|429"; then
-              echo "Rate limited (429/RESOURCE_EXHAUSTED). Retrying in ${SLEEP_TIME}s (Attempt $((RETRY_COUNT+1))/$MAX_RETRIES)..."
-              sleep $SLEEP_TIME
-              SLEEP_TIME=$((SLEEP_TIME * 2))
-              RETRY_COUNT=$((RETRY_COUNT + 1))
-            else
+          cat > .github/ai/prompt.txt <<'PROMPT'
+          You are writing the changelog for "Hikaru", an anime app.
+
+          Write it for regular users, not developers. Friendly, clear, upbeat.
+          Do NOT mention code, commits, diffs, repositories or file names.
+          Do NOT invent features that are not supported by the list below.
+
+          Reply with exactly these three Markdown sections and nothing else:
+
+          ### What's New
+          - ...
+
+          ### Improvements & Fixes
+          - ...
+
+          ### Under the Hood
+          - ...
+
+          Keep each bullet under 15 words. Use 0 to 3 bullets per section; skip a
+          bullet rather than padding it. No headings other than the three above.
+
+          CHANGES:
+          PROMPT
+
+          printf '%s\n' "$COMMITS" >> .github/ai/prompt.txt
+
+          if [[ -z "${GEMINI_API_KEY:-}" ]]; then
+            echo "::warning::GEMINI_API_KEY is not set, skipping AI changelog"
+            exit 0
+          fi
+
+          PAYLOAD=$(jq -n --rawfile prompt .github/ai/prompt.txt \
+            '{contents: [{parts: [{text: $prompt}]}], generationConfig: {temperature: 0.6, maxOutputTokens: 1024}}')
+
+          attempt=0
+          sleep_s=10
+          summary=""
+          while [[ $attempt -lt 4 ]]; do
+            response=$(curl -sS -X POST \
+              "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}" \
+              -H 'Content-Type: application/json' -d "$PAYLOAD")
+            summary=$(echo "$response" | jq -r '.candidates[0].content.parts[0].text // empty')
+
+            if [[ -n "$summary" ]]; then
               break
             fi
+            if echo "$response" | grep -q 'RESOURCE_EXHAUSTED\|429'; then
+              echo "Rate limited, retrying in ${sleep_s}s (attempt $((attempt + 1))/4)"
+              sleep "$sleep_s"
+              sleep_s=$((sleep_s * 2))
+            fi
+            attempt=$((attempt + 1))
           done
-          
-          SUMMARY=$(echo "$RESPONSE" | jq -r '.candidates[0].content.parts[0].text // empty')
-          
-          # Fallback to gemini-flash-lite-latest if primary fails or is empty
-          if [ -z "$SUMMARY" ] || [ "$SUMMARY" == "null" ]; then
-            echo "Primary model failed or empty. Requesting fallback from Gemini (gemini-flash-lite-latest)..."
-            RESPONSE=$(curl -s -X POST "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-lite-latest:generateContent?key=$GEMINI_API_KEY" \
-              -H "Content-Type: application/json" \
-              -d "$PAYLOAD")
-            SUMMARY=$(echo "$RESPONSE" | jq -r '.candidates[0].content.parts[0].text // empty')
-          fi
-          
-          if [ -z "$SUMMARY" ] || [ "$SUMMARY" == "null" ]; then
-            SUMMARY="We've made some secret improvements under the hood to make your experience better! ✨"
-          fi
-          
-          echo "CHANGELOG<<EOF" >> $GITHUB_ENV
-          echo "$SUMMARY" >> $GITHUB_ENV
-          echo "EOF" >> $GITHUB_ENV
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: v${{ env.NEW_VN }}
-          name: Hikaru Release v${{ env.NEW_VN }}
-          files: app/build/outputs/apk/release/*.apk
-          draft: false
-          prerelease: false
-          generate_release_notes: false
-          body: |
-            ## 🚀 Hikaru v${{ env.NEW_VN }}
-            
-            ${{ env.CHANGELOG }}
-            
-            ---
-            **📥 Download:** Choose the `arm64-v8a` version for your phone.
+          if [[ -z "$summary" ]]; then
+            echo "::warning::AI changelog unavailable, using fallback text"
+            exit 0
+          fi
 
-      - name: Send Announcement to Discord
-        if: success()
-        env:
-          DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
+          printf '%s\n' "$summary" > .github/ai/changelog.md
+          echo "AI changelog generated."
+
+      - name: Compose release notes
         run: |
-          # Define clean links for Markdown
-          RELEASE_URL="https://github.com/SA-San49/Hikaru/releases/tag/v${{ env.NEW_VN }}"
-          COMMIT_URL="${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}"
-          
-          EMBED_TITLE="🚀 Hikaru Official Release (v${{ env.NEW_VN }})"
-          EMBED_DESC=$(cat <<EOF
-          ${{ env.CHANGELOG }}
+          set -euo pipefail
 
-          ---
-          **📥 [Download Release APK]($RELEASE_URL)**
-          **🔗 [View Release Details]($RELEASE_URL)**
+          FALLBACK=$(cat <<'EOF'
+          ### What's New
+          - Fresh update with the latest improvements
+
+          ### Improvements & Fixes
+          - General stability and performance polish
+
+          ### Under the Hood
+          - Internal housekeeping for a smoother experience
           EOF
           )
 
-          # Encode using jq for a clean Discord Embed payload
+          if [[ -s .github/ai/changelog.md ]]; then
+            CHANGELOG=$(cat .github/ai/changelog.md)
+          else
+            CHANGELOG="$FALLBACK"
+          fi
+
+          awk_row() {
+            printf '| %s | `Hikaru-v%s-%s-release.apk` |\n' "$1" "$VERSION" "$2"
+          }
+
+          {
+            echo "## Hikaru v${VERSION}"
+            echo
+            echo "Hey everyone! We've got a fresh update for you 🚀"
+            echo
+            echo "$CHANGELOG"
+            echo
+            echo "---"
+            echo
+            echo "**📥 Download:** choose the file for your device. Most modern phones need **arm64-v8a**."
+            echo
+            echo "| Device | File |"
+            echo "| --- | --- |"
+            awk_row "Most phones (64-bit ARM)" "arm64-v8a"
+            awk_row "Older phones (32-bit ARM)" "armeabi-v7a"
+            awk_row "x86 emulators / devices" "x86"
+            awk_row "x86_64 emulators / devices" "x86_64"
+            awk_row "Not sure? Works everywhere" "universal"
+            echo
+            echo "**Install:** open the \`.apk\` on your device and allow installation from unknown sources if prompted."
+            echo
+            echo "_Version ${VERSION} · versionCode ${VERSION_CODE}_"
+          } > .github/ai/release_body.md
+
+          echo "Release notes composed:"
+          cat .github/ai/release_body.md
+
+      - name: Create GitHub Release
+        if: ${{ !inputs.dry_run }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ env.VERSION }}
+          name: Hikaru v${{ env.VERSION }}
+          body_path: .github/ai/release_body.md
+          files: app/build/outputs/apk/release/Hikaru-v${{ env.VERSION }}-*-release.apk
+          fail_on_unmatched_files: true
+          draft: false
+          prerelease: false
+          generate_release_notes: false
+
+      - name: Bump version for the next release
+        if: ${{ !inputs.dry_run && (github.ref_name == 'main' || startsWith(github.ref, 'refs/tags/')) }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # Bump whatever is on main, so a tag-triggered release cannot rewind it.
+          git fetch origin main
+          git checkout -B release-version-bump origin/main
+
+          OUT=$(./scripts/bump_version.sh)
+          echo "$OUT"
+          NEW_VN=$(printf '%s\n' "$OUT" | sed -n 's/^NEW_VN=//p' | tail -n1)
+          NEW_VC=$(printf '%s\n' "$OUT" | sed -n 's/^NEW_VC=//p' | tail -n1)
+          : "${NEW_VN:?could not determine next version}"
+
+          git add app/build.gradle.kts
+          if git diff --cached --quiet; then
+            echo "::warning::Version file already at $NEW_VN, nothing to commit"
+            exit 0
+          fi
+
+          # [skip ci] is belt and braces: this workflow no longer runs on push to main.
+          git commit -m "chore(release): prepare v${NEW_VN} (versionCode ${NEW_VC}) [skip ci]"
+          git push origin HEAD:main
+          echo "Next release will be v$NEW_VN (versionCode $NEW_VC)"
+
+      - name: Send announcement to Discord
+        if: ${{ !inputs.dry_run }}
+        continue-on-error: true
+        env:
+          DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${DISCORD_BOT_TOKEN:-}" ]]; then
+            echo "::warning::DISCORD_BOT_TOKEN is not set, skipping announcement"
+            exit 0
+          fi
+
+          RELEASE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/tag/v${VERSION}"
+
           PAYLOAD=$(jq -n \
-            --arg title "$EMBED_TITLE" \
-            --arg desc "$EMBED_DESC" \
+            --arg title "🚀 Hikaru v${VERSION} is out!" \
+            --arg desc "$(cat .github/ai/release_body.md)" \
+            --arg url "$RELEASE_URL" \
             '{
               embeds: [{
                 title: $title,
-                description: $desc,
+                description: ($desc | .[0:3900]),
+                url: $url,
                 color: 16763904
               }]
             }')
-          
-          curl -X POST -H "Authorization: Bot $DISCORD_BOT_TOKEN" \
-               -H "Content-Type: application/json" \
-               -d "$PAYLOAD" \
-               https://discord.com/api/v10/channels/1482254131417845821/messages
+
+          curl -sS -X POST \
+            -H "Authorization: Bot ${DISCORD_BOT_TOKEN}" \
+            -H 'Content-Type: application/json' \
+            -d "$PAYLOAD" \
+            https://discord.com/api/v10/channels/1482254131417845821/messages
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### Hikaru v${VERSION:-?} release"
+            echo
+            echo "- Trigger: \`${GITHUB_REF}\`"
+            echo "- Dry run: \`${{ inputs.dry_run }}\`"
+            echo "- APK naming: \`Hikaru-v${VERSION:-?}-{abi}-release.apk\`"
+            echo "- Release: https://github.com/${GITHUB_REPOSITORY}/releases/tag/v${VERSION:-?}"
+          } >> "$GITHUB_STEP_SUMMARY"
