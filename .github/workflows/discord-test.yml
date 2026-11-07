@@ -14,7 +14,7 @@ jobs:
     steps:
       - name: Post sample embed
         env:
-          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_UPDATE_WEBHOOK || secrets.DISCORD_WEBHOOK_URL }}
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail

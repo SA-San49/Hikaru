@@ -344,39 +344,6 @@ jobs:
           git push origin HEAD:main
           echo "Next release will be v$NEW_VN (versionCode $NEW_VC)"
 
-      - name: Send announcement to Discord
-        if: ${{ !inputs.dry_run }}
-        continue-on-error: true
-        env:
-          DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
-        run: |
-          set -euo pipefail
-          if [[ -z "${DISCORD_BOT_TOKEN:-}" ]]; then
-            echo "::warning::DISCORD_BOT_TOKEN is not set, skipping announcement"
-            exit 0
-          fi
-
-          RELEASE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/tag/v${VERSION}"
-
-          PAYLOAD=$(jq -n \
-            --arg title "🚀 Hikaru v${VERSION} is out!" \
-            --arg desc "$(cat .github/ai/release_body.md)" \
-            --arg url "$RELEASE_URL" \
-            '{
-              embeds: [{
-                title: $title,
-                description: ($desc | .[0:3900]),
-                url: $url,
-                color: 16763904
-              }]
-            }')
-
-          curl -sS -X POST \
-            -H "Authorization: Bot ${DISCORD_BOT_TOKEN}" \
-            -H 'Content-Type: application/json' \
-            -d "$PAYLOAD" \
-            https://discord.com/api/v10/channels/1482254131417845821/messages
-
       - name: Summary
         if: always()
         run: |
@@ -390,13 +357,14 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       # Final step: notify the Discord "update" channel through a webhook.
-      # The URL is a credential, so it lives in the DISCORD_WEBHOOK_URL secret
-      # (Settings -> Secrets and variables -> Actions), never in this file.
+      # The URL is a credential, so it lives in an Actions secret
+      # (DISCORD_UPDATE_WEBHOOK, falling back to DISCORD_WEBHOOK_URL), never in
+      # this file. This is the only Discord notification the release sends.
       - name: Send update notification to Discord
         if: ${{ !inputs.dry_run }}
         continue-on-error: true
         env:
-          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_UPDATE_WEBHOOK || secrets.DISCORD_WEBHOOK_URL }}
         run: |
           set -euo pipefail
           if [[ -z "${DISCORD_WEBHOOK_URL:-}" ]]; then
