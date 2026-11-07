@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.util.Base64
 import com.google.api.client.auth.oauth2.TokenResponseException
 import com.google.api.client.googleapis.auth.oauth2.GoogleAuthorizationCodeFlow
 import com.google.api.client.googleapis.auth.oauth2.GoogleAuthorizationCodeTokenRequest
@@ -33,6 +34,8 @@ import uy.kohesive.injekt.api.get
 import java.io.IOException
 import java.io.PipedInputStream
 import java.io.PipedOutputStream
+import java.security.MessageDigest
+import java.security.SecureRandom
 import java.util.zip.GZIPInputStream
 import java.util.zip.GZIPOutputStream
 
@@ -257,6 +260,8 @@ class GoogleDriveService(private val context: Context) {
     var driveService: Drive? = null
     companion object {
         const val REDIRECT_URI = "com.googleusercontent.apps.705695545139-mmm6o1b0c10li512pleehqgs4pgahn8k:/oauth2redirect"
+        private const val OAUTH_STATE_TTL_MS = 10 * 60 * 1000L
+        private const val OAUTH_STATE_BYTES = 32
     }
     private val syncPreferences = Injekt.get<SyncPreferences>()
 
@@ -321,10 +326,51 @@ class GoogleDriveService(private val context: Context) {
             listOf(DriveScopes.DRIVE_FILE, DriveScopes.DRIVE_APPDATA),
         ).setAccessType("offline").build()
 
+        // Bind this sign-in attempt to an unguessable single-use state value so that an
+        // authorization code handed to us by another app can be rejected in the callback.
+        val state = ByteArray(OAUTH_STATE_BYTES)
+            .also { SecureRandom().nextBytes(it) }
+            .let { Base64.encodeToString(it, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING) }
+        syncPreferences.googleDriveOAuthState().set(state)
+        syncPreferences.googleDriveOAuthStateIssuedAt().set(System.currentTimeMillis())
+
         return flow.newAuthorizationUrl()
             .setRedirectUri(REDIRECT_URI)
             .setApprovalPrompt("force")
+            .setState(state)
             .build()
+    }
+
+    /**
+     * Validates and consumes the single-use `state` value issued by [generateAuthorizationUrl].
+     *
+     * The sign-in callback activity is exported, so any app on the device can send it an
+     * authorization code for an account it controls. Requiring the callback to echo the exact
+     * state value we issued, within [OAUTH_STATE_TTL_MS], and consuming it on first use prevents
+     * a code we did not initiate from being exchanged and silently linked.
+     *
+     * @return true when [candidate] matches the outstanding state value.
+     */
+    fun consumeOAuthState(candidate: String?): Boolean {
+        val expected = syncPreferences.googleDriveOAuthState().get()
+        val issuedAt = syncPreferences.googleDriveOAuthStateIssuedAt().get()
+
+        // Consume unconditionally: a state value must never be accepted twice.
+        syncPreferences.googleDriveOAuthState().set("")
+        syncPreferences.googleDriveOAuthStateIssuedAt().set(0L)
+
+        if (expected.isEmpty() || candidate.isNullOrEmpty()) {
+            return false
+        }
+
+        if (System.currentTimeMillis() - issuedAt > OAUTH_STATE_TTL_MS) {
+            return false
+        }
+
+        return MessageDigest.isEqual(
+            expected.toByteArray(Charsets.UTF_8),
+            candidate.toByteArray(Charsets.UTF_8),
+        )
     }
     internal suspend fun refreshToken() = withIOContext {
         val refreshToken = syncPreferences.googleDriveRefreshToken().get()
