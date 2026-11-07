@@ -1,24 +1,108 @@
 name: Official Release
+
+# Triggering
+# ----------
+# workflow_dispatch : the normal way to cut a release. The version is read from
+#                     app/build.gradle.kts, so you control it with one commit.
+#                     `dry_run: true` builds and uploads everything but creates no
+#                     Release, bumps no version and posts nothing — use it to test.
+# push tags v*      : pushing a tag like v0.5.220 releases that version.
+#
+# Deliberately NOT triggered on push to main: a release publishes a tag, five
+# APKs and a Discord announcement, and that should never happen by accident when
+# a PR is merged. To restore auto-release-on-merge, add:
+#     push:
+#       branches: [main]
 on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Build only — skip the GitHub Release, version bump and Discord post'
+        type: boolean
+        default: false
+      notify_test:
+        description: 'Also send the Discord notification (use with dry_run to test the webhook)'
+        type: boolean
+        default: false
+      force_ai_notes:
+        description: 'Ignore RELEASE_NOTES.md and always generate notes with Gemini (for testing the key)'
+        type: boolean
+        default: false
+      gemini_check:
+        description: 'Only test the GEMINI_API_KEY against the API (~30s, no build, publishes nothing)'
+        type: boolean
+        default: false
+      button_url:
+        description: "Optional URL for the Discord download button (used for testing). Empty = the release URL."
+        required: false
+        default: ""
+      notes_only:
+        description: 'Skip the APK build entirely — just generate notes (and post them when notify_test is on)'
+        type: boolean
+        default: false
   push:
-    branches:
-      - master
     tags:
       - 'v*'
-    paths-ignore:
-      - '**.md'
-  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  ABIS: armeabi-v7a,arm64-v8a,x86,x86_64
 
 jobs:
+  gemini-check:
+    name: Gemini API key check
+    if: ${{ inputs.gemini_check }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call Gemini
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          set -eo pipefail
+          trap 'rc=$?; echo "::error::check failed at line $LINENO (rc=$rc)"' ERR
+
+          if [[ -z "${GEMINI_API_KEY:-}" ]]; then
+            echo "::error::GEMINI_API_KEY secret is not set"
+            exit 1
+          fi
+
+          # Informational: what this key can see.
+          MODELS_JSON=$(curl -sS --max-time 30 "https://generativelanguage.googleapis.com/v1beta/models?key=${GEMINI_API_KEY}&pageSize=200" || echo '{}')
+          AVAILABLE=$(echo "$MODELS_JSON" | jq -r '.models[]? | .name' 2>/dev/null | sed 's|^models/||' | tr '\n' ' ')
+          echo "::notice::Models available: ${AVAILABLE:0:800}"
+
+          PAYLOAD=$(jq -n '{contents: [{parts: [{text: "Reply with exactly: OK"}]}], generationConfig: {temperature: 0, maxOutputTokens: 16}}')
+
+          # Newest flash first, lite models last.
+          MODELS="${GEMINI_MODELS:-gemini-3.6-flash gemini-3.5-flash gemini-3.8-flash gemini-3.7-flash gemini-flash-latest gemini-flash-lite-latest gemini-2.5-flash}"
+
+          for model in $MODELS; do
+            START=$(date +%s)
+            HTTP=$(curl -sS --max-time 45 -o /tmp/resp.json -w '%{http_code}' -X POST \
+              "https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}" \
+              -H 'Content-Type: application/json' -d "$PAYLOAD" || echo "000")
+            DUR=$(( $(date +%s) - START ))
+            TEXT=$(jq -r '[.candidates[0].content.parts[]? | select(.thought != true) | .text] | join("")' /tmp/resp.json 2>/dev/null)
+
+            if [[ "$HTTP" == "200" && -n "$TEXT" && "$TEXT" != "null" ]]; then
+              echo "::notice::$model works (${DUR}s): $TEXT"
+              exit 0
+            fi
+
+            MSG=$(jq -r '.error.message // .promptFeedback.blockReason // "no text"' /tmp/resp.json 2>/dev/null | head -c 110)
+            echo "::warning::$model -> HTTP $HTTP in ${DUR}s: $MSG"
+          done
+
+          echo "::error::No Gemini model worked with this key"
+          exit 1
+
   build-release:
     name: Build & Public Release
+    if: ${{ !inputs.gemini_check }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -30,42 +114,77 @@ jobs:
           fetch-depth: 0
 
       - name: Set up JDK
+        if: ${{ !inputs.notes_only }}
         uses: actions/setup-java@v4
         with:
           java-version: 17
           distribution: temurin
 
       - name: Set up Gradle
+        if: ${{ !inputs.notes_only }}
         uses: gradle/actions/setup-gradle@v4
         with:
           cache-read-only: false
-          # Persist and share the Gradle dependency + build cache across runs
-          # so subsequent APK builds do not start from scratch
 
-      - name: Run Code Analysis (Detekt)
-        run: ./gradlew detekt --no-daemon
-
-      - name: Bump Version
-        run: ./scripts/bump_version.sh
-
-      - name: Commit and Push Version Bump
+      - name: Determine version
         run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add app/build.gradle.kts
-          git commit -m "chore: bump version to ${{ env.NEW_VN }}"
-          git push origin master
+          set -euo pipefail
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION=$(sed -n 's/.*versionName = "\(.*\)".*/\1/p' app/build.gradle.kts | head -n1)
+          fi
+          VERSION_CODE=$(sed -n 's/.*versionCode = \([0-9][0-9]*\).*/\1/p' app/build.gradle.kts | head -n1)
 
-      - name: Decode signing keystore
+          if [[ -z "$VERSION" ]]; then
+            echo "::error::Could not determine versionName from app/build.gradle.kts"
+            exit 1
+          fi
+
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "VERSION_CODE=$VERSION_CODE" >> "$GITHUB_ENV"
+          echo "Releasing Hikaru v$VERSION (versionCode $VERSION_CODE) from ${GITHUB_REF}"
+
+      - name: Validate signing secrets
+        if: ${{ !inputs.notes_only }}
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
+          SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
+          SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
         run: |
-          test -n "$KEYSTORE_BASE64"
+          set -euo pipefail
+          : "${KEYSTORE_BASE64:?Configure the GitHub secret KEYSTORE_BASE64}"
+          : "${SIGNING_STORE_PASSWORD:?Configure the GitHub secret SIGNING_STORE_PASSWORD}"
+          : "${SIGNING_KEY_ALIAS:?Configure the GitHub secret SIGNING_KEY_ALIAS}"
+          : "${SIGNING_KEY_PASSWORD:?Configure the GitHub secret SIGNING_KEY_PASSWORD}"
+
+      - name: Decode signing keystore
+        if: ${{ !inputs.notes_only }}
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
+          SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
+        run: |
+          set -euo pipefail
           printf '%s' "$KEYSTORE_BASE64" | base64 --decode > app/hikaru.jks
           test -s app/hikaru.jks
+          keytool -list -keystore app/hikaru.jks -storepass "$SIGNING_STORE_PASSWORD" >/dev/null
+          keytool -list -keystore app/hikaru.jks \
+            -storepass "$SIGNING_STORE_PASSWORD" -alias "$SIGNING_KEY_ALIAS" >/dev/null
 
-      - name: Build Release APK
-        run: ./gradlew assembleRelease -Pinclude-telemetry=false -Penable-updater=true --no-daemon
+      - name: Run Code Analysis (Detekt)
+        if: ${{ !inputs.notes_only }}
+        run: ./gradlew detekt --no-daemon
+
+      - name: Build release APKs
+        if: ${{ !inputs.notes_only }}
+        run: >-
+          ./gradlew assembleRelease
+          -PabiList=${{ env.ABIS }}
+          -Pinclude-telemetry=false
+          -Penable-updater=true
+          --no-daemon
         env:
           SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
           SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
@@ -73,156 +192,430 @@ jobs:
           MAL_CLIENT_SECRET: ${{ secrets.MAL_CLIENT_SECRET }}
           DISCORD_RPC_APP_ID: ${{ vars.DISCORD_RPC_APP_ID }}
 
-      - name: Rename APK
+      - name: Rename and validate APKs
+        if: ${{ !inputs.notes_only }}
         run: |
-          VERSION="${{ env.NEW_VN }}"
-          cd app/build/outputs/apk/release/
-          for f in *.apk; do
-            mv "$f" "Hikaru-v$VERSION-$f"
+          set -euo pipefail
+          cd app/build/outputs/apk/release
+
+          # 4 per-ABI splits + 1 universal APK
+          for abi in armeabi-v7a arm64-v8a x86 x86_64 universal; do
+            src="app-${abi}-release.apk"
+            if [[ ! -f "$src" ]]; then
+              echo "::error::Expected APK '$src' was not produced"
+              ls -l
+              exit 1
+            fi
+            out="Hikaru-v${VERSION}-${abi}-release.apk"
+            mv "$src" "$out"
+            if [[ ! -s "$out" ]]; then
+              echo "::error::$out is empty"
+              exit 1
+            fi
+            echo "✓ $out ($(du -h "$out" | cut -f1))"
           done
 
-      - name: Generate Detailed Context for AI
+          # Nothing may be left behind: the release uploads *.apk from this folder.
+          leftover=$(find . -maxdepth 1 -name '*.apk' | wc -l)
+          if [[ "$leftover" -ne 5 ]]; then
+            echo "::error::Expected 5 APKs, found $leftover"
+            ls -l
+            exit 1
+          fi
+          echo "All 5 release APKs renamed with version $VERSION"
+
+      - name: Upload APKs as workflow artifacts
+        if: ${{ !inputs.notes_only }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: Hikaru-v${{ env.VERSION }}-release-apks
+          path: app/build/outputs/apk/release/Hikaru-v${{ env.VERSION }}-*-release.apk
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Generate changelog context
         run: |
-          # Get the previous tag
+          set -euo pipefail
+          mkdir -p .github/ai
+
           PREV_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
-          if [ -z "$PREV_TAG" ]; then
-            RANGE="-n 10"
+          if [[ -z "$PREV_TAG" ]]; then
+            RANGE="-n 15"
+            echo "No previous tag found, using the last 15 commits." >&2
           else
             RANGE="$PREV_TAG..HEAD"
+            echo "Changes since $PREV_TAG" >&2
           fi
-          
-          mkdir -p .github/ai
-          # 1. Get commits (subjects and bodies)
-          git log $RANGE --pretty=format:"- %s%n%b" | grep -v "chore: bump version" > .github/ai/commits.txt || echo "New version release." > .github/ai/commits.txt
-          
-          # 2. Get file change statistics
-          git diff --stat $RANGE > .github/ai/files.txt
-          
-          # 3. Get actual code diff (capped at 200 lines for stability)
-          git diff -U1 $RANGE | head -n 200 > .github/ai/diff.txt
 
-      - name: Format Changelog with Gemini AI
+          git log $RANGE --pretty=format:'- %s' \
+            | grep -v 'chore(release): prepare' \
+            | grep -v -E '^- Merge (pull request|branch|remote-tracking)' \
+            > .github/ai/commits.txt || true
+          git diff --stat $RANGE > .github/ai/files.txt || true
+
+          if [[ ! -s .github/ai/commits.txt ]]; then
+            echo "- General stability and polish" > .github/ai/commits.txt
+          fi
+
+      - name: Write release changelog
+        continue-on-error: true
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          FORCE_AI_NOTES: ${{ inputs.force_ai_notes }}
         run: |
+          set -euo pipefail
+          mkdir -p .github/ai
+
+          # 0. Explicit opt-out, so the Gemini key can be tested on demand.
+          if [[ "${FORCE_AI_NOTES:-false}" == "true" ]]; then
+            echo "force_ai_notes=true - skipping RELEASE_NOTES.md and generating notes with Gemini"
+            echo "::notice::Release notes source: Gemini (force_ai_notes=true was requested)"
+          # 1. Hand-written notes win, as long as they are meant for this version.
+          elif [[ -s RELEASE_NOTES.md ]]; then
+            DECLARED=$(sed -n 's/.*<!-- *version: *\([^ >]*\) *-->.*/\1/p' RELEASE_NOTES.md | head -n1)
+            if [[ -z "$DECLARED" || "$DECLARED" == "$VERSION" ]]; then
+              # Strip the HTML comment blocks (version marker + maintainer notes)
+              # and any leading blank lines, so only the notes are published.
+              awk '/<!--/ { in_comment = 1 }
+                   in_comment && /-->/ { in_comment = 0; next }
+                   !in_comment' RELEASE_NOTES.md \
+                | sed -e '/./,$!d' > .github/ai/changelog.md
+              echo "Using hand-written notes from RELEASE_NOTES.md (${DECLARED:-unversioned})"
+              echo "::notice::Release notes source: hand-written RELEASE_NOTES.md (${DECLARED:-unversioned})"
+              echo "NOTES_SOURCE=hand" >> "${GITHUB_ENV:-/dev/null}"
+              exit 0
+            fi
+            echo "::warning::RELEASE_NOTES.md targets v$DECLARED but this release is v$VERSION - ignoring it and generating notes instead"
+          fi
+
+          # 2. No usable hand-written notes, so ask Gemini.
           COMMITS=$(cat .github/ai/commits.txt)
           FILES=$(cat .github/ai/files.txt)
-          DIFF=$(cat .github/ai/diff.txt)
-          
-          cat > .github/ai/full_prompt.txt <<EOF
-          You are an excited team member of Hikaru! Write a friendly and hyped 'Changelog' for our fans. 
-          Summarize WHAT IS NEW and WHAT CHANGED based on the commits and diff below.
-          Use emojis like 🚀, ✨, and 🛠️. Group into 'What's New', 'Fixed', and 'Polished'.
-          CRITICAL: Do NOT mention technical terms like 'code', 'commits', or 'diff'. Focus on improvements!
-          If the diff is truncated, rely on the commit history to tell the story.
-          
-          NEW CHANGES:
-          COMMITS:
-          $COMMITS
 
-          FILE STATS:
-          $FILES
-          
-          DIFF SNIPPET:
-          $DIFF
-          EOF
-          
-          PAYLOAD=$(jq -n \
-            --rawfile prompt .github/ai/full_prompt.txt \
-            '{
-              contents: [{parts: [{text: $prompt}]}],
-              generationConfig: {temperature: 0.7, maxOutputTokens: 1024}
-            }')
-          
-          echo "Requesting AI summary from Gemini (gemini-flash-latest)..."
-          # Retry logic with exponential backoff for 429 Rate Limit
-          RETRY_COUNT=0
-          MAX_RETRIES=5
-          SLEEP_TIME=10
-          while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-            RESPONSE=$(curl -s -X POST "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=$GEMINI_API_KEY" \
-              -H "Content-Type: application/json" \
-              -d "$PAYLOAD")
-            
-            # Check if 429 Too Many Requests or quota error occurred
-            if echo "$RESPONSE" | grep -q "RESOURCE_EXHAUSTED\|429"; then
-              echo "Rate limited (429/RESOURCE_EXHAUSTED). Retrying in ${SLEEP_TIME}s (Attempt $((RETRY_COUNT+1))/$MAX_RETRIES)..."
-              sleep $SLEEP_TIME
-              SLEEP_TIME=$((SLEEP_TIME * 2))
-              RETRY_COUNT=$((RETRY_COUNT + 1))
-            else
-              break
-            fi
+          cat > .github/ai/prompt.txt <<'PROMPT'
+          You are writing the changelog for "Hikaru", an anime app.
+
+          Write it for regular users, not developers. Friendly, clear, upbeat.
+          Do NOT mention code, commits, diffs, repositories or file names.
+          Do NOT invent features that are not supported by the list below.
+
+          Reply with exactly these three Markdown sections and nothing else:
+
+          ### What's New
+          - ...
+
+          ### Improvements & Fixes
+          - ...
+
+          ### Under the Hood
+          - ...
+
+          Keep each bullet under 15 words. Use 0 to 3 bullets per section; skip a
+          bullet rather than padding it. No headings other than the three above.
+
+          CHANGES:
+          PROMPT
+
+          printf '%s\n' "$COMMITS" >> .github/ai/prompt.txt
+
+          if [[ -z "${GEMINI_API_KEY:-}" ]]; then
+            echo "::warning::No hand-written notes for v$VERSION and GEMINI_API_KEY is not set - falling back to generic notes. Add RELEASE_NOTES.md or the GEMINI_API_KEY secret."
+            exit 0
+          fi
+
+          PAYLOAD=$(jq -n --rawfile prompt .github/ai/prompt.txt \
+            '{contents: [{parts: [{text: $prompt}]}], generationConfig: {temperature: 0.6, maxOutputTokens: 1024}}')
+
+          # Google retires model names for new API keys, so try newest first and
+          # keep going if one of them is unavailable.
+          # Newest flash first, lite models as the last resort.
+          MODELS="${GEMINI_MODELS:-gemini-3.6-flash gemini-3.5-flash gemini-3.8-flash gemini-3.7-flash gemini-flash-latest gemini-flash-lite-latest gemini-2.5-flash}"
+          DEADLINE=$(( $(date +%s) + 150 ))
+          summary=""
+          for model in $MODELS; do
+            echo "Trying model: $model"
+            for attempt in 1 2; do
+              if [[ $(date +%s) -ge $DEADLINE ]]; then
+                echo "150s budget exceeded, stopping model attempts"
+                break 2
+              fi
+
+              http=$(curl -sS --max-time 45 -o /tmp/gemini.json -w '%{http_code}' -X POST \
+                "https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}" \
+                -H 'Content-Type: application/json' -d "$PAYLOAD" || echo "000")
+              response=$(cat /tmp/gemini.json 2>/dev/null || echo '{}')
+              summary=$(echo "$response" | jq -r '[.candidates[0].content.parts[]? | select(.thought != true) | .text] | join("")' 2>/dev/null)
+
+              if [[ -n "$summary" ]]; then
+                echo "Notes generated with $model"
+                echo "USED_MODEL=$model" >> "${GITHUB_ENV:-/dev/null}"
+                echo "NOTES_SOURCE=gemini" >> "${GITHUB_ENV:-/dev/null}"
+                break 2
+              fi
+
+              echo "  HTTP $http: $(echo "$response" | jq -r '.error.message // .promptFeedback.blockReason // "no text returned"' 2>/dev/null | head -c 160)"
+
+              # Only rate limits deserve a retry; every other error moves on.
+              if [[ "$http" == "429" ]]; then
+                echo "  rate limited, one retry in 5s"
+                sleep 5
+              else
+                break
+              fi
+            done
           done
-          
-          SUMMARY=$(echo "$RESPONSE" | jq -r '.candidates[0].content.parts[0].text // empty')
-          
-          # Fallback to gemini-flash-lite-latest if primary fails or is empty
-          if [ -z "$SUMMARY" ] || [ "$SUMMARY" == "null" ]; then
-            echo "Primary model failed or empty. Requesting fallback from Gemini (gemini-flash-lite-latest)..."
-            RESPONSE=$(curl -s -X POST "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-lite-latest:generateContent?key=$GEMINI_API_KEY" \
-              -H "Content-Type: application/json" \
-              -d "$PAYLOAD")
-            SUMMARY=$(echo "$RESPONSE" | jq -r '.candidates[0].content.parts[0].text // empty')
-          fi
-          
-          if [ -z "$SUMMARY" ] || [ "$SUMMARY" == "null" ]; then
-            SUMMARY="We've made some secret improvements under the hood to make your experience better! ✨"
-          fi
-          
-          echo "CHANGELOG<<EOF" >> $GITHUB_ENV
-          echo "$SUMMARY" >> $GITHUB_ENV
-          echo "EOF" >> $GITHUB_ENV
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: v${{ env.NEW_VN }}
-          name: Hikaru Release v${{ env.NEW_VN }}
-          files: app/build/outputs/apk/release/*.apk
-          draft: false
-          prerelease: false
-          generate_release_notes: false
-          body: |
-            ## 🚀 Hikaru v${{ env.NEW_VN }}
-            
-            ${{ env.CHANGELOG }}
-            
-            ---
-            **📥 Download:** Choose the `arm64-v8a` version for your phone.
+          if [[ -z "$summary" ]]; then
+            echo "::warning::AI changelog unavailable, using fallback text"
+            echo "NOTES_SOURCE=fallback" >> "${GITHUB_ENV:-/dev/null}"
+            echo "::notice::Release notes source: built-in generic text (no usable notes were available)"
+            exit 0
+          fi
 
-      - name: Send Announcement to Discord
-        if: success()
-        env:
-          DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
+          printf '%s\n' "$summary" > .github/ai/changelog.md
+
+          # Flatten to one line so the generated text is visible as an annotation
+          # without needing the raw job log.
+          PREVIEW=$(printf '%s' "$summary" | tr '\n' '~' | tr -s ' ' | head -c 700)
+          echo "::notice::Release notes source: Gemini (${model}): $PREVIEW"
+
+      - name: Compose release notes
         run: |
-          # Define clean links for Markdown
-          RELEASE_URL="https://github.com/SA-San49/Hikaru/releases/tag/v${{ env.NEW_VN }}"
-          COMMIT_URL="${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}"
-          
-          EMBED_TITLE="🚀 Hikaru Official Release (v${{ env.NEW_VN }})"
-          EMBED_DESC=$(cat <<EOF
-          ${{ env.CHANGELOG }}
+          set -euo pipefail
 
-          ---
-          **📥 [Download Release APK]($RELEASE_URL)**
-          **🔗 [View Release Details]($RELEASE_URL)**
+          FALLBACK=$(cat <<'EOF'
+          ### What's New
+          - Fresh update with the latest improvements
+
+          ### Improvements & Fixes
+          - General stability and performance polish
+
+          ### Under the Hood
+          - Internal housekeeping for a smoother experience
           EOF
           )
 
-          # Encode using jq for a clean Discord Embed payload
+          if [[ -s .github/ai/changelog.md ]]; then
+            CHANGELOG=$(cat .github/ai/changelog.md)
+          else
+            CHANGELOG="$FALLBACK"
+          fi
+
+          awk_row() {
+            printf '| %s | `Hikaru-v%s-%s-release.apk` |\n' "$1" "$VERSION" "$2"
+          }
+
+          # Hand-written notes bring their own opening line (a first release
+          # should not say "we've got a fresh update"); generated notes get the
+          # standard friendly greeting instead.
+          if [[ "${NOTES_SOURCE:-auto}" == "hand" ]]; then
+            GREETING=""
+          else
+            GREETING="Hey everyone! We've got a fresh update for you 🚀"
+          fi
+
+          # $1 = output file, $2 = "table" to include the per-ABI table.
+          write_body() {
+            {
+              echo "## Hikaru v${VERSION}"
+              echo
+              if [[ -n "$GREETING" ]]; then
+                echo "$GREETING"
+                echo
+              fi
+              echo "$CHANGELOG"
+              echo
+              echo "---"
+              echo
+              if [[ "$2" == "table" ]]; then
+                echo "**📥 Download:** choose the file for your device. Most modern phones need **arm64-v8a**."
+                echo
+                echo "| Device | File |"
+                echo "| --- | --- |"
+                awk_row "Most phones (64-bit ARM)" "arm64-v8a"
+                awk_row "Older phones (32-bit ARM)" "armeabi-v7a"
+                awk_row "x86 emulators / devices" "x86"
+                awk_row "x86_64 emulators / devices" "x86_64"
+                awk_row "Not sure? Works everywhere" "universal"
+              else
+                echo "**📥 Download:** tap the button for your device."
+                echo
+                echo "Most modern phones need **arm64-v8a**; older ones need **armeabi-v7a**."
+                echo "Not sure? Pick **universal** - it works everywhere."
+              fi
+              echo
+              echo "**Install:** open the \`.apk\` on your device and allow installation from unknown sources if prompted."
+              echo
+              echo "_Version ${VERSION} · versionCode ${VERSION_CODE}_"
+            } > "$1"
+          }
+
+          # GitHub renders the APK table, so the release body keeps it.
+          write_body .github/ai/release_body.md table
+
+          # Discord cannot render Markdown tables, so the embed body drops it and
+          # the download becomes a link button instead.
+          write_body .github/ai/discord_body.md button
+
+          echo "Release body:"
+          cat .github/ai/release_body.md
+          echo
+          echo "Discord body:"
+          cat .github/ai/discord_body.md
+
+      - name: Create GitHub Release
+        if: ${{ !inputs.dry_run && !inputs.notes_only }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ env.VERSION }}
+          name: Hikaru v${{ env.VERSION }}
+          body_path: .github/ai/release_body.md
+          files: app/build/outputs/apk/release/Hikaru-v${{ env.VERSION }}-*-release.apk
+          fail_on_unmatched_files: true
+          draft: false
+          prerelease: false
+          generate_release_notes: false
+
+      - name: Bump version for the next release
+        if: ${{ !inputs.dry_run && !inputs.notes_only && (github.ref_name == 'main' || startsWith(github.ref, 'refs/tags/')) }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # Bump whatever is on main, so a tag-triggered release cannot rewind it.
+          git fetch origin main
+          git checkout -B release-version-bump origin/main
+
+          OUT=$(./scripts/bump_version.sh)
+          echo "$OUT"
+          NEW_VN=$(printf '%s\n' "$OUT" | sed -n 's/^NEW_VN=//p' | tail -n1)
+          NEW_VC=$(printf '%s\n' "$OUT" | sed -n 's/^NEW_VC=//p' | tail -n1)
+          : "${NEW_VN:?could not determine next version}"
+
+          git add app/build.gradle.kts
+          if git diff --cached --quiet; then
+            echo "::warning::Version file already at $NEW_VN, nothing to commit"
+            exit 0
+          fi
+
+          # [skip ci] is belt and braces: this workflow no longer runs on push to main.
+          git commit -m "chore(release): prepare v${NEW_VN} (versionCode ${NEW_VC}) [skip ci]"
+          git push origin HEAD:main
+          echo "Next release will be v$NEW_VN (versionCode $NEW_VC)"
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### Hikaru v${VERSION:-?} release"
+            echo
+            echo "- Trigger: \`${GITHUB_REF}\`"
+            echo "- Dry run: \`${{ inputs.dry_run }}\`"
+            echo "- APK naming: \`Hikaru-v${VERSION:-?}-{abi}-release.apk\`"
+            echo "- Release: https://github.com/${GITHUB_REPOSITORY}/releases/tag/v${VERSION:-?}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Final step: notify the Discord "update" channel through a webhook.
+      # The URL is a credential, so it lives in an Actions secret
+      # (DISCORD_UPDATE_WEBHOOK, falling back to DISCORD_WEBHOOK_URL), never in
+      # this file. This is the only Discord notification the release sends.
+      - name: Send update notification to Discord
+        if: ${{ !inputs.dry_run || inputs.notify_test }}
+        continue-on-error: true
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_UPDATE_WEBHOOK || secrets.DISCORD_WEBHOOK_URL }}
+          NOTIFY_TEST: ${{ inputs.notify_test }}
+          BUTTON_URL: ${{ inputs.button_url }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${DISCORD_WEBHOOK_URL:-}" ]]; then
+            echo "::warning::DISCORD_WEBHOOK_URL is not set, skipping the update notification"
+            exit 0
+          fi
+
+          if [[ "${NOTIFY_TEST:-false}" == "true" ]]; then
+            # Nothing is published during a test, so link the releases page instead
+            # of a tag that does not exist yet.
+            RELEASE_URL="https://github.com/${GITHUB_REPOSITORY}/releases"
+          else
+            RELEASE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/tag/v${VERSION}"
+          fi
+
+          # Explicit override, so the button can be pointed at any real page
+          # (Actions, a file, the releases list) while testing.
+          if [[ -n "${BUTTON_URL:-}" ]]; then
+            RELEASE_URL="$BUTTON_URL"
+            echo "button_url override: $RELEASE_URL"
+          fi
+
+          # Discord caps an embed description at 4096 characters.
+          # discord_body.md already has the per-ABI table removed, because
+          # Discord cannot render Markdown tables.
+          BODY=$(cat .github/ai/discord_body.md)
+          if [[ ${#BODY} -gt 4090 ]]; then
+            BODY="${BODY:0:4090}"
+          fi
+
+          # Brand colour #fd0101 = 16580865.
+          # type 1 = action row, type 2 = button, style 5 = link button.
+          # Webhooks may only send link buttons (style 5), never interactive ones.
+          # One link button per ABI, all in a single action row (Discord allows
+          # up to 5 per row). Real releases point at each APK asset; while
+          # testing every button points at the same real page.
+          if [[ -n "${BUTTON_URL:-}" ]]; then
+            U_ARM64="$RELEASE_URL"
+            U_ARMV7="$RELEASE_URL"
+            U_X86="$RELEASE_URL"
+            U_X8664="$RELEASE_URL"
+            U_UNIVERSAL="$RELEASE_URL"
+          elif [[ "${NOTIFY_TEST:-false}" == "true" ]]; then
+            U_ARM64="$RELEASE_URL"
+            U_ARMV7="$RELEASE_URL"
+            U_X86="$RELEASE_URL"
+            U_X8664="$RELEASE_URL"
+            U_UNIVERSAL="$RELEASE_URL"
+          else
+            ASSET="https://github.com/${GITHUB_REPOSITORY}/releases/download/v${VERSION}"
+            U_ARM64="${ASSET}/Hikaru-v${VERSION}-arm64-v8a-release.apk"
+            U_ARMV7="${ASSET}/Hikaru-v${VERSION}-armeabi-v7a-release.apk"
+            U_X86="${ASSET}/Hikaru-v${VERSION}-x86-release.apk"
+            U_X8664="${ASSET}/Hikaru-v${VERSION}-x86_64-release.apk"
+            U_UNIVERSAL="${ASSET}/Hikaru-v${VERSION}-universal-release.apk"
+          fi
+
+          BUTTONS=$(jq -n \
+            --arg u1 "$U_ARM64" --arg u2 "$U_ARMV7" --arg u3 "$U_X86" \
+            --arg u4 "$U_X8664" --arg u5 "$U_UNIVERSAL" \
+            '[
+               {label: "arm64-v8a",   url: $u1},
+               {label: "armeabi-v7a", url: $u2},
+               {label: "x86",         url: $u3},
+               {label: "x86_64",      url: $u4},
+               {label: "universal",   url: $u5}
+             ] | map({type: 2, style: 5, label: .label, url: .url})')
+
           PAYLOAD=$(jq -n \
-            --arg title "$EMBED_TITLE" \
-            --arg desc "$EMBED_DESC" \
+            --arg title "⚙️ New Update is Available" \
+            --arg desc "$BODY" \
+            --arg url "$RELEASE_URL" \
+            --argjson buttons "$BUTTONS" \
             '{
+              content: null,
               embeds: [{
                 title: $title,
                 description: $desc,
-                color: 16763904
-              }]
+                url: $url,
+                color: 16580865,
+                footer: { text: " ⚙️ New Update is Available" }
+              }],
+              components: [{ type: 1, components: $buttons }],
+              attachments: []
             }')
-          
-          curl -X POST -H "Authorization: Bot $DISCORD_BOT_TOKEN" \
-               -H "Content-Type: application/json" \
-               -d "$PAYLOAD" \
-               https://discord.com/api/v10/channels/1482254131417845821/messages
+
+          # Fail on 4xx/5xx so a broken webhook is visible in the run.
+          curl -sS --fail --retry 3 --retry-delay 5 \
+            -X POST "$DISCORD_WEBHOOK_URL" \
+            -H 'Content-Type: application/json' \
+            -d "$PAYLOAD"
+          echo "Update notification sent for v${VERSION}"

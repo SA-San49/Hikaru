@@ -1,0 +1,66 @@
+name: Discord Webhook Test
+
+# Verifies the DISCORD_WEBHOOK_URL secret without cutting a release.
+# Run it from Actions -> Discord Webhook Test -> Run workflow.
+# Delete this file once the webhook is confirmed working.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test-webhook:
+    name: Send a sample update notification
+    runs-on: ubuntu-latest
+    steps:
+      - name: Post sample embed
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_UPDATE_WEBHOOK || secrets.DISCORD_WEBHOOK_URL }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${DISCORD_WEBHOOK_URL:-}" ]]; then
+            echo "::error::DISCORD_WEBHOOK_URL is not set. Add it under Settings -> Secrets and variables -> Actions."
+            exit 1
+          fi
+
+          BODY=$(cat <<'EOF'
+          ## Hikaru v0.5.220
+
+          Hey everyone! We've got a fresh update for you 🚀
+
+          ### What's New
+          - This is a test notification from GitHub Actions
+
+          ### Improvements & Fixes
+          - Nothing yet - this message only verifies the webhook
+
+          ### Under the Hood
+          - Sent by the "Discord Webhook Test" workflow
+          EOF
+          )
+
+          RELEASE_URL="https://github.com/${REPO}/releases"
+
+          PAYLOAD=$(jq -n \
+            --arg title "⚙️ New Update is Available" \
+            --arg desc "$BODY" \
+            --arg url "$RELEASE_URL" \
+            '{
+              content: null,
+              embeds: [{
+                title: $title,
+                description: $desc,
+                url: $url,
+                color: 76285,
+                footer: { text: " ⚙️ New Update is Available" }
+              }],
+              attachments: []
+            }')
+
+          curl -sS --fail --retry 3 --retry-delay 5 \
+            -X POST "$DISCORD_WEBHOOK_URL" \
+            -H 'Content-Type: application/json' \
+            -d "$PAYLOAD"
+
+          echo "Test notification sent. Check your Discord update channel."
