@@ -61,30 +61,43 @@ jobs:
             exit 1
           fi
 
+          # 1. Ask the API which models this key can actually use.
+          MODELS_JSON=$(curl -sS "https://generativelanguage.googleapis.com/v1beta/models?key=${GEMINI_API_KEY}&pageSize=200" || echo '{}')
+          AVAILABLE=$(echo "$MODELS_JSON" | jq -r '.models[]? | select((.supportedGenerationMethods // []) | index("generateContent")) | .name' 2>/dev/null | sed 's|^models/||' | tr '\n' ' ')
+          LIST_ERROR=$(echo "$MODELS_JSON" | jq -r '.error.message // empty' 2>/dev/null)
+
+          echo "Available generateContent models: ${AVAILABLE:-<none>}"
+          if [[ -n "$LIST_ERROR" ]]; then
+            echo "::warning::Listing models failed: $LIST_ERROR"
+          fi
+          echo "::notice::Models available to this key: ${AVAILABLE:0:900}"
+
+          # 2. Try the usable chat-style models, newest-looking first.
           PAYLOAD=$(jq -n '{contents: [{parts: [{text: "Reply with exactly: OK"}]}], generationConfig: {temperature: 0, maxOutputTokens: 16}}')
 
-          # Google retires model names for new API keys, so try newest first.
-          MODELS="${GEMINI_MODELS:-gemini-3.8-flash gemini-flash-latest gemini-2.5-flash}"
-          LAST_ERROR=""
+          CANDIDATES=$(printf '%s\n' $AVAILABLE | grep -viE 'embedding|aqa|imagen|veo|tts|image|live|thinking' | head -n 6)
+          if [[ -z "$CANDIDATES" ]]; then
+            CANDIDATES=$(printf '%s\n' gemini-3.8-flash gemini-flash-latest gemini-2.5-flash)
+          fi
 
-          for model in $MODELS; do
+          REPORT=""
+          for model in $CANDIDATES; do
             HTTP=$(curl -sS -o /tmp/resp.json -w '%{http_code}' -X POST \
               "https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}" \
               -H 'Content-Type: application/json' -d "$PAYLOAD")
-
             TEXT=$(jq -r '.candidates[0].content.parts[0].text // empty' /tmp/resp.json 2>/dev/null)
-            echo "$model -> HTTP $HTTP, text: ${TEXT:-<none>}"
 
             if [[ "$HTTP" == "200" && -n "$TEXT" ]]; then
-              echo "::notice::Gemini key works. Use model '$model'. It replied: $TEXT"
+              echo "::notice::Gemini works. Use model '$model' (it replied: $TEXT)"
               exit 0
             fi
 
-            LAST_ERROR="$model -> HTTP $HTTP: $(jq -r '.error.message // .promptFeedback.blockReason // "no text returned"' /tmp/resp.json 2>/dev/null | head -c 300)"
-            echo "  $LAST_ERROR"
+            MSG=$(jq -r '.error.message // .promptFeedback.blockReason // "no text"' /tmp/resp.json 2>/dev/null | head -c 160)
+            echo "$model -> HTTP $HTTP: $MSG"
+            REPORT="${REPORT}${model}=${HTTP}; "
           done
 
-          echo "::error::No Gemini model worked. Last error: $LAST_ERROR"
+          echo "::error::No usable Gemini model. Tried: ${REPORT}Available: ${AVAILABLE:0:600}"
           exit 1
 
   build-release:
