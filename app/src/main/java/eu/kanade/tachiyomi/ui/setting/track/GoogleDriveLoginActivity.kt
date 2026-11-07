@@ -13,6 +13,19 @@ import uy.kohesive.injekt.api.get
 class GoogleDriveLoginActivity : BaseOAuthLoginActivity() {
     private val googleDriveService = Injekt.get<GoogleDriveService>()
     override fun handleResult(data: Uri?) {
+        // The callback is reachable by any app on the device, so reject anything that does not
+        // echo the single-use state value issued when this app started the sign-in attempt.
+        if (!googleDriveService.consumeOAuthState(data?.getQueryParameter("state"))) {
+            Toast.makeText(
+                this@GoogleDriveLoginActivity,
+                stringResource(SYMR.strings.google_drive_login_failed, "invalid or expired sign-in attempt"),
+                Toast.LENGTH_LONG,
+            ).show()
+
+            returnToSettings()
+            return
+        }
+
         val code = data?.getQueryParameter("code")
         val error = data?.getQueryParameter("error")
         if (code != null) {
