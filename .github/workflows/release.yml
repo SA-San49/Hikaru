@@ -265,6 +265,7 @@ jobs:
           # 0. Explicit opt-out, so the Gemini key can be tested on demand.
           if [[ "${FORCE_AI_NOTES:-false}" == "true" ]]; then
             echo "force_ai_notes=true - skipping RELEASE_NOTES.md and generating notes with Gemini"
+            echo "::notice::Release notes source: Gemini (force_ai_notes=true was requested)"
           # 1. Hand-written notes win, as long as they are meant for this version.
           elif [[ -s RELEASE_NOTES.md ]]; then
             DECLARED=$(sed -n 's/.*<!-- *version: *\([^ >]*\) *-->.*/\1/p' RELEASE_NOTES.md | head -n1)
@@ -276,6 +277,7 @@ jobs:
                    !in_comment' RELEASE_NOTES.md \
                 | sed -e '/./,$!d' > .github/ai/changelog.md
               echo "Using hand-written notes from RELEASE_NOTES.md (${DECLARED:-unversioned})"
+              echo "::notice::Release notes source: hand-written RELEASE_NOTES.md (${DECLARED:-unversioned})"
               exit 0
             fi
             echo "::warning::RELEASE_NOTES.md targets v$DECLARED but this release is v$VERSION - ignoring it and generating notes instead"
@@ -359,6 +361,7 @@ jobs:
 
           if [[ -z "$summary" ]]; then
             echo "::warning::AI changelog unavailable, using fallback text"
+            echo "::notice::Release notes source: built-in generic text (no usable notes were available)"
             exit 0
           fi
 
@@ -367,7 +370,7 @@ jobs:
           # Flatten to one line so the generated text is visible as an annotation
           # without needing the raw job log.
           PREVIEW=$(printf '%s' "$summary" | tr '\n' '~' | tr -s ' ' | head -c 700)
-          echo "::notice::Gemini notes from ${model}: $PREVIEW"
+          echo "::notice::Release notes source: Gemini (${model}): $PREVIEW"
 
       - name: Compose release notes
         run: |
