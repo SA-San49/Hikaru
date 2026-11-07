@@ -32,6 +32,10 @@ on:
         description: 'Only test the GEMINI_API_KEY against the API (~30s, no build, publishes nothing)'
         type: boolean
         default: false
+      notes_only:
+        description: 'Skip the APK build entirely — just generate notes (and post them when notify_test is on)'
+        type: boolean
+        default: false
   push:
     tags:
       - 'v*'
@@ -114,12 +118,14 @@ jobs:
           fetch-depth: 0
 
       - name: Set up JDK
+        if: ${{ !inputs.notes_only }}
         uses: actions/setup-java@v4
         with:
           java-version: 17
           distribution: temurin
 
       - name: Set up Gradle
+        if: ${{ !inputs.notes_only }}
         uses: gradle/actions/setup-gradle@v4
         with:
           cache-read-only: false
@@ -144,6 +150,7 @@ jobs:
           echo "Releasing Hikaru v$VERSION (versionCode $VERSION_CODE) from ${GITHUB_REF}"
 
       - name: Validate signing secrets
+        if: ${{ !inputs.notes_only }}
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
           SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
@@ -157,6 +164,7 @@ jobs:
           : "${SIGNING_KEY_PASSWORD:?Configure the GitHub secret SIGNING_KEY_PASSWORD}"
 
       - name: Decode signing keystore
+        if: ${{ !inputs.notes_only }}
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
           SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
@@ -170,9 +178,11 @@ jobs:
             -storepass "$SIGNING_STORE_PASSWORD" -alias "$SIGNING_KEY_ALIAS" >/dev/null
 
       - name: Run Code Analysis (Detekt)
+        if: ${{ !inputs.notes_only }}
         run: ./gradlew detekt --no-daemon
 
       - name: Build release APKs
+        if: ${{ !inputs.notes_only }}
         run: >-
           ./gradlew assembleRelease
           -PabiList=${{ env.ABIS }}
@@ -187,6 +197,7 @@ jobs:
           DISCORD_RPC_APP_ID: ${{ vars.DISCORD_RPC_APP_ID }}
 
       - name: Rename and validate APKs
+        if: ${{ !inputs.notes_only }}
         run: |
           set -euo pipefail
           cd app/build/outputs/apk/release
@@ -218,6 +229,7 @@ jobs:
           echo "All 5 release APKs renamed with version $VERSION"
 
       - name: Upload APKs as workflow artifacts
+        if: ${{ !inputs.notes_only }}
         uses: actions/upload-artifact@v4
         with:
           name: Hikaru-v${{ env.VERSION }}-release-apks
@@ -415,7 +427,7 @@ jobs:
           cat .github/ai/release_body.md
 
       - name: Create GitHub Release
-        if: ${{ !inputs.dry_run }}
+        if: ${{ !inputs.dry_run && !inputs.notes_only }}
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ env.VERSION }}
@@ -428,7 +440,7 @@ jobs:
           generate_release_notes: false
 
       - name: Bump version for the next release
-        if: ${{ !inputs.dry_run && (github.ref_name == 'main' || startsWith(github.ref, 'refs/tags/')) }}
+        if: ${{ !inputs.dry_run && !inputs.notes_only && (github.ref_name == 'main' || startsWith(github.ref, 'refs/tags/')) }}
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
