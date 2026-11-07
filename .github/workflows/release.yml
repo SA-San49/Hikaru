@@ -24,6 +24,10 @@ on:
         description: 'Also send the Discord notification (use with dry_run to test the webhook)'
         type: boolean
         default: false
+      force_ai_notes:
+        description: 'Ignore RELEASE_NOTES.md and always generate notes with Gemini (for testing the key)'
+        type: boolean
+        default: false
   push:
     tags:
       - 'v*'
@@ -189,12 +193,16 @@ jobs:
         continue-on-error: true
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          FORCE_AI_NOTES: ${{ inputs.force_ai_notes }}
         run: |
           set -euo pipefail
           mkdir -p .github/ai
 
+          # 0. Explicit opt-out, so the Gemini key can be tested on demand.
+          if [[ "${FORCE_AI_NOTES:-false}" == "true" ]]; then
+            echo "force_ai_notes=true - skipping RELEASE_NOTES.md and generating notes with Gemini"
           # 1. Hand-written notes win, as long as they are meant for this version.
-          if [[ -s RELEASE_NOTES.md ]]; then
+          elif [[ -s RELEASE_NOTES.md ]]; then
             DECLARED=$(sed -n 's/.*<!-- *version: *\([^ >]*\) *-->.*/\1/p' RELEASE_NOTES.md | head -n1)
             if [[ -z "$DECLARED" || "$DECLARED" == "$VERSION" ]]; then
               # Strip the HTML comment blocks (version marker + maintainer notes)
