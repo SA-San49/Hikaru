@@ -10,7 +10,9 @@ class ServerSentEventParserTest {
     fun `accepts standard data lines with and without optional whitespace`() {
         assertEquals("{\"message\":\"hello\"}", parseServerSentEventData("data: {\"message\":\"hello\"}"))
         assertEquals("[DONE]", parseServerSentEventData("data:[DONE]"))
-        assertEquals("event", parseServerSentEventData("data:  event"))
+        assertEquals("event", parseServerSentEventData("data:event"))
+        assertEquals("event", parseServerSentEventData("data: event"))
+        assertEquals(" event", parseServerSentEventData("data:  event"))
     }
 
     @Test
