@@ -28,6 +28,7 @@ import com.hippo.unifile.UniFile
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.Serializable
@@ -731,10 +732,11 @@ class AiManager(
                             .getOrDefault("Source ${feed.source}")
                         val type = FeedSavedSearch.Type.from(feed.type).name
                         val savedSearch = feed.savedSearch?.let(savedSearchesById::get)
+                        val savedQuery = savedSearch?.query
                         val details = when {
                             savedSearch == null -> type
-                            savedSearch.query.isNullOrBlank() -> "$type: ${savedSearch.name.take(80)}"
-                            else -> "$type: ${savedSearch.name.take(80)} — query ${savedSearch.query.take(120)}"
+                            savedQuery.isNullOrBlank() -> "$type: ${savedSearch.name.take(80)}"
+                            else -> "$type: ${savedSearch.name.take(80)} — query ${savedQuery.take(120)}"
                         }
                         appendLine("- ${sourceName.take(80)} — $details")
                         configuredFeedCount++

@@ -927,6 +927,7 @@ class Downloader(
                 coroutineScope {
                     (0 until threadCount).map { index ->
                         async {
+                            val coroutineContext = currentCoroutineContext()
                             val partFile = partFiles[index]
                             val partTotalSize = if (index == threadCount - 1) {
                                 size - (index * partSize)
@@ -1025,6 +1026,7 @@ class Downloader(
             if (size > 0L) download.partProgress[0] = (start.toFloat() / size).coerceIn(0f, 1f)
             val requestBuilder = Request.Builder().url(video.videoUrl).headers(headers)
             if (start > 0L) requestBuilder.header("Range", "bytes=$start-")
+            val coroutineContext = currentCoroutineContext()
 
             executeCancellable(client, requestBuilder.build()) { response ->
                 if (!response.isSuccessful) throw IOException("Unexpected response code ${response.code}")
@@ -1179,7 +1181,7 @@ class Downloader(
             secretKey = javax.crypto.spec.SecretKeySpec(keyBytes, "AES")
         }
 
-        val downloadedCount = java.util.concurrent.atomic.LongAdder()
+        val downloadedCount = java.util.concurrent.atomic.AtomicInteger()
         val downloadedBytes = java.util.concurrent.atomic.LongAdder()
         // ANZ -->
         val segmentIndex = java.util.concurrent.atomic.AtomicInteger(0) // ANZ: lock-free O(1) segment dispatch
@@ -1208,7 +1210,7 @@ class Downloader(
                         // ANZ <--
 
                         if (segmentFile.exists() && segmentFile.length() > 0L) {
-                            val currentCount = downloadedCount.increment().toInt()
+                            val currentCount = downloadedCount.incrementAndGet()
                             downloadedBytes.add(segmentFile.length())
                             download.downloadedSegments = currentCount
                             download.segmentProgress[segIdx] = true
@@ -1241,7 +1243,7 @@ class Downloader(
                                 if (data.isEmpty()) throw IOException("Decrypted HLS segment was empty")
 
                                 FileOutputStream(segmentFile).use { it.write(data) }
-                                val currentCount = downloadedCount.increment().toInt()
+                                val currentCount = downloadedCount.incrementAndGet()
                                 downloadedBytes.add(data.size.toLong())
                                 download.downloadedSegments = currentCount
                                 download.segmentProgress[segIdx] = true
