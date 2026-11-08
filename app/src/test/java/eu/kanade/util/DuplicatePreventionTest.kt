@@ -1,8 +1,10 @@
 package eu.kanade.util
 
 import tachiyomi.domain.anime.model.Anime
-import org.junit.Assert.*
-import org.junit.Test
+import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.Test
 
 /**
  * Regression and duplicate-prevention tests based on prompt-file requirements
