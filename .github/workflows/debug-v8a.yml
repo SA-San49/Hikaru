@@ -1,4 +1,4 @@
-name: Hikaru Unit Test Diagnostic
+name: Hikaru v8a R8 Debug
 
 on:
   workflow_dispatch:
@@ -8,8 +8,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  app-unit-tests:
-    name: Run app unit tests
+  build-debug-v8a:
+    name: Build arm64-v8a R8 Hikaru-signed APK
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -30,21 +30,56 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
         with:
           cache-read-only: false
+          # Persist Gradle cache across builds
 
-      - name: Run app unit tests
+      - name: Get current version
+        id: get_version
         run: |
-          set -o pipefail
-          ./gradlew :app:testDebugUnitTest --no-daemon --stacktrace --console=plain 2>&1 | tee "$RUNNER_TEMP/unit-test.log"
+          CURRENT_VN=$(sed -n 's/.*versionName = "\([^"]*\)".*/\1/p' app/build.gradle.kts | head -1)
+          test -n "$CURRENT_VN"
+          echo "VERSION=$CURRENT_VN" >> "$GITHUB_ENV"
+          echo "Building Hikaru v$CURRENT_VN"
 
-      - name: Surface unit-test failure details
-        if: failure()
+      - name: Decode signing keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
         run: |
-          log="$RUNNER_TEMP/unit-test.log"
-          if [[ -f "$log" ]]; then
-            { grep -Ein 'FAILURE:|What went wrong:|e: file:|error:|failed|Exception|Caused by:' "$log" || true; } | tail -n 20 | while IFS= read -r line; do
-              printf '::error title=Unit test diagnostic::%s\n' "$line"
-            done
-            tail -n 20 "$log" | while IFS= read -r line; do
-              printf '::error title=Unit test log tail::%s\n' "$line"
-            done
-          fi
+          test -n "$KEYSTORE_BASE64"
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > app/hikaru.jks
+          test -s app/hikaru.jks
+
+      - name: Build arm64-v8a maximum R8 Hikaru-signed APK
+        run: ./gradlew assembleR8Debug -PabiList=arm64-v8a -Pandroid.enableR8.fullMode=true -Pinclude-telemetry=false -Penable-updater=false --no-daemon
+        env:
+          SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
+          SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
+          SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
+          MAL_CLIENT_SECRET: ${{ secrets.MAL_CLIENT_SECRET }}
+          DISCORD_RPC_APP_ID: ${{ vars.DISCORD_RPC_APP_ID }}
+
+      - name: Rename and validate APK
+        run: |
+          VERSION="${{ env.VERSION }}"
+          mkdir -p dist
+          APK="dist/Hikaru-v${VERSION}-v8a-r8-debug.apk"
+          mapfile -t APKS < <(find app/build/outputs/apk/r8Debug -type f -name "*.apk" | sort)
+          test "${#APKS[@]}" -gt 0
+          printf 'Generated APKs:\n'
+          for candidate in "${APKS[@]}"; do
+            printf '  %s (%s bytes)\n' "$candidate" "$(stat -c%s "$candidate")"
+          done
+          SOURCE_APK=$(find app/build/outputs/apk/r8Debug -type f -name "*arm64-v8a*.apk" | head -1)
+          test -n "$SOURCE_APK"
+          cp "$SOURCE_APK" "$APK"
+          test -s "$APK"
+          SIZE_BYTES=$(stat -c%s "$APK")
+          SIZE_MB=$((SIZE_BYTES / 1024 / 1024))
+          echo "APK size: ${SIZE_MB} MiB (${SIZE_BYTES} bytes)"
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Hikaru-v${{ env.VERSION }}-v8a-r8-debug
+          path: dist/*.apk
+          if-no-files-found: error
+          retention-days: 7
