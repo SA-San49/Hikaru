@@ -57,6 +57,24 @@ jobs:
           MAL_CLIENT_SECRET: ${{ secrets.MAL_CLIENT_SECRET }}
           DISCORD_RPC_APP_ID: ${{ vars.DISCORD_RPC_APP_ID }}
 
+      - name: Run app unit tests
+        run: |
+          set -o pipefail
+          ./gradlew :app:testDebugUnitTest --no-daemon --stacktrace --console=plain 2>&1 | tee "$RUNNER_TEMP/unit-test.log"
+
+      - name: Surface unit-test failure details
+        if: failure()
+        run: |
+          log="$RUNNER_TEMP/unit-test.log"
+          if [[ -f "$log" ]]; then
+            { grep -Ein 'FAILURE:|What went wrong:|e: file:|error:|failed|Exception|Caused by:' "$log" || true; } | tail -n 20 | while IFS= read -r line; do
+              printf '::error title=Unit test diagnostic::%s\n' "$line"
+            done
+            tail -n 20 "$log" | while IFS= read -r line; do
+              printf '::error title=Unit test log tail::%s\n' "$line"
+            done
+          fi
+
       - name: Rename and validate APK
         run: |
           VERSION="${{ env.VERSION }}"
