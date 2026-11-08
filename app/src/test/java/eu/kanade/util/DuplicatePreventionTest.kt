@@ -1,5 +1,6 @@
 package eu.kanade.util
 
+import eu.kanade.tachiyomi.source.model.UpdateStrategy
 import tachiyomi.domain.anime.model.Anime
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
@@ -31,7 +32,7 @@ class DuplicatePreventionTest {
         ogDescription = null,
         ogGenre = null,
         ogStatus = 0L,
-        updateStrategy = tachiyomi.source.model.UpdateStrategy.ALWAYS_UPDATE,
+        updateStrategy = UpdateStrategy.ALWAYS_UPDATE,
         initialized = false,
         lastModifiedAt = 0L,
         favoriteModifiedAt = null,
@@ -92,7 +93,7 @@ class DuplicatePreventionTest {
         // Before fix: both would have key "gs-999" causing crash
         // After fix: keys are "gs-1-999" and "gs-2-999"
         val keys = list.map { DuplicatePrevention.composeKeyForAnime(it) }
-        assertTrue("Keys must be unique for different sources", keys.distinct().size == keys.size)
+        assertTrue(keys.distinct().size == keys.size, "Keys must be unique for different sources")
         assertEquals("gs-1-999", keys[0])
         assertEquals("gs-2-999", keys[1])
     }
@@ -101,8 +102,8 @@ class DuplicatePreventionTest {
     fun missingId_fallbackNotEmptyKey() {
         val anime = Anime.create()
         val identity = DuplicatePrevention.canonicalAnimeIdentity(anime)
-        assertFalse("Identity should not be blank for default anime", identity.isBlank())
-        assertTrue("Identity should contain source info", identity.contains("unknown"))
+        assertFalse(identity.isBlank(), "Identity should not be blank for default anime")
+        assertTrue(identity.contains("unknown"), "Identity should contain source info")
     }
 
     @Test
@@ -110,7 +111,7 @@ class DuplicatePreventionTest {
         val a = makeAnime(42, 5)
         val key1 = DuplicatePrevention.composeKeyForAnime(a)
         val key2 = DuplicatePrevention.composeKeyForAnime(a)
-        assertEquals("Keys must remain stable", key1, key2)
+        assertEquals(key1, key2, "Keys must remain stable")
         assertEquals("gs-5-42", key1)
     }
 }

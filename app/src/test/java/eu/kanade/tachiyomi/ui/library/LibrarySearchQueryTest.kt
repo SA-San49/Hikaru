@@ -4,7 +4,7 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import tachiyomi.domain.anime.model.Anime
 import tachiyomi.domain.library.model.LibraryAnime
-import tachiyomi.source.model.UpdateStrategy
+import eu.kanade.tachiyomi.source.model.UpdateStrategy
 
 class LibrarySearchQueryTest {
 
