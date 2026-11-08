@@ -51,7 +51,7 @@ jobs:
       - name: Build arm64-v8a maximum R8 Hikaru-signed APK
         run: |
           set -o pipefail
-          ./gradlew assembleR8Debug -PabiList=arm64-v8a -Pandroid.enableR8.fullMode=true -Pinclude-telemetry=false -Penable-updater=false --no-daemon 2>&1 | tee "$RUNNER_TEMP/gradle-build.log"
+          ./gradlew assembleR8Debug -PabiList=arm64-v8a -Pandroid.enableR8.fullMode=true -Pinclude-telemetry=false -Penable-updater=false --no-daemon --stacktrace --console=plain 2>&1 | tee "$RUNNER_TEMP/gradle-build.log"
         env:
           SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
           SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
@@ -62,11 +62,24 @@ jobs:
       - name: Surface Gradle failure details
         if: failure()
         run: |
-          if [[ -f "$RUNNER_TEMP/gradle-build.log" ]]; then
-            tail -n 60 "$RUNNER_TEMP/gradle-build.log" | while IFS= read -r line; do
-              printf '::error title=Gradle build output::%s\n' "$line"
+          log="$RUNNER_TEMP/gradle-build.log"
+          if [[ -f "$log" ]]; then
+            printf '::error title=Gradle log line count::%s\n' "$(wc -l < "$log")"
+            { grep -Ein 'FAILURE:|What went wrong:|Execution failed|e: file:| error:|Caused by:|OutOfMemory|daemon has disappeared|Could not |not found|exception' "$log" || true; } | tail -n 18 | while IFS= read -r line; do
+              printf '::error title=Gradle diagnostic::%s\n' "$line"
+            done
+            tail -n 18 "$log" | while IFS= read -r line; do
+              printf '::error title=Gradle log tail::%s\n' "$line"
             done
           fi
+          if [[ -r /sys/fs/cgroup/memory.events ]]; then
+            while IFS= read -r line; do
+              printf '::error title=Runner memory events::%s\n' "$line"
+            done < /sys/fs/cgroup/memory.events
+          fi
+          free -h | while IFS= read -r line; do
+            printf '::error title=Runner memory::%s\n' "$line"
+          done
 
       - name: Rename and validate APK
         run: |
