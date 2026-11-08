@@ -74,6 +74,7 @@ import tachiyomi.domain.anime.model.Anime
 import tachiyomi.domain.category.model.Category
 import tachiyomi.domain.episode.model.Episode
 import tachiyomi.domain.library.model.LibraryAnime
+import tachiyomi.domain.library.model.LibraryFolder
 import tachiyomi.domain.library.model.LibraryGroup
 import tachiyomi.i18n.MR
 import tachiyomi.i18n.sy.SYMR
@@ -117,6 +118,12 @@ data object LibraryTab : Tab {
         val settingsScreenModel = rememberScreenModel { LibrarySettingsScreenModel() }
         val state by screenModel.state.collectAsState()
         val collapseFolders by settingsScreenModel.libraryPreferences.collapseFolders().collectAsStatePref()
+        val libraryDisplayItemsKey = remember(
+            state.libraryVersion,
+            state.folders,
+            state.searchQuery,
+            collapseFolders,
+        ) { Any() }
 
         // Folder overlay state: which folder is tapped to show the full overlay
         val openFolderId = state.openFolderId
@@ -316,6 +323,7 @@ data object LibraryTab : Tab {
                                     it,
                                 )
                             },
+                            displayItemsKey = libraryDisplayItemsKey,
                             onFolderClick = { folderItem ->
                                 screenModel.setOpenFolder(folderItem.folder.id)
                             },
@@ -323,62 +331,21 @@ data object LibraryTab : Tab {
                                 folderLongClickItem = folderItem
                             },
                             getAnimeLibraryForPage = { page ->
+                                val foldersById = state.folders.associateBy { it.id }
                                 if (!state.searchQuery.isNullOrEmpty()) {
-                                    val displayItems = mutableListOf<eu.kanade.tachiyomi.ui.library.LibraryDisplayItem>()
-                                    state.categories.forEach { cat ->
-                                        val catItems = state.library[cat] ?: emptyList()
-                                        if (catItems.isNotEmpty()) {
-                                            displayItems.add(eu.kanade.tachiyomi.ui.library.LibraryDisplayItem.Header(cat.visualName(context)))
-                                            val processedFolderIds = mutableSetOf<Long>()
-                                            val grouped = catItems.groupBy { it.libraryAnime.folderId }
-                                            for (item in catItems) {
-                                                if (!collapseFolders) {
-                                                    displayItems.add(eu.kanade.tachiyomi.ui.library.LibraryDisplayItem.Anime(item))
-                                                } else {
-                                                    val folderId = item.libraryAnime.folderId
-                                                    if (folderId == null) {
-                                                        displayItems.add(eu.kanade.tachiyomi.ui.library.LibraryDisplayItem.Anime(item))
-                                                    } else if (processedFolderIds.add(folderId)) {
-                                                        val folder = state.folders.find { it.id == folderId }
-                                                        val folderItems = grouped[folderId] ?: emptyList()
-                                                        if (folder != null) {
-                                                            displayItems.add(eu.kanade.tachiyomi.ui.library.LibraryDisplayItem.Folder(folder, folderItems))
-                                                        } else {
-                                                            displayItems.add(eu.kanade.tachiyomi.ui.library.LibraryDisplayItem.Anime(item))
-                                                            processedFolderIds.remove(folderId)
-                                                        }
-                                                    }
-                                                }
+                                    buildList {
+                                        state.categories.forEach { category ->
+                                            val categoryItems = state.library[category].orEmpty()
+                                            if (categoryItems.isNotEmpty()) {
+                                                add(LibraryDisplayItem.Header(category.visualName(context)))
+                                                addAll(categoryItems.toDisplayItems(foldersById, collapseFolders))
                                             }
                                         }
-                                    }
-                                    displayItems.toImmutableList()
+                                    }.toImmutableList()
                                 } else {
-                                    val items = state.getAnimelibItemsByPage(page)
-                                    if (!collapseFolders) {
-                                        items.map { eu.kanade.tachiyomi.ui.library.LibraryDisplayItem.Anime(it) }.toImmutableList()
-                                    } else {
-                                        val displayItems = mutableListOf<eu.kanade.tachiyomi.ui.library.LibraryDisplayItem>()
-                                        val processedFolderIds = mutableSetOf<Long>()
-                                        val grouped = items.groupBy { it.libraryAnime.folderId }
-        
-                                        for (item in items) {
-                                            val folderId = item.libraryAnime.folderId
-                                            if (folderId == null) {
-                                                displayItems.add(eu.kanade.tachiyomi.ui.library.LibraryDisplayItem.Anime(item))
-                                            } else if (processedFolderIds.add(folderId)) {
-                                                val folder = state.folders.find { it.id == folderId }
-                                                val folderItems = grouped[folderId] ?: emptyList()
-                                                if (folder != null) {
-                                                    displayItems.add(eu.kanade.tachiyomi.ui.library.LibraryDisplayItem.Folder(folder, folderItems))
-                                                } else {
-                                                    displayItems.add(eu.kanade.tachiyomi.ui.library.LibraryDisplayItem.Anime(item))
-                                                    processedFolderIds.remove(folderId)
-                                                }
-                                            }
-                                        }
-                                        displayItems.toImmutableList()
-                                    }
+                                    state.getAnimelibItemsByPage(page)
+                                        .toDisplayItems(foldersById, collapseFolders)
+                                        .toImmutableList()
                                 }
                             },
                         )
@@ -565,4 +532,27 @@ data object LibraryTab : Tab {
     // For opening settings sheet in LibraryController
     private val requestSettingsSheetEvent = Channel<Unit>()
     private suspend fun requestOpenSettingsSheet() = requestSettingsSheetEvent.send(Unit)
+}
+
+private fun List<LibraryItem>.toDisplayItems(
+    foldersById: Map<Long, LibraryFolder>,
+    collapseFolders: Boolean,
+): List<LibraryDisplayItem> {
+    if (!collapseFolders) return map { LibraryDisplayItem.Anime(it) }
+
+    val itemsByFolderId = groupBy { it.libraryAnime.folderId }
+    val addedFolderIds = HashSet<Long>()
+    val displayItems = ArrayList<LibraryDisplayItem>(size)
+    for (item in this) {
+        val folderId = item.libraryAnime.folderId
+        val folder = folderId?.let(foldersById::get)
+        if (folderId == null || folder == null) {
+            displayItems.add(LibraryDisplayItem.Anime(item))
+        } else if (addedFolderIds.add(folderId)) {
+            displayItems.add(
+                LibraryDisplayItem.Folder(folder, itemsByFolderId[folderId].orEmpty()),
+            )
+        }
+    }
+    return displayItems
 }

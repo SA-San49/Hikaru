@@ -57,6 +57,14 @@ class AiPreferences(
 
     fun aiAssistantLibrary() = preferenceStore.getBoolean("ai_assistant_library", true)
 
+    fun aiAssistantHistory() = preferenceStore.getBoolean("ai_assistant_history", false)
+
+    fun aiAssistantBrowse() = preferenceStore.getBoolean("ai_assistant_browse", false)
+
+    fun aiAssistantSchedule() = preferenceStore.getBoolean("ai_assistant_schedule", false)
+
+    fun aiAssistantFeed() = preferenceStore.getBoolean("ai_assistant_feed", false)
+
     fun aiAssistantEverythingMoe() = preferenceStore.getBoolean("ai_assistant_everything_moe", true)
 
     fun aiSystemPrompt() = preferenceStore.getString("ai_system_prompt", "")

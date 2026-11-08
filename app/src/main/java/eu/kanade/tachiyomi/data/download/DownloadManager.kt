@@ -69,6 +69,9 @@ class DownloadManager(
     val queueState
         get() = downloader.queueState
 
+    val maxConcurrentDownloads: Int
+        get() = downloader.maxConcurrentDownloads
+
     // For use by DownloadService only
     fun downloaderStart() = downloader.start()
     fun downloaderStop(reason: String? = null) = downloader.stop(reason)

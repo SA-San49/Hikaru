@@ -3,6 +3,24 @@ package eu.kanade.tachiyomi.data.ai
 import android.content.Context
 import eu.kanade.tachiyomi.data.ai.everythingmoe.EverythingMoeScraper
 import eu.kanade.domain.ai.AiPreferences
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import mihon.feature.airingschedule.ScheduleDataRefreshWorker
+import mihon.feature.airingschedule.SchedulePreferences
+import tachiyomi.domain.history.interactor.GetActivityLog
+import tachiyomi.domain.history.interactor.GetHistory
+import tachiyomi.domain.history.model.ActivityLog
+import tachiyomi.domain.source.interactor.GetFeedSavedSearchCategories
+import tachiyomi.domain.source.interactor.GetFeedSavedSearchGlobal
+import tachiyomi.domain.source.interactor.GetSavedSearchGlobalFeed
+import tachiyomi.domain.source.model.FeedSavedSearch
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.util.Date
+import java.util.Locale
 import eu.kanade.tachiyomi.BuildConfig
 import eu.kanade.tachiyomi.extension.ExtensionManager
 import eu.kanade.tachiyomi.network.NetworkHelper
@@ -16,6 +34,8 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonObject
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -39,9 +59,17 @@ class AiManager(
     private val sourceManager: SourceManager = Injekt.get(),
     private val getLibraryAnime: tachiyomi.domain.anime.interactor.GetLibraryAnime = Injekt.get(),
     private val json: Json = Injekt.get(),
+    private val getHistory: GetHistory = Injekt.get(),
+    private val getActivityLog: GetActivityLog = Injekt.get(),
+    private val getFeedCategories: GetFeedSavedSearchCategories = Injekt.get(),
+    private val getFeedSavedSearches: GetFeedSavedSearchGlobal = Injekt.get(),
+    private val getSavedSearches: GetSavedSearchGlobalFeed = Injekt.get(),
+    private val schedulePreferences: SchedulePreferences = Injekt.get(),
 ) {
     private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
     private val keyFailures = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    private val assistantRequestMutex = Mutex()
+    private val interruptedRequestRecoveryAttempted = java.util.concurrent.atomic.AtomicBoolean(false)
     private val everythingMoeScraper: EverythingMoeScraper by lazy {
         EverythingMoeScraper(context, networkHelper, json)
     }
@@ -62,10 +90,18 @@ class AiManager(
     }
 
     fun chatWithAssistantStream(query: String, history: List<ChatMessage>): Flow<String> = flow {
-        if (!aiPreferences.enableAi().get() || !aiPreferences.enableAiAssistant().get()) return@flow
-        
+        if (!aiPreferences.enableAi().get()) {
+            emit("AI features are turned off. Enable 'AI Integration' in Settings > Advanced Analytics (AI Config) to use the assistant.")
+            return@flow
+        }
+        if (!aiPreferences.enableAiAssistant().get()) {
+            emit("The AI Assistant is turned off. Enable 'AI Assistant' in Settings > Advanced Analytics (AI Config) to chat here.")
+            return@flow
+        }
+
+        recoverInterruptedRequestState()
         if (isCircuitBreakerTripped()) {
-            emit("Stability Alert: AI temporarily disabled due to detected app instability. [RESET_REQUIRED]")
+            emit("Stability Alert: AI temporarily disabled due to detected app instability. Send /reset to clear the circuit breaker.")
             return@flow
         }
         if (isRemoteKillSwitchActive()) {
@@ -73,7 +109,7 @@ class AiManager(
             return@flow
         }
 
-        val engine = aiPreferences.aiEngine().get()
+        val engine = aiPreferences.aiEngine().get().trim().lowercase(Locale.ROOT)
         val apiKey = when (engine) {
             "gemini" -> aiPreferences.geminiApiKey().get()
             "deepseek" -> aiPreferences.deepseekApiKey().get()
@@ -84,64 +120,134 @@ class AiManager(
             "anthropic" -> aiPreferences.anthropicApiKey().get()
             "openrouter" -> aiPreferences.openrouterApiKey().get()
             "together" -> aiPreferences.togetherApiKey().get()
-            else -> aiPreferences.groqApiKey().get()
-        }.ifBlank { 
+            "groq" -> aiPreferences.groqApiKey().get()
+            else -> {
+                emit("Unsupported AI provider '$engine'. Choose a provider in Settings > Advanced Analytics (AI Config).")
+                return@flow
+            }
+        }.ifBlank {
             emit("Please set an API Key in Settings > AI Integration")
-            return@flow 
+            return@flow
         }
 
         val customPrompt = aiPreferences.aiSystemPrompt().get()
         val defaultSystemInstruction = """
-            You are the 'Hikaru System Assistant', a senior systems engineer.
-            You have access to native diagnostic tools for logs, system maps, the user's anime library, and EverythingMoe extension intelligence.
-            
-            OPERATIONAL PROTOCOLS:
-            1. FORMATTING: STRICTLY NO TABLES. Use bullet points or lists for structured data. NEVER output Markdown tables.
-            2. SEMANTIC INTENT: Identify negative system states (e.g., "black screen", "crash", "stuck") and call get_system_diagnostics.
-            3. GROUNDED NAVIGATION: Use get_app_navigation_guide. If a [STALENESS_WARNING] is present, inform the user that menu paths may have changed in their version.
-            4. CRASH ANALYSIS: Prioritize "PINNED" blocks in logs as they contain the root cause of failures.
-            5. LIBRARY AWARENESS: Use the [USER_LIBRARY_DATA] block to answer questions about the user's collection, recommendations, or statistics.
-            6. EXTENSION & COMMUNITY INTELLIGENCE: Use [EXTENSION_COMMUNITY_INTELLIGENCE] (from EverythingMoe) for accurate site status, active mirrors, stream tags (1080p, dubs, soft-subs), and community reviews. Clearly differentiate extensions that are actually INSTALLED on the user's device versus external directory listings.
-            7. PRIVACY: PII (Auth headers, Cookies, and URL params) is strictly redacted.
+            You are the Hikaru Diagnostic Assistant. Answer the user's question clearly and be honest about uncertainty.
+            Hikaru may include local context blocks such as diagnostics, library, watch history, visible browse sources,
+            saved feed setup, or a cached airing schedule. Treat those blocks as read-only snapshots, not live access.
+            Use only the blocks provided; never claim to browse the internet, refresh feeds, change settings, or perform
+            actions that were not actually completed. Do not expose secrets or infer personal information not present.
+            Prefer concise explanations and bullet lists. Do not use Markdown tables.
         """.trimIndent()
-        
         val systemInstruction = if (customPrompt.isNotBlank()) customPrompt else defaultSystemInstruction
+        val messages = createBoundedRequestMessages(query, history)
 
-        val messages = history.toMutableList()
-        messages.add(ChatMessage(role = "user", content = query))
-
-        aiPreferences.isRequestPending().set(true)
-        
-        try {
-            when (engine) {
-                "gemini" -> callGeminiStream(messages, apiKey, systemInstruction, withTools = true).collect { emit(it) }
-                "deepseek" -> callOpenAiCompatibleEndpointStream("https://api.deepseek.com/chat/completions", aiPreferences.deepseekModel().get().ifBlank { "deepseek-chat" }, messages, apiKey, systemInstruction, withTools = true).collect { emit(it) }
-                "opencode" -> callOpenAiCompatibleEndpointStream("https://opencode.ai/zen/v1/chat/completions", aiPreferences.opencodeModel().get().ifBlank { "deepseek-v4-flash-free" }, messages, apiKey, systemInstruction, withTools = true).collect { emit(it) }
-                "literouter" -> callOpenAiCompatibleEndpointStream("https://api.literouter.com/v1/chat/completions", aiPreferences.literouterModel().get().ifBlank { "deepseek-v4-flash-free" }, messages, apiKey, systemInstruction, withTools = true).collect { emit(it) }
-                "tokenreply" -> callOpenAiCompatibleEndpointStream("https://api.tokenreply.com/v1/chat/completions", aiPreferences.tokenreplyModel().get().ifBlank { "deepseek-v4-flash-free" }, messages, apiKey, systemInstruction, withTools = true).collect { emit(it) }
-                "openai" -> callOpenAiStream(messages, apiKey, systemInstruction, withTools = true).collect { emit(it) }
-                "anthropic" -> callAnthropicStream(messages, apiKey, systemInstruction, withTools = true).collect { emit(it) }
-                "openrouter" -> callOpenRouterStream(messages, apiKey, systemInstruction, withTools = true).collect { emit(it) }
-                "together" -> callTogetherStream(messages, apiKey, systemInstruction, withTools = true).collect { emit(it) }
-                else -> callGroqStream(messages, apiKey, systemInstruction, withTools = true).collect { emit(it) }
+        assistantRequestMutex.withLock {
+            aiPreferences.isRequestPending().set(true)
+            var emittedResponse = false
+            try {
+                val response: Flow<String> = when (engine) {
+                    "gemini" -> callGeminiStream(messages, apiKey, systemInstruction, withTools = true)
+                    "deepseek" -> callOpenAiCompatibleEndpointStream(
+                        "https://api.deepseek.com/chat/completions",
+                        aiPreferences.deepseekModel().get().ifBlank { "deepseek-chat" },
+                        messages,
+                        apiKey,
+                        systemInstruction,
+                        withTools = true,
+                        providerName = "DeepSeek",
+                    )
+                    "opencode" -> callOpenAiCompatibleEndpointStream(
+                        "https://opencode.ai/zen/v1/chat/completions",
+                        aiPreferences.opencodeModel().get().ifBlank { "deepseek-v4-flash-free" },
+                        messages,
+                        apiKey,
+                        systemInstruction,
+                        withTools = true,
+                        providerName = "OpenCode Zen",
+                    )
+                    "literouter" -> callOpenAiCompatibleEndpointStream(
+                        "https://api.literouter.com/v1/chat/completions",
+                        aiPreferences.literouterModel().get().ifBlank { "deepseek-v4-flash-free" },
+                        messages,
+                        apiKey,
+                        systemInstruction,
+                        withTools = true,
+                        providerName = "LiteRouter",
+                    )
+                    "tokenreply" -> callOpenAiCompatibleEndpointStream(
+                        "https://api.tokenreply.com/v1/chat/completions",
+                        aiPreferences.tokenreplyModel().get().ifBlank { "deepseek-v4-flash-free" },
+                        messages,
+                        apiKey,
+                        systemInstruction,
+                        withTools = true,
+                        providerName = "TokenReply",
+                    )
+                    "openai" -> callOpenAiStream(messages, apiKey, systemInstruction, withTools = true)
+                    "anthropic" -> callAnthropicStream(messages, apiKey, systemInstruction, withTools = true)
+                    "openrouter" -> callOpenRouterStream(messages, apiKey, systemInstruction, withTools = true)
+                    "together" -> callTogetherStream(messages, apiKey, systemInstruction, withTools = true)
+                    "groq" -> callGroqStream(messages, apiKey, systemInstruction, withTools = true)
+                    else -> error("Provider validation and dispatch became inconsistent")
+                }
+                response.collect { chunk ->
+                    if (chunk.isNotEmpty()) {
+                        emittedResponse = true
+                        emit(chunk)
+                    }
+                }
+                if (!emittedResponse) {
+                    emit("The AI provider finished without returning text. Check the selected model's chat/streaming support and try again.")
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                logcat(LogPriority.ERROR, e)
+                emit("The AI request could not be completed. Check your connection, provider settings, and selected model, then try again.")
+            } finally {
+                aiPreferences.isRequestPending().set(false)
+                recordRequestSuccess()
             }
-        } finally {
-            aiPreferences.isRequestPending().set(false)
-            recordRequestSuccess()
         }
+    }
+
+    private fun createBoundedRequestMessages(query: String, history: List<ChatMessage>): List<ChatMessage> {
+        val queryLimit = 8_000
+        val boundedQuery = if (query.length <= queryLimit) query else {
+            query.take(queryLimit) + "\n[Message truncated to protect request size.]"
+        }
+        var remainingCharacters = (24_000 - boundedQuery.length).coerceAtLeast(0)
+        val recentMessages = mutableListOf<ChatMessage>()
+        for (message in history.takeLast(24).asReversed()) {
+            if (remainingCharacters <= 0) break
+            if (message.role !in setOf("user", "assistant", "model") || message.content.isBlank()) continue
+            val content = message.content.take(remainingCharacters)
+            remainingCharacters -= content.length
+            recentMessages.add(ChatMessage(role = message.role, content = content))
+        }
+        recentMessages.reverse()
+        return recentMessages + ChatMessage(role = "user", content = boundedQuery)
     }
 
     private suspend fun getLibrarySummary(): String {
         return try {
             val library = getLibraryAnime.await()
             if (library.isEmpty()) return "Library is empty."
-            
-            // Limit to top 50 items to save tokens and prevent blank responses
-            library.take(50).joinToString("\n") { anime ->
-                "- ${anime.anime.title} [Status: ${anime.anime.status}, Seen: ${anime.seenCount}]"
-            }
+            val inProgressCount = library.count { it.seenCount > 0 }
+            buildString {
+                appendLine("${library.size} titles total; $inProgressCount with watch progress; ${library.size - inProgressCount} not started.")
+                appendLine("A sample of the first ${minOf(40, library.size)} titles:")
+                library.take(40).forEach { item ->
+                    val title = item.anime.title.replace(Regex("[\\r\\n]+"), " ").take(120)
+                    appendLine("- $title [status ${item.anime.status}, watched ${item.seenCount} episodes]")
+                }
+            }.trim()
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
-            "Failed to retrieve library summary."
+            logcat(LogPriority.WARN, e) { "Unable to load library summary for assistant." }
+            "Library summary could not be loaded."
         }
     }
 
@@ -202,6 +308,15 @@ class AiManager(
         } finally {
             aiPreferences.isRequestPending().set(false)
             recordRequestSuccess()
+        }
+    }
+
+    private fun recoverInterruptedRequestState() {
+        if (!interruptedRequestRecoveryAttempted.compareAndSet(false, true)) return
+        if (aiPreferences.isRequestPending().get()) {
+            aiPreferences.isRequestPending().set(false)
+            aiPreferences.isCircuitBreakerTripped().set(false)
+            logcat(LogPriority.WARN) { "Cleared stale AI request state left by a previous process." }
         }
     }
 
@@ -365,66 +480,334 @@ class AiManager(
                 }
             }
             extensionManager.installedExtensionsFlow.value
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             emptyList()
         }
     }
 
-    private suspend fun getExtensionStatusSummary(installed: List<eu.kanade.tachiyomi.extension.model.Extension.Installed>): String {
+    private suspend fun getExtensionStatusSummary(
+        installed: List<eu.kanade.tachiyomi.extension.model.Extension.Installed>,
+    ): String {
         if (installed.isEmpty()) {
-            val sources = try { sourceManager.getOnlineSources() } catch (e: Exception) { emptyList() }
+            val sources = runCatching { sourceManager.getVisibleOnlineSources() }.getOrDefault(emptyList())
             return if (sources.isEmpty()) {
-                "No extensions or sources currently installed in Hikaru."
+                "No extensions or visible online sources are currently loaded."
             } else {
-                "Registered Sources in App:\n" + sources.joinToString("\n") { s ->
-                    val bUrl = (s as? eu.kanade.tachiyomi.animesource.online.AnimeHttpSource)?.baseUrl ?: (s as? eu.kanade.tachiyomi.source.online.HttpSource)?.baseUrl ?: "N/A"
-                    "- ${s.name} (Lang: ${s.lang}, BaseUrl: `$bUrl`)"
+                "Visible online sources in Hikaru:\n" + sources.take(40).joinToString("\n") { source ->
+                    "- ${source.name.take(80)} (${source.lang})"
                 }
             }
         }
-        return installed.joinToString("\n") { ext ->
-            val sourcesStr = ext.sources.joinToString(", ") { s ->
-                val bUrl = (s as? eu.kanade.tachiyomi.animesource.online.AnimeHttpSource)?.baseUrl ?: (s as? eu.kanade.tachiyomi.source.online.HttpSource)?.baseUrl ?: ""
-                if (bUrl.isNotBlank()) "${s.name} (`$bUrl`)" else s.name
-            }
-            "- **${ext.name}** (${ext.pkgName}) v${ext.versionName} [Sources: $sourcesStr, Obsolete: ${ext.isObsolete}, Update: ${ext.hasUpdate}]"
+        return installed.take(30).joinToString("\n") { extension ->
+            val sourceNames = extension.sources.take(10).joinToString(", ") { source -> source.name.take(60) }
+            "- ${extension.name.take(80)} v${extension.versionName} [sources: $sourceNames; obsolete: ${extension.isObsolete}; update available: ${extension.hasUpdate}]"
         }
     }
 
     private suspend fun buildToolContext(lastQuery: String): String {
+        val query = lastQuery.lowercase(Locale.ROOT)
         val toolContext = StringBuilder()
-        val queryLower = lastQuery.lowercase()
-        val installed = getInstalledExtensions()
+        val wantsDiagnostics = query.containsAny(
+            "log", "error", "fail", "video", "loading", "device", "black screen", "broke", "froze",
+            "slow", "crash", "bug", "stuck", "lag", "hang", "freeze", "diagnostic",
+        )
+        val wantsLibrary = query.containsAny(
+            "library", "collection", "my anime", "anime list", "titles i have", "recommend", "recommendation",
+        )
+        val wantsHistory = query.containsAny(
+            "history", "recently watched", "last watched", "watching history", "watch history", "episodes watched",
+            "continue watching", "finished watching",
+        )
+        val wantsBrowse = query.containsAny(
+            "browse", "catalogue", "catalog", "available sources", "visible sources", "source list", "extensions",
+        )
+        val wantsSchedule = query.containsAny(
+            "airing", "schedule", "broadcast", "upcoming episode", "next episode", "releasing this week", "coming out",
+        )
+        val wantsFeed = query.containsAny(
+            "feed", "saved search", "saved feed", "subscriptions", "latest updates", "my updates",
+        )
+        val wantsCommunityInfo = query.containsAny(
+            "everythingmoe", "mirror", "site health", "site status", "stream link", "working extension",
+            "broken extension", "1080p", "dub", "sub", "quality",
+        )
+        val wantsExtensionStatus = wantsDiagnostics || query.containsAny(
+            "installed extension", "extension status", "source status",
+        )
 
-        if (queryLower.contains("""log|error|fail|video|load|setting|where|how|device|black|broke|froze|slow|crash|die|dead|bug|stuck|lag|hang|freeze""".toRegex())) {
+        if (wantsDiagnostics) {
             if (aiPreferences.aiAssistantLogs().get()) {
-                toolContext.append("\n[DIAGNOSTICS_DATA]:\n${getSanitizedLogs()}\n")
+                toolContext.append("\n[DIAGNOSTICS_DATA]:\n${getSanitizedLogs().take(5_000)}\n")
+            } else {
+                toolContext.append("\n[DIAGNOSTICS_DATA]: Local log sharing is disabled in assistant settings.\n")
             }
             toolContext.append("\n[NAVIGATION_MAP]:\n${getAppMap()}\n")
-            toolContext.append("\n[EXTENSIONS_STATUS]:\n${getExtensionStatusSummary(installed)}\n")
             toolContext.append("\n[ENVIRONMENT]: ${getDeviceInfo()}\n")
         }
 
-        if (queryLower.contains("""library|anime|watch|collection|have|my|list|recommend""".toRegex())) {
+        var installedExtensions: List<eu.kanade.tachiyomi.extension.model.Extension.Installed>? = null
+        suspend fun extensions(): List<eu.kanade.tachiyomi.extension.model.Extension.Installed> {
+            return installedExtensions ?: getInstalledExtensions().also { installedExtensions = it }
+        }
+
+        if (wantsExtensionStatus) {
+            toolContext.append("\n[EXTENSIONS_STATUS]:\n${getExtensionStatusSummary(extensions())}\n")
+        }
+
+        if (wantsLibrary) {
             if (aiPreferences.aiAssistantLibrary().get()) {
                 toolContext.append("\n[USER_LIBRARY_DATA]:\n${getLibrarySummary()}\n")
+            } else {
+                toolContext.append("\n[USER_LIBRARY_DATA]: Library sharing is disabled in assistant settings.\n")
             }
         }
 
-        if (queryLower.contains("""extension|source|site|domain|mirror|everythingmoe|stream|1080p|dub|sub|quality|down|dead|alive|link|recommend|best|working|broken""".toRegex()) ||
-            queryLower.contains("""log|error|fail|video|load|black|broke|froze|slow|crash|die|dead|bug|stuck""".toRegex())) {
-            if (aiPreferences.aiAssistantEverythingMoe().get()) {
-                val intel = everythingMoeScraper.getIntelligenceContext(lastQuery, installed)
-                if (intel.isNotBlank()) {
-                    toolContext.append("\n[EXTENSION_COMMUNITY_INTELLIGENCE (EverythingMoe)]:\n$intel\n")
-                }
+        if (wantsHistory) {
+            if (aiPreferences.aiAssistantHistory().get()) {
+                toolContext.append("\n[RECENT_WATCH_HISTORY]:\n${getRecentHistorySummary()}\n")
+            } else {
+                toolContext.append("\n[RECENT_WATCH_HISTORY]: Watch-history sharing is disabled in assistant settings.\n")
             }
         }
 
-        return toolContext.toString().trim()
+        if (wantsBrowse) {
+            if (aiPreferences.aiAssistantBrowse().get()) {
+                toolContext.append("\n[BROWSE_CONTEXT]:\n${getBrowseSummary()}\n")
+            } else {
+                toolContext.append("\n[BROWSE_CONTEXT]: Browse-context sharing is disabled in assistant settings.\n")
+            }
+        }
+
+        if (wantsSchedule) {
+            if (aiPreferences.aiAssistantSchedule().get()) {
+                toolContext.append("\n[CACHED_AIRING_SCHEDULE]:\n${getScheduleSummary()}\n")
+            } else {
+                toolContext.append("\n[CACHED_AIRING_SCHEDULE]: Schedule sharing is disabled in assistant settings.\n")
+            }
+        }
+
+        if (wantsFeed) {
+            if (aiPreferences.aiAssistantFeed().get()) {
+                toolContext.append("\n[SAVED_FEED_SETUP]:\n${getSavedFeedSummary()}\n")
+            } else {
+                toolContext.append("\n[SAVED_FEED_SETUP]: Feed sharing is disabled in assistant settings.\n")
+            }
+        }
+
+        if (wantsCommunityInfo && aiPreferences.aiAssistantEverythingMoe().get()) {
+            val communityContext = withTimeoutOrNull(5_000) {
+                everythingMoeScraper.getIntelligenceContext(lastQuery, extensions())
+            }
+            if (!communityContext.isNullOrBlank()) {
+                toolContext.append("\n[EXTENSION_COMMUNITY_INTELLIGENCE (EverythingMoe)]:\n")
+                toolContext.append(communityContext.take(4_000)).append('\n')
+            } else {
+                toolContext.append("\n[EXTENSION_COMMUNITY_INTELLIGENCE]: No cached community details were available.\n")
+            }
+        }
+
+        return toolContext.toString().trim().take(16_000)
     }
 
+    private suspend fun getRecentHistorySummary(): String {
+        return try {
+            val history = getHistory.awaitRecent(30)
+            if (history.isEmpty()) return "No recent watch history is available."
+            val formatter = DateTimeFormatter.ofPattern("MMM d, HH:mm", Locale.getDefault())
+            buildString {
+                appendLine("Most recent watched titles (up to ${history.size} entries):")
+                history.forEach { entry ->
+                    val title = entry.title.replace(Regex("[\\r\\n]+"), " ").take(120)
+                    val watchedAt = entry.seenAt?.toInstant()
+                        ?.atZone(ZoneId.systemDefault())
+                        ?.format(formatter)
+                        ?: "time unavailable"
+                    appendLine("- $title — episode ${entry.episodeNumber} — $watchedAt")
+                }
+            }.trim()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            logcat(LogPriority.WARN, e) { "Unable to load bounded watch history for assistant context." }
+            "Recent watch history could not be loaded."
+        }
+    }
+
+    private suspend fun getBrowseSummary(): String {
+        return try {
+            val sources = if (sourceManager.isInitialized.value) {
+                sourceManager.getVisibleCatalogueSources().take(30)
+            } else {
+                emptyList()
+            }
+            val activityCounts = getActivityLog.awaitCountsByPeriod(Date(System.currentTimeMillis() - 30L * 24 * 60 * 60 * 1000))
+            buildString {
+                if (sources.isEmpty()) {
+                    appendLine("Visible catalogue sources are not currently loaded or configured.")
+                } else {
+                    appendLine("Visible catalogue sources (up to ${sources.size}):")
+                    sources.forEach { source ->
+                        appendLine("- ${source.name.take(80)} (${source.lang})")
+                    }
+                }
+                val recentActivity = activityCounts.entries
+                    .sortedByDescending { it.value }
+                    .take(10)
+                if (recentActivity.isNotEmpty()) {
+                    appendLine("Aggregate source activity in the last 30 days (not live feed contents):")
+                    recentActivity.forEach { (key, count) ->
+                        val sourceName = runCatching { sourceManager.getOrStub(key.first).name }
+                            .getOrDefault("Source ${key.first}")
+                        val event = when (key.second) {
+                            ActivityLog.TYPE_OPEN -> "opened"
+                            ActivityLog.TYPE_PLAY -> "played"
+                            ActivityLog.TYPE_COMPLETE -> "completed"
+                            ActivityLog.TYPE_FEED_UPDATE -> "feed updates"
+                            ActivityLog.TYPE_FETCH -> "fetched"
+                            else -> "activity"
+                        }
+                        appendLine("- ${sourceName.take(80)}: $count $event")
+                    }
+                }
+                append("Summary generated ${DateTimeFormatter.ofPattern("MMM d", Locale.getDefault()).format(Instant.now().atZone(ZoneId.systemDefault()))}.")
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            logcat(LogPriority.WARN, e) { "Unable to load browse context for assistant." }
+            "Browse context could not be loaded."
+        }
+    }
+
+    private suspend fun getScheduleSummary(): String {
+        return try {
+            val cache = ScheduleDataRefreshWorker.readCache(context)
+                ?: return "No local schedule cache is available yet. Open the schedule screen and refresh it to populate the cache; this assistant request will not fetch schedule data."
+            val includeAdult = schedulePreferences.showAdultContent().get()
+            val entries = cache.entries.asSequence()
+                .filter { it.airingAt >= System.currentTimeMillis() / 1000L }
+                .filter { includeAdult || !it.isAdult }
+                .sortedBy { it.airingAt }
+                .take(20)
+                .toList()
+            if (entries.isEmpty()) return "The local schedule cache contains no upcoming entries visible with the current content settings."
+
+            val language = runCatching {
+                SchedulePreferences.TitleLanguage.valueOf(cache.titleLanguage.orEmpty())
+            }.getOrDefault(SchedulePreferences.TitleLanguage.USER_PREFERRED)
+            val formatter = DateTimeFormatter.ofPattern("EEE, MMM d HH:mm", Locale.getDefault())
+            val fetchedAt = DateTimeFormatter.ofPattern("MMM d, HH:mm", Locale.getDefault())
+                .format(Instant.ofEpochMilli(cache.fetchedAt).atZone(ZoneId.systemDefault()))
+            buildString {
+                appendLine("Local cache fetched $fetchedAt; entries shown are upcoming and may be stale:")
+                entries.forEach { entry ->
+                    val airingAt = formatter.format(Instant.ofEpochSecond(entry.airingAt).atZone(ZoneId.systemDefault()))
+                    appendLine("- ${entry.displayTitle(language).take(120)} — episode ${entry.episode} — $airingAt")
+                }
+            }.trim()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            logcat(LogPriority.WARN, e) { "Unable to load cached schedule for assistant." }
+            "The local airing schedule could not be loaded."
+        }
+    }
+
+    private suspend fun getSavedFeedSummary(): String {
+        return try {
+            val categories = getFeedCategories.await().sortedBy { it.order }.take(10)
+            if (categories.isEmpty()) return "No saved feed categories are configured."
+            buildString {
+                var configuredFeedCount = 0
+                for (category in categories) {
+                    val feeds = getFeedSavedSearches.await(category.id).take(20)
+                    if (feeds.isEmpty()) continue
+                    val savedSearchesById = getSavedSearches.await(category.id).associateBy { it.id }
+                    appendLine("${category.name.take(80)}:")
+                    feeds.forEach { feed ->
+                        val sourceName = runCatching { sourceManager.getOrStub(feed.source).name }
+                            .getOrDefault("Source ${feed.source}")
+                        val type = FeedSavedSearch.Type.from(feed.type).name
+                        val savedSearch = feed.savedSearch?.let(savedSearchesById::get)
+                        val details = when {
+                            savedSearch == null -> type
+                            savedSearch.query.isNullOrBlank() -> "$type: ${savedSearch.name.take(80)}"
+                            else -> "$type: ${savedSearch.name.take(80)} — query ${savedSearch.query.take(120)}"
+                        }
+                        appendLine("- ${sourceName.take(80)} — $details")
+                        configuredFeedCount++
+                    }
+                }
+                if (configuredFeedCount == 0) {
+                    append("Saved categories exist, but no global feeds are configured. Live feed results are not stored in this context.")
+                } else {
+                    append("These are saved feed definitions only; no live results were fetched.")
+                }
+            }.trim()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            logcat(LogPriority.WARN, e) { "Unable to load saved feed setup for assistant." }
+            "Saved feed setup could not be loaded."
+        }
+    }
+
+    private fun String.containsAny(vararg phrases: String): Boolean = phrases.any { contains(it) }
+
     private fun getDeviceInfo(): String = "Model: ${android.os.Build.MODEL}, SDK: ${android.os.Build.VERSION.SDK_INT}, App: Hikaru"
+
+    private fun providerError(response: Response, providerName: String, apiKey: String): String {
+        val body = response.body?.string().orEmpty()
+        val detail = runCatching {
+            val root = json.parseToJsonElement(body).jsonObject
+            val error = root["error"]
+            when (error) {
+                is JsonObject -> error["message"]?.jsonPrimitive?.contentOrNull
+                    ?: error["type"]?.jsonPrimitive?.contentOrNull
+                null -> root["message"]?.jsonPrimitive?.contentOrNull
+                else -> error.jsonPrimitive.contentOrNull
+            }
+        }.getOrNull()
+            ?.replace(apiKey, "[redacted]")
+            ?.replace(Regex("(?i)bearer\\s+\\S+"), "Bearer [redacted]")
+            ?.replace(Regex("[\\r\\n]+"), " ")
+            ?.take(240)
+            ?.takeIf { it.isNotBlank() }
+        val status = "HTTP ${response.code} ${response.message}".trim()
+        return "$providerName request failed ($status)" + (detail?.let { ": $it" } ?: ". Check the API key, model name, and provider access.")
+    }
+
+    private fun providerConnectionError(providerName: String, apiKey: String, error: Exception): String {
+        val detail = error.message
+            ?.replace(apiKey, "[redacted]")
+            ?.replace(Regex("[\\r\\n]+"), " ")
+            ?.take(160)
+            ?.takeIf { it.isNotBlank() }
+            ?: error.javaClass.simpleName
+        return "$providerName connection failed: $detail. Check your connection and provider settings."
+    }
+
+    private suspend fun <T> executeCancellable(
+        request: Request,
+        block: suspend (Response) -> T,
+    ): T {
+        val client = networkHelper.client.newBuilder()
+            .connectTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+            .readTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
+            .callTimeout(90, java.util.concurrent.TimeUnit.SECONDS)
+            .build()
+        val call = client.newCall(request)
+        val cancellationHandle = currentCoroutineContext().job.invokeOnCompletion { cause ->
+            if (cause is CancellationException) call.cancel()
+        }
+        return try {
+            call.execute().use { response -> block(response) }
+        } finally {
+            cancellationHandle.dispose()
+        }
+    }
 
     suspend fun getErrorCount(): Int = withIOContext {
         try {
@@ -472,101 +855,113 @@ class AiManager(
     }
 
     private suspend fun callGeminiStream(
-        messages: List<ChatMessage>, 
-        apiKey: String, 
+        messages: List<ChatMessage>,
+        apiKey: String,
         systemInstruction: String? = null,
-        withTools: Boolean = false
+        withTools: Boolean = false,
     ): Flow<String> = flow {
-        val rawKeys = apiKey.split(",").map { it.trim() }.filter { it.isNotBlank() }
-        val healthyKeys = rawKeys.sortedBy { keyFailures[it] ?: 0L }
-
+        val healthyKeys = apiKey.split(",")
+            .map(String::trim)
+            .filter(String::isNotBlank)
+            .sortedBy { keyFailures[it] ?: 0L }
         val primaryModel = aiPreferences.geminiModel().get().ifBlank { "gemini-flash-latest" }
-        val modelsToTry = if (primaryModel != "gemini-flash-lite-latest") {
-            listOf(primaryModel, "gemini-flash-lite-latest")
+        val modelsToTry = if (primaryModel == "gemini-flash-lite-latest") {
+            listOf(primaryModel)
         } else {
-            listOf("gemini-flash-lite-latest")
+            listOf(primaryModel, "gemini-flash-lite-latest")
         }
-
         val finalMessages = if (withTools) {
             val lastQuery = messages.last().content
             val toolContext = buildToolContext(lastQuery)
-            messages.dropLast(1) + ChatMessage("user", messages.last().content + if (toolContext.isNotBlank()) "\n\n$toolContext" else "")
+            messages.dropLast(1) + ChatMessage(
+                "user",
+                messages.last().content + if (toolContext.isNotBlank()) "\n\n$toolContext" else "",
+            )
         } else {
             messages
         }
-
-        val geminiContents = finalMessages.map { msg ->
-            GeminiContent(parts = listOf(GeminiPart(text = msg.content)), role = if (msg.role == "user") "user" else "model")
+        val geminiContents = finalMessages.map { message ->
+            GeminiContent(
+                parts = listOf(GeminiPart(text = message.content)),
+                role = if (message.role == "user") "user" else "model",
+            )
         }
         val requestBody = GeminiRequest(
-            contents = geminiContents, 
+            contents = geminiContents,
             systemInstruction = systemInstruction?.let { GeminiContent(parts = listOf(GeminiPart(text = it))) },
             safetySettings = listOf(
                 GeminiSafetySetting("HARM_CATEGORY_HARASSMENT", "BLOCK_NONE"),
                 GeminiSafetySetting("HARM_CATEGORY_HATE_SPEECH", "BLOCK_NONE"),
                 GeminiSafetySetting("HARM_CATEGORY_SEXUALLY_EXPLICIT", "BLOCK_NONE"),
-                GeminiSafetySetting("HARM_CATEGORY_DANGEROUS_CONTENT", "BLOCK_NONE")
-            )
+                GeminiSafetySetting("HARM_CATEGORY_DANGEROUS_CONTENT", "BLOCK_NONE"),
+            ),
         )
 
         var streamEmitted = false
-
+        var latestError = ""
         keyLoop@ for (key in healthyKeys) {
             for (model in modelsToTry) {
-                try {
-                    val request = Request.Builder()
-                        .url("https://generativelanguage.googleapis.com/v1beta/models/$model:streamGenerateContent?alt=sse&key=$key")
-                        .header("Content-Type", "application/json")
-                        .post(json.encodeToString(GeminiRequest.serializer(), requestBody).toRequestBody(jsonMediaType))
-                        .build()
+                var emittedInAttempt = false
+                val request = Request.Builder()
+                    .url("https://generativelanguage.googleapis.com/v1beta/models/$model:streamGenerateContent?alt=sse&key=$key")
+                    .header("Content-Type", "application/json")
+                    .post(json.encodeToString(GeminiRequest.serializer(), requestBody).toRequestBody(jsonMediaType))
+                    .build()
 
-                    val timedClient = networkHelper.client.newBuilder()
-                        .connectTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
-                        .readTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
-                        .build()
-                    
-                    var emittedInAttempt = false
-                    timedClient.newCall(request).execute().use { response ->
+                try {
+                    executeCancellable(request) { response ->
                         if (!response.isSuccessful) {
                             keyFailures[key] = System.currentTimeMillis()
-                            return@use
+                            latestError = providerError(response, "Gemini", key)
+                            return@executeCancellable
                         }
                         val source = response.body.source()
                         while (!source.exhausted()) {
                             val line = source.readUtf8Line() ?: break
-                            if (line.startsWith("data: ")) {
-                                val data = line.substring(6).trim()
-                                if (data == "[DONE]") break
-                                try {
-                                    val chunk = json.decodeFromString(GeminiResponse.serializer(), data)
-                                    val text = chunk.candidates.firstOrNull()?.content?.parts?.firstOrNull()?.text
-                                    if (text != null) {
-                                        emit(text)
-                                        emittedInAttempt = true
-                                    }
-                                } catch (e: Exception) {
-                                    // Skip partial or invalid JSON
+                            val data = parseServerSentEventData(line) ?: continue
+                            if (data == "[DONE]") break
+                            try {
+                                val chunk = json.decodeFromString(GeminiResponse.serializer(), data)
+                                val text = chunk.candidates.firstOrNull()?.content?.parts?.firstOrNull()?.text
+                                if (!text.isNullOrEmpty()) {
+                                    emittedInAttempt = true
+                                    emit(text)
                                 }
+                            } catch (e: CancellationException) {
+                                throw e
+                            } catch (_: Exception) {
+                                // Ignore non-content events and malformed partial records.
                             }
                         }
                     }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    keyFailures[key] = System.currentTimeMillis()
+                    latestError = providerConnectionError("Gemini", key, e)
                     if (emittedInAttempt) {
+                        emit("\n\n[Gemini stream interrupted. The partial reply above may be incomplete.]")
                         streamEmitted = true
                         break@keyLoop
                     }
-                } catch (e: Exception) {
-                    keyFailures[key] = System.currentTimeMillis()
+                }
+
+                if (emittedInAttempt) {
+                    streamEmitted = true
+                    break@keyLoop
+                }
+                if (latestError.isBlank()) {
+                    latestError = "Gemini model '$model' returned no streamed text. Try another Gemini model."
                 }
             }
         }
 
         if (!streamEmitted) {
-            val groqKey = aiPreferences.groqApiKey().get()
-            if (groqKey.isNotBlank()) {
-                callGroqStream(messages, groqKey, systemInstruction, withTools).collect { emit(it) }
-            } else {
-                emit("Gemini Exception: All Gemini keys/models failed. Please check your API keys.")
-            }
+            emit(
+                latestError.ifBlank {
+                    "Gemini could not return a response. Verify the API key and model, then try again."
+                },
+            )
         }
     }
 
@@ -652,7 +1047,8 @@ class AiManager(
         messages: List<ChatMessage>,
         apiKey: String,
         systemInstruction: String? = null,
-        withTools: Boolean = false
+        withTools: Boolean = false,
+        providerName: String = "OpenAI-compatible provider",
     ): Flow<String> = flow {
         val finalMessages = prepareFinalMessages(messages, systemInstruction, withTools)
         val requestBody = GroqRequest(messages = finalMessages, model = modelName, stream = true)
@@ -662,7 +1058,7 @@ class AiManager(
             .header("Content-Type", "application/json")
             .post(json.encodeToString(GroqRequest.serializer(), requestBody).toRequestBody(jsonMediaType))
             .build()
-        executeOpenAiFormatStream(request).collect { emit(it) }
+        executeOpenAiFormatStream(request, providerName, apiKey).collect { emit(it) }
     }
 
     private suspend fun callGroq(messages: List<ChatMessage>, apiKey: String, systemInstruction: String? = null): String? = withIOContext {
@@ -702,63 +1098,22 @@ class AiManager(
     }
 
         private suspend fun callGroqStream(
-            messages: List<ChatMessage>,
-            apiKey: String,
-            systemInstruction: String? = null,
-            withTools: Boolean = false
-        ): Flow<String> = flow {
-            val finalMessages = if (withTools) {
-                val lastQuery = messages.last().content
-                val toolContext = buildToolContext(lastQuery)
-                messages.dropLast(1) + ChatMessage("user", messages.last().content + if (toolContext.isNotBlank()) "\n\n$toolContext" else "")
-            } else {
-                messages
-            }
-    
-            val groqMessages = mutableListOf<GroqMessage>()
-            if (systemInstruction != null) groqMessages.add(GroqMessage(role = "system", content = systemInstruction))
-            finalMessages.forEach { msg -> groqMessages.add(GroqMessage(role = if (msg.role == "user") "user" else "assistant", content = msg.content)) }
-            
-            val model = aiPreferences.groqModel().get().ifBlank { "llama-3.3-70b-versatile" }
-            val requestBody = GroqRequest(messages = groqMessages, model = model, stream = true)
-            val request = Request.Builder()
-                .url("https://api.groq.com/openai/v1/chat/completions")
-                .header("Authorization", "Bearer $apiKey")
-                .header("Content-Type", "application/json")
-                .post(json.encodeToString(GroqRequest.serializer(), requestBody).toRequestBody(jsonMediaType))
-                .build()
-    
-            try {
-                val timedClient = networkHelper.client.newBuilder()
-                    .connectTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
-                    .readTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
-                    .build()
-                
-                timedClient.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) {
-                    emit("Groq Error ${response.code}")
-                    return@flow
-                }
-                val source = response.body.source()
-                while (!source.exhausted()) {
-                    val line = source.readUtf8Line() ?: break
-                    if (line.startsWith("data: ")) {
-                        val data = line.substring(6).trim()
-                        if (data == "[DONE]") break
-                        try {
-                            val chunk = json.decodeFromString(GroqStreamResponse.serializer(), data)
-                            val text = chunk.choices.firstOrNull()?.delta?.content
-                            if (text != null) emit(text)
-                        } catch (e: Exception) {
-                            // Skip partial or invalid JSON
-                        }
-                    }
-                }
-            }
-            } catch (e: Exception) {
-                emit("Groq Exception: ${e.message}")
-            }
-        }
+        messages: List<ChatMessage>,
+        apiKey: String,
+        systemInstruction: String? = null,
+        withTools: Boolean = false,
+    ): Flow<String> = flow {
+        val finalMessages = prepareFinalMessages(messages, systemInstruction, withTools)
+        val model = aiPreferences.groqModel().get().ifBlank { "llama-3.3-70b-versatile" }
+        val requestBody = GroqRequest(messages = finalMessages, model = model, stream = true)
+        val request = Request.Builder()
+            .url("https://api.groq.com/openai/v1/chat/completions")
+            .header("Authorization", "Bearer $apiKey")
+            .header("Content-Type", "application/json")
+            .post(json.encodeToString(GroqRequest.serializer(), requestBody).toRequestBody(jsonMediaType))
+            .build()
+        executeOpenAiFormatStream(request, "Groq", apiKey).collect { emit(it) }
+    }
 
     private suspend fun callOpenAiStream(
         messages: List<ChatMessage>,
@@ -775,31 +1130,34 @@ class AiManager(
             .header("Content-Type", "application/json")
             .post(json.encodeToString(GroqRequest.serializer(), requestBody).toRequestBody(jsonMediaType))
             .build()
-        executeOpenAiFormatStream(request).collect { emit(it) }
+        executeOpenAiFormatStream(request, "OpenAI", apiKey).collect { emit(it) }
     }
 
     private suspend fun callAnthropicStream(
         messages: List<ChatMessage>,
         apiKey: String,
         systemInstruction: String? = null,
-        withTools: Boolean = false
+        withTools: Boolean = false,
     ): Flow<String> = flow {
         val contextMessages = if (withTools) {
             val lastQuery = messages.last().content
             val toolContext = buildToolContext(lastQuery)
-            messages.dropLast(1) + ChatMessage("user", messages.last().content + if (toolContext.isNotBlank()) "\n\n$toolContext" else "")
+            messages.dropLast(1) + ChatMessage(
+                "user",
+                messages.last().content + if (toolContext.isNotBlank()) "\n\n$toolContext" else "",
+            )
         } else {
             messages
         }
-        val anthropicMessages = contextMessages.map { msg ->
-            AnthropicMessage(role = if (msg.role == "user") "user" else "assistant", content = msg.content)
+        val anthropicMessages = contextMessages.map { message ->
+            AnthropicMessage(role = if (message.role == "user") "user" else "assistant", content = message.content)
         }
         val model = aiPreferences.anthropicModel().get().ifBlank { "claude-3-5-sonnet-20241022" }
         val requestBody = AnthropicRequest(
             model = model,
             system = systemInstruction,
             messages = anthropicMessages,
-            stream = true
+            stream = true,
         )
         val request = Request.Builder()
             .url("https://api.anthropic.com/v1/messages")
@@ -809,35 +1167,41 @@ class AiManager(
             .post(json.encodeToString(AnthropicRequest.serializer(), requestBody).toRequestBody(jsonMediaType))
             .build()
 
+        var emittedText = false
         try {
-            val timedClient = networkHelper.client.newBuilder()
-                .connectTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
-                .readTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
-                .build()
-
-            timedClient.newCall(request).execute().use { response ->
+            executeCancellable(request) { response ->
                 if (!response.isSuccessful) {
-                    emit("Anthropic Error ${response.code}")
-                    return@flow
+                    emit(providerError(response, "Anthropic", apiKey))
+                    emittedText = true
+                    return@executeCancellable
                 }
                 val source = response.body.source()
                 while (!source.exhausted()) {
                     val line = source.readUtf8Line() ?: break
-                    if (line.startsWith("data: ")) {
-                        val data = line.substring(6).trim()
-                        if (data == "[DONE]") break
-                        try {
-                            val chunk = json.decodeFromString(AnthropicStreamResponse.serializer(), data)
-                            val text = chunk.delta?.text
-                            if (text != null) emit(text)
-                        } catch (e: Exception) {
-                            // Skip partial JSON
+                    val data = parseServerSentEventData(line) ?: continue
+                    if (data == "[DONE]") break
+                    try {
+                        val chunk = json.decodeFromString(AnthropicStreamResponse.serializer(), data)
+                        val text = chunk.delta?.text
+                        if (!text.isNullOrEmpty()) {
+                            emittedText = true
+                            emit(text)
                         }
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (_: Exception) {
+                        // Ignore event types without a text delta.
                     }
                 }
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
-            emit("Anthropic Exception: ${e.message}")
+            emit(providerConnectionError("Anthropic", apiKey, e))
+            emittedText = true
+        }
+        if (!emittedText) {
+            emit("Anthropic returned no streamed text. Check that the selected Claude model supports messages and streaming.")
         }
     }
 
@@ -858,7 +1222,7 @@ class AiManager(
             .header("Content-Type", "application/json")
             .post(json.encodeToString(GroqRequest.serializer(), requestBody).toRequestBody(jsonMediaType))
             .build()
-        executeOpenAiFormatStream(request).collect { emit(it) }
+        executeOpenAiFormatStream(request, "OpenRouter", apiKey).collect { emit(it) }
     }
 
     private suspend fun callTogetherStream(
@@ -876,7 +1240,7 @@ class AiManager(
             .header("Content-Type", "application/json")
             .post(json.encodeToString(GroqRequest.serializer(), requestBody).toRequestBody(jsonMediaType))
             .build()
-        executeOpenAiFormatStream(request).collect { emit(it) }
+        executeOpenAiFormatStream(request, "Together AI", apiKey).collect { emit(it) }
     }
 
     private suspend fun prepareFinalMessages(
@@ -898,39 +1262,49 @@ class AiManager(
         return result
     }
 
-    private fun executeOpenAiFormatStream(request: Request): Flow<String> = flow {
+    private fun executeOpenAiFormatStream(
+        request: Request,
+        providerName: String,
+        apiKey: String,
+    ): Flow<String> = flow {
+        var emittedText = false
         try {
-            val timedClient = networkHelper.client.newBuilder()
-                .connectTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
-                .readTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
-                .build()
-
-            timedClient.newCall(request).execute().use { response ->
+            executeCancellable(request) { response ->
                 if (!response.isSuccessful) {
-                    emit("API Error ${response.code}")
-                    return@flow
+                    emit(providerError(response, providerName, apiKey))
+                    emittedText = true
+                    return@executeCancellable
                 }
                 val source = response.body.source()
                 while (!source.exhausted()) {
                     val line = source.readUtf8Line() ?: break
-                    if (line.startsWith("data: ")) {
-                        val data = line.substring(6).trim()
-                        if (data == "[DONE]") break
-                        try {
-                            val chunk = json.decodeFromString(GroqStreamResponse.serializer(), data)
-                            val text = chunk.choices.firstOrNull()?.delta?.content
-                            if (text != null) emit(text)
-                        } catch (e: Exception) {
-                            // Skip partial JSON
+                    val data = parseServerSentEventData(line) ?: continue
+                    if (data == "[DONE]") break
+                    try {
+                        val chunk = json.decodeFromString(GroqStreamResponse.serializer(), data)
+                        val text = chunk.choices.firstOrNull()?.delta?.content
+                        if (!text.isNullOrEmpty()) {
+                            emittedText = true
+                            emit(text)
                         }
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (_: Exception) {
+                        // Ignore keepalive, usage-only, and malformed partial records.
                     }
                 }
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
-            emit("API Exception: ${e.message}")
+            emit(providerConnectionError(providerName, apiKey, e))
+            emittedText = true
+        }
+        if (!emittedText) {
+            emit("$providerName returned no streamed text. Confirm that the selected model supports chat completions and streaming.")
         }
     }
-    
+
         @Serializable
         data class ChatMessage(val role: String, val content: String)
     
@@ -1017,3 +1391,8 @@ class AiManager(
         @Serializable
         private data class OpenAiModelItem(val id: String)
     }
+
+internal fun parseServerSentEventData(line: String): String? {
+    if (!line.startsWith("data:")) return null
+    return line.removePrefix("data:").removePrefix(" ").trimEnd()
+}

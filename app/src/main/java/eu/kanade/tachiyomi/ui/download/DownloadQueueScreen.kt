@@ -2,10 +2,13 @@ package eu.kanade.tachiyomi.ui.download
 
 import android.view.LayoutInflater
 import androidx.compose.foundation.isSystemInDarkTheme
-import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.Sort
 import androidx.compose.material.icons.filled.PlayArrow
@@ -13,7 +16,9 @@ import androidx.compose.material.icons.outlined.Pause
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberTopAppBarState
@@ -31,15 +36,13 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.view.ViewCompat
-import androidx.core.view.updatePadding
 import androidx.recyclerview.widget.LinearLayoutManager
 import cafe.adriel.voyager.core.model.rememberScreenModel
 import cafe.adriel.voyager.core.screen.Screen
@@ -57,7 +60,6 @@ import tachiyomi.presentation.core.components.Pill
 import tachiyomi.presentation.core.components.material.Scaffold
 import tachiyomi.presentation.core.i18n.stringResource
 import tachiyomi.presentation.core.screens.EmptyScreen
-import kotlin.math.roundToInt
 
 data object DownloadQueueScreen : Screen {
 
@@ -66,6 +68,8 @@ data object DownloadQueueScreen : Screen {
         val navigator = LocalNavigator.currentOrThrow
         val screenModel = rememberScreenModel { DownloadQueueScreenModel() }
         val downloadList by screenModel.state.collectAsState()
+        val queueSummary by screenModel.queueSummary.collectAsState()
+        val isDownloaderRunning by screenModel.isDownloaderRunning.collectAsState()
         val downloadCount by remember {
             derivedStateOf { downloadList.sumOf { it.subItems.size } }
         }
@@ -123,33 +127,22 @@ data object DownloadQueueScreen : Screen {
                 )
             },
             floatingActionButton = {
-                val animeIsRunning by screenModel.isDownloaderRunning.collectAsState()
-                ExtendedFloatingActionButton(
-                    text = {
-                        val id = if (animeIsRunning) {
-                            MR.strings.action_pause
-                        } else {
-                            MR.strings.action_resume
-                        }
-                        Text(text = stringResource(id))
-                    },
-                    icon = {
-                        val icon = if (animeIsRunning) {
-                            Icons.Outlined.Pause
-                        } else {
-                            Icons.Filled.PlayArrow
-                        }
-                        Icon(imageVector = icon, contentDescription = null)
-                    },
-                    onClick = {
-                        if (animeIsRunning) {
-                            screenModel.pauseDownloads()
-                        } else {
-                            screenModel.startDownloads()
-                        }
-                    },
-                    expanded = fabExpanded,
-                )
+                if (downloadCount > 0) {
+                    ExtendedFloatingActionButton(
+                        text = {
+                            val id = if (isDownloaderRunning) MR.strings.action_pause else MR.strings.action_resume
+                            Text(text = stringResource(id))
+                        },
+                        icon = {
+                            val icon = if (isDownloaderRunning) Icons.Outlined.Pause else Icons.Filled.PlayArrow
+                            Icon(imageVector = icon, contentDescription = null)
+                        },
+                        onClick = {
+                            if (isDownloaderRunning) screenModel.pauseDownloads() else screenModel.startDownloads()
+                        },
+                        expanded = fabExpanded,
+                    )
+                }
             },
         ) { contentPadding ->
             val scope = rememberCoroutineScope()
@@ -162,16 +155,22 @@ data object DownloadQueueScreen : Screen {
                 return@Scaffold
             }
 
-            val density = LocalDensity.current
-            val layoutDirection = LocalLayoutDirection.current
-            val left = with(density) { contentPadding.calculateLeftPadding(layoutDirection).toPx().roundToInt() }
-            val top = with(density) { contentPadding.calculateTopPadding().toPx().roundToInt() }
-            val right = with(density) { contentPadding.calculateRightPadding(layoutDirection).toPx().roundToInt() }
-            val bottom = with(density) { contentPadding.calculateBottomPadding().toPx().roundToInt() }
-
-            Box(modifier = Modifier.nestedScroll(nestedScrollConnection)) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(contentPadding)
+                    .nestedScroll(nestedScrollConnection),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                QueueSummaryCard(
+                    summary = queueSummary,
+                    isRunning = isDownloaderRunning,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                )
                 AndroidView(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
                     factory = { context ->
                         screenModel.controllerBinding = DownloadListBinding.inflate(
                             LayoutInflater.from(context),
@@ -179,36 +178,106 @@ data object DownloadQueueScreen : Screen {
                         screenModel.adapter = DownloadAdapter(screenModel.listener)
                         screenModel.controllerBinding.root.adapter = screenModel.adapter
                         screenModel.adapter?.isHandleDragEnabled = true
-                        screenModel.controllerBinding.root.layoutManager = LinearLayoutManager(
-                            context,
-                        )
-
+                        screenModel.controllerBinding.root.layoutManager = LinearLayoutManager(context)
                         ViewCompat.setNestedScrollingEnabled(screenModel.controllerBinding.root, true)
 
                         scope.launchUI {
-                            screenModel.getDownloadStatusFlow()
-                                .collect(screenModel::onStatusChange)
+                            screenModel.getDownloadStatusFlow().collect(screenModel::onStatusChange)
                         }
                         scope.launchUI {
-                            screenModel.getDownloadProgressFlow()
-                                .collect(screenModel::onUpdateDownloadedPages)
+                            screenModel.getDownloadProgressFlow().collect(screenModel::onUpdateDownloadedPages)
                         }
-
                         screenModel.controllerBinding.root
                     },
                     update = {
-                        screenModel.controllerBinding.root
-                            .updatePadding(
-                                left = left,
-                                top = top,
-                                right = right,
-                                bottom = bottom,
-                            )
-
                         screenModel.adapter?.updateDataSet(downloadList)
                     },
                 )
             }
+        }
+    }
+
+    @Composable
+    private fun QueueSummaryCard(
+        summary: DownloadQueueSummary,
+        isRunning: Boolean,
+        modifier: Modifier = Modifier,
+    ) {
+        Surface(
+            modifier = modifier.fillMaxWidth(),
+            color = MaterialTheme.colorScheme.surfaceContainerLow,
+            shape = RoundedCornerShape(20.dp),
+            tonalElevation = 1.dp,
+        ) {
+            Column(
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Queue overview",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Text(
+                            text = "${summary.activeCount} active · ${summary.waitingCount} waiting · ${summary.failedCount} failed · ${summary.remainingCount} remaining",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Text(
+                        text = "${summary.progressPercent}%",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                }
+                LinearProgressIndicator(
+                    progress = { summary.progressPercent / 100f },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(24.dp),
+                ) {
+                    QueueMetric(
+                        title = "Queue ETA · estimate",
+                        value = summary.etaSeconds?.let(::formatQueueEta)
+                            ?: when {
+                                isRunning -> "Calculating…"
+                                summary.waitingCount > 0 -> "Paused"
+                                else -> "—"
+                            },
+                        modifier = Modifier.weight(1f),
+                    )
+                    QueueMetric(
+                        title = "Combined speed",
+                        value = formatQueueSpeed(summary.speedBytesPerSecond),
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+            }
+        }
+    }
+
+    @Composable
+    private fun QueueMetric(
+        title: String,
+        value: String,
+        modifier: Modifier = Modifier,
+    ) {
+        Column(modifier = modifier) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                text = value,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Medium,
+            )
         }
     }
 
@@ -305,4 +374,24 @@ data object DownloadQueueScreen : Screen {
             )
         }
     }
+}
+
+private fun formatQueueEta(seconds: Long): String {
+    if (seconds <= 0L) return "Finishing"
+    val days = seconds / 86_400
+    val hours = seconds % 86_400 / 3_600
+    val minutes = seconds % 3_600 / 60
+    return when {
+        days > 0 -> "~${days}d ${hours}h"
+        hours > 0 -> "~${hours}h ${minutes}m"
+        minutes > 0 -> "~${minutes}m ${seconds % 60}s"
+        else -> "<1 min"
+    }
+}
+
+private fun formatQueueSpeed(bytesPerSecond: Long): String = when {
+    bytesPerSecond >= 1024L * 1024L -> "%.1f MB/s".format(bytesPerSecond / (1024.0 * 1024.0))
+    bytesPerSecond >= 1024L -> "%.1f KB/s".format(bytesPerSecond / 1024.0)
+    bytesPerSecond > 0L -> "$bytesPerSecond B/s"
+    else -> "—"
 }

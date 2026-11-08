@@ -25,6 +25,12 @@ class HistoryRepositoryImpl(
         }
     }
 
+    override suspend fun getRecentHistory(limit: Int): List<HistoryWithRelations> {
+        return handler.awaitList {
+            historyViewQueries.recentHistory(limit.coerceIn(1, 100).toLong(), HistoryMapper::mapHistoryWithRelations)
+        }
+    }
+
     override suspend fun getTotalWatchDuration(): Long {
         return handler.awaitOne { historyQueries.getWatchDuration() }
     }

@@ -42,6 +42,7 @@ fun LibraryPager(
     onGlobalSearchClicked: () -> Unit,
     getDisplayMode: (Int) -> PreferenceMutableState<LibraryDisplayMode>,
     getColumnsForOrientation: (Boolean) -> PreferenceMutableState<Int>,
+    displayItemsKey: Any,
     getLibraryForPage: (Int) -> ImmutableList<eu.kanade.tachiyomi.ui.library.LibraryDisplayItem>,
     onClickAnime: (LibraryAnime) -> Unit,
     onLongClickAnime: (LibraryAnime, Long) -> Unit,
@@ -66,7 +67,7 @@ fun LibraryPager(
             verticalAlignment = Alignment.Top,
         ) { page ->
             val category = categories.getOrNull(page) ?: return@HorizontalPager
-            val library = getLibraryForPage(page)
+            val library = remember(displayItemsKey, page) { getLibraryForPage(page) }
 
             if (library.isEmpty()) {
                 LibraryPagerEmptyScreen(

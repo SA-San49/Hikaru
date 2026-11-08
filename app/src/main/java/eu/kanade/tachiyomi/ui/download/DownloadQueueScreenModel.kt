@@ -13,8 +13,10 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.flow.sample
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
@@ -30,6 +32,16 @@ class DownloadQueueScreenModel(
 
     private val _state = MutableStateFlow(emptyList<DownloadHeaderItem>())
     val state = _state.asStateFlow()
+
+    internal val queueSummary = combine(
+        downloadManager.queueState,
+        downloadManager.progressFlow().sample(1000).map { Unit }.onStart { emit(Unit) },
+    ) { downloads, _ -> createQueueSummary(downloads) }
+        .stateIn(
+            screenModelScope,
+            SharingStarted.Eagerly,
+            createQueueSummary(downloadManager.queueState.value),
+        )
 
     val alwaysUseInternalDownloader = downloadPreferences.alwaysUseInternalDownloader().stateIn(screenModelScope)
 
@@ -101,6 +113,44 @@ class DownloadQueueScreenModel(
                 }
                 .collectLatest { newList -> _state.update { newList } }
         }
+    }
+
+    private fun createQueueSummary(downloads: List<Download>): DownloadQueueSummary {
+        val active = downloads.filter {
+            it.status == Download.State.DOWNLOADING ||
+                it.status == Download.State.MERGING ||
+                it.status == Download.State.DECRYPTING ||
+                it.status == Download.State.FINALIZING
+        }
+        val waitingCount = downloads.count {
+            it.status == Download.State.QUEUE || it.status == Download.State.PAUSED
+        }
+        val failedCount = downloads.count { it.status == Download.State.ERROR }
+        val remainingCount = active.size + waitingCount + failedCount
+        val activeEtas = active
+            .filter { it.status == Download.State.DOWNLOADING }
+            .mapNotNull { it.etaSecondsRemaining }
+        val maxConcurrentDownloads = downloadManager.maxConcurrentDownloads
+        val progress = if (remainingCount == 0) {
+            0
+        } else {
+            (active.sumOf { it.progress } / remainingCount).coerceIn(0, 100)
+        }
+
+        return DownloadQueueSummary(
+            remainingCount = remainingCount,
+            activeCount = active.size,
+            waitingCount = waitingCount,
+            failedCount = failedCount,
+            progressPercent = progress,
+            speedBytesPerSecond = active.sumOf { it.speedBytesPerSecond.toLong().coerceAtLeast(0L) },
+            etaSeconds = DownloadQueueEtaEstimator.estimate(
+                activeEtasSeconds = activeEtas,
+                waitingCount = waitingCount,
+                maxConcurrentDownloads = maxConcurrentDownloads,
+                activeCount = active.size,
+            ),
+        )
     }
 
     override fun onDispose() {

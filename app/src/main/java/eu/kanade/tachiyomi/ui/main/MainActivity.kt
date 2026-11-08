@@ -108,11 +108,14 @@ import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import logcat.LogPriority
 import mihon.core.migration.Migrator
 import tachiyomi.core.common.Constants
@@ -154,23 +157,34 @@ class MainActivity : BaseActivity() {
 
         super.onCreate(savedInstanceState)
 
-        val didMigration = Migrator.awaitAndRelease()
-
         // Do not let the launcher create a new activity http://stackoverflow.com/questions/16283079
+        // Skip waiting for app migrations on a duplicate launcher activity.
         if (!isTaskRoot) {
             finish()
             return
         }
+
+        val didMigration = Migrator.awaitAndRelease()
 
         setComposeContent {
             val context = LocalContext.current
 
             val incognito by preferences.incognitoMode().collectAsState()
             val downloadOnly by preferences.downloadedOnly().collectAsState()
-            val indexingAnime by downloadCache.isInitializing.collectAsState()
-            
-            val libraryUpdateProgress by remember {
-                eu.kanade.tachiyomi.data.library.LibraryUpdateProgress.getProgress(context)
+            val indexingAnime by remember {
+                flow {
+                    val cache = withContext(Dispatchers.IO) { downloadCache }
+                    emitAll(cache.isInitializing)
+                }
+            }.collectAsState(initial = false)
+
+            val libraryUpdateProgress by remember(context) {
+                flow {
+                    val progressFlow = withContext(Dispatchers.IO) {
+                        eu.kanade.tachiyomi.data.library.LibraryUpdateProgress.getProgress(context)
+                    }
+                    emitAll(progressFlow)
+                }
             }.collectAsState(initial = null)
 
             val isSystemInDarkTheme = isSystemInDarkTheme()
