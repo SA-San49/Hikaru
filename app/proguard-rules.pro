@@ -1,7 +1,5 @@
-# R8 Optimization Flags
--optimizationpasses 5
--allowaccessmodification
--repackageclasses ''
+# Keep class and method names readable in app diagnostics while retaining shrinking and optimization.
+-dontobfuscate
 
 # Protect extension compatibility classes
 # ANZ -->
@@ -9,11 +7,16 @@
 # ANZ <--
 -keep class **$DefaultImpls { *; }
 
-#-dontobfuscate
-
 -keep,allowoptimization class eu.kanade.**
 -keep,allowoptimization class tachiyomi.**
 -keep,allowoptimization class mihon.**
+
+# R8 full-mode compatibility and readable diagnostic stack traces.
+-keep class androidx.compose.material3.** { *; }
+-dontwarn androidx.compose.material3.**
+-keepclassmembers class eu.kanade.tachiyomi.animesource.model.Hoster { public <init>(...); public *** copy(...); }
+-keepclassmembers class eu.kanade.tachiyomi.animesource.model.Video  { public <init>(...); public *** copy(...); }
+-keep class eu.kanade.tachiyomi.network.HttpException { public protected *; }
 
 # Keep common dependencies used in extensions
 -keep class androidx.preference.** { public protected *; }
