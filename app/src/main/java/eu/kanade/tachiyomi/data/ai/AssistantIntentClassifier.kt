@@ -16,19 +16,24 @@ internal enum class AssistantContextIntent {
 internal object AssistantIntentClassifier {
     private val nonAlphanumericPattern = Regex("[^\\p{L}\\p{N}]+")
 
+    // Keep the original diagnostic triggers, but match whole words instead of regex substrings.
     private val diagnosticKeywords = listOf(
-        "log", "error", "fail", "video", "loading", "device", "black screen", "broke", "froze", "slow",
-        "crash", "bug", "stuck", "lag", "hang", "freeze", "diagnostic",
+        "log", "error", "fail", "video", "load", "setting", "where", "how", "device", "black", "broke",
+        "froze", "slow", "crash", "die", "dead", "bug", "stuck", "lag", "hang", "freeze", "loading",
+        "diagnostic",
     )
+    // Keep the original library subjects; scope the generic "my" and "have" triggers to meaningful phrases.
     private val libraryKeywords = listOf(
-        "library", "collection", "my anime", "anime list", "titles i have", "recommend", "recommendation",
+        "library", "anime", "watch", "collection", "list", "recommend", "my anime", "anime list",
+        "titles i have", "my list", "my collection",
     )
     private val historyKeywords = listOf(
         "history", "recently watched", "last watched", "watching history", "watch history", "episodes watched",
         "continue watching", "finished watching",
     )
     private val browseKeywords = listOf(
-        "browse", "catalogue", "catalog", "available sources", "visible sources", "source list", "extensions",
+        "browse", "catalogue", "catalog", "available sources", "visible sources", "source list", "source",
+        "extension",
     )
     private val scheduleKeywords = listOf(
         "airing", "schedule", "broadcast", "upcoming episode", "next episode", "releasing this week", "coming out",
@@ -36,9 +41,13 @@ internal object AssistantIntentClassifier {
     private val feedKeywords = listOf(
         "feed", "saved search", "saved feed", "subscriptions", "latest updates", "my updates",
     )
+
+    // These preserve the original EverythingMoe triggers, including the diagnostic subset.
+    // Bare "source" and "extension" are intentionally handled as BROWSE only, not network scraping.
     private val communityKeywords = listOf(
-        "everythingmoe", "mirror", "site health", "site status", "stream link", "working extension",
-        "broken extension", "1080p", "dub", "sub", "quality",
+        "everythingmoe", "mirror", "site", "domain", "stream", "1080p", "dub", "sub", "quality", "down",
+        "dead", "alive", "link", "recommend", "best", "working", "broken", "log", "error", "fail", "video",
+        "load", "black", "broke", "froze", "slow", "crash", "die", "bug", "stuck",
     )
     private val extensionStatusKeywords = listOf(
         "extension status", "source status", "installed extension",
@@ -61,6 +70,7 @@ internal object AssistantIntentClassifier {
         }
 
         val diagnostics = matches(diagnosticKeywords)
+        val community = matches(communityKeywords)
         return buildSet {
             if (diagnostics) add(AssistantContextIntent.DIAGNOSTICS)
             if (matches(libraryKeywords)) add(AssistantContextIntent.LIBRARY)
@@ -68,9 +78,7 @@ internal object AssistantIntentClassifier {
             if (matches(browseKeywords)) add(AssistantContextIntent.BROWSE)
             if (matches(scheduleKeywords)) add(AssistantContextIntent.SCHEDULE)
             if (matches(feedKeywords)) add(AssistantContextIntent.FEED)
-            if (matches(communityKeywords) || matches(listOf("video", "black screen"))) {
-                add(AssistantContextIntent.COMMUNITY)
-            }
+            if (community) add(AssistantContextIntent.COMMUNITY)
             if (diagnostics || matches(extensionStatusKeywords)) add(AssistantContextIntent.EXTENSION_STATUS)
         }
     }

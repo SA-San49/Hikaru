@@ -151,4 +151,68 @@ class AiResponseParsingTest {
         assertTrue(AssistantContextIntent.SCHEDULE in AssistantIntentClassifier.classify("what is airing this week"))
         assertTrue(AssistantContextIntent.FEED in AssistantIntentClassifier.classify("summarize saved feeds"))
     }
+
+    @Test
+    fun `Gemini empty retry replaces stale failure details from an earlier model`() {
+        val firstModelFailure = GeminiAttemptSummary().afterFailure(
+            "Gemini error 404: model not found",
+            404,
+            "http_error",
+        )
+        val finalAttempt = firstModelFailure.afterEmptyResponse("gemini-flash-lite-latest")
+
+        assertNull(finalAttempt.failureMessage)
+        assertNull(finalAttempt.httpStatus)
+        assertEquals("empty", finalAttempt.outcome)
+        assertEquals(
+            "All Gemini keys/models failed. Gemini model 'gemini-flash-lite-latest' returned no streamed text.",
+            finalAttempt.finalFailureMessage(""),
+        )
+
+        val finalHttpFailure = finalAttempt.afterFailure("Gemini error 429: rate limit", 429, "http_error")
+        assertEquals(429, finalHttpFailure.httpStatus)
+        assertTrue(finalHttpFailure.finalFailureMessage("").endsWith("Last failure: Gemini error 429: rate limit"))
+    }
+
+    @Test
+    fun `assistant classifier retains the original keyword triggers with browse-only exceptions`() {
+        val diagnosticKeywords = listOf(
+            "log", "error", "fail", "video", "load", "setting", "where", "how", "device", "black", "broke",
+            "froze", "slow", "crash", "die", "dead", "bug", "stuck", "lag", "hang", "freeze",
+        )
+        diagnosticKeywords.forEach { keyword ->
+            assertTrue(
+                AssistantContextIntent.DIAGNOSTICS in AssistantIntentClassifier.classify("check $keyword"),
+                "Missing diagnostic trigger: $keyword",
+            )
+        }
+
+        val communityKeywords = listOf(
+            "everythingmoe", "mirror", "site", "domain", "stream", "1080p", "dub", "sub", "quality", "down",
+            "dead", "alive", "link", "recommend", "best", "working", "broken", "log", "error", "fail",
+            "video", "load", "black", "broke", "froze", "slow", "crash", "die", "bug", "stuck",
+        )
+        communityKeywords.forEach { keyword ->
+            assertTrue(
+                AssistantContextIntent.COMMUNITY in AssistantIntentClassifier.classify("check $keyword"),
+                "Missing community trigger: $keyword",
+            )
+        }
+
+        val legacyLibraryKeywords = listOf("library", "anime", "watch", "collection", "list", "recommend")
+        legacyLibraryKeywords.forEach { keyword ->
+            assertTrue(
+                AssistantContextIntent.LIBRARY in AssistantIntentClassifier.classify("show $keyword"),
+                "Missing library trigger: $keyword",
+            )
+        }
+        assertTrue(AssistantContextIntent.LIBRARY in AssistantIntentClassifier.classify("show titles I have"))
+        assertTrue(AssistantContextIntent.LIBRARY in AssistantIntentClassifier.classify("show my anime"))
+
+        listOf("source", "extension", "visible sources").forEach { query ->
+            val intents = AssistantIntentClassifier.classify("show $query")
+            assertTrue(AssistantContextIntent.BROWSE in intents)
+            assertFalse(AssistantContextIntent.COMMUNITY in intents)
+        }
+    }
 }

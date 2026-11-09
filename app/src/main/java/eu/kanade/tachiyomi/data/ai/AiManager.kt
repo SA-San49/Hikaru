@@ -1118,10 +1118,7 @@ class AiManager(
         )
 
         var streamEmitted = false
-        var latestFailure = ""
-        var latestFailureStatus: Int? = null
-        var latestFailureOutcome = "http_error"
-        var lastEmptyModel: String? = null
+        var lastAttempt = GeminiAttemptSummary()
         keyLoop@ for (key in healthyKeys) {
             for (model in modelsToTry) {
                 var emittedInAttempt = false
@@ -1135,11 +1132,14 @@ class AiManager(
                     executeCancellable(request) { response ->
                         if (!response.isSuccessful) {
                             keyFailures[key] = System.currentTimeMillis()
-                            latestFailure = providerError(response, "Gemini", key)
-                            latestFailureStatus = response.code
-                            latestFailureOutcome = "http_error"
+                            lastAttempt = lastAttempt.afterFailure(
+                                providerError(response, "Gemini", key),
+                                response.code,
+                                "http_error",
+                            )
                             return@executeCancellable
                         }
+                        lastAttempt = lastAttempt.afterEmptyResponse(model)
                         val body = response.body ?: return@executeCancellable
                         val source = body.source()
                         val nonSseBody = StringBuilder()
@@ -1190,11 +1190,10 @@ class AiManager(
                 } catch (e: Exception) {
                     keyFailures[key] = System.currentTimeMillis()
                     currentCoroutineContext()[AiRequestDiagnostics]?.outcome = "exception"
-                    latestFailure = providerConnectionError("Gemini", key, e)
-                    latestFailureStatus = null
-                    latestFailureOutcome = "exception"
+                    val failure = providerConnectionError("Gemini", key, e)
+                    lastAttempt = lastAttempt.afterFailure(failure, null, "exception")
                     if (emittedInAttempt) {
-                        emit("\n\n[Gemini stream interrupted: $latestFailure. The partial reply above may be incomplete.]")
+                        emit("\n\n[Gemini stream interrupted: $failure. The partial reply above may be incomplete.]")
                         streamEmitted = true
                         break@keyLoop
                     }
@@ -1204,23 +1203,14 @@ class AiManager(
                     streamEmitted = true
                     break@keyLoop
                 }
-                lastEmptyModel = model
             }
         }
 
         if (!streamEmitted) {
             val metrics = currentCoroutineContext()[AiRequestDiagnostics]
-            if (latestFailure.isNotBlank()) {
-                metrics?.httpStatus = latestFailureStatus
-                metrics?.outcome = latestFailureOutcome
-                emit("All Gemini keys/models failed. Last failure: $latestFailure")
-            } else {
-                metrics?.outcome = "empty"
-                val detail = lastEmptyModel?.let {
-                    "Gemini model '${redactSecrets(it, apiKey).take(80)}' returned no streamed text."
-                } ?: "No Gemini key/model attempt returned a response. Verify the API key and model."
-                emit("All Gemini keys/models failed. $detail")
-            }
+            metrics?.httpStatus = lastAttempt.httpStatus
+            metrics?.outcome = lastAttempt.outcome
+            emit(lastAttempt.finalFailureMessage(apiKey))
         }
     }
 
