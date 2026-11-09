@@ -4,27 +4,30 @@ import android.content.Context
 import eu.kanade.tachiyomi.animesource.online.AnimeHttpSource
 import eu.kanade.tachiyomi.extension.model.Extension
 import eu.kanade.tachiyomi.network.NetworkHelper
+import java.io.File
+import java.net.URI
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.job
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.intOrNull
-import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
+import logcat.LogPriority
+import okhttp3.OkHttpClient
 import okhttp3.Request
 import tachiyomi.core.common.util.lang.withIOContext
 import tachiyomi.core.common.util.system.logcat
-import logcat.LogPriority
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
-import java.io.File
-import java.net.URI
-import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.TimeUnit
 
 class EverythingMoeScraper(
     private val context: Context,
@@ -185,21 +188,45 @@ class EverythingMoeScraper(
                 .readTimeout(20, TimeUnit.SECONDS)
                 .build()
 
-            timedClient.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) return@withIOContext null
-                val html = response.body.string()
-                val site = parseSitePage(exactSlug, html)
-                if (site != null) {
-                    siteMemoryCache[lowerSlug] = site
-                    slugLookup[lowerSlug] = site.slug
-                    saveDiskCache()
-                    return@withIOContext site
+            executeCancellable(timedClient, request) { response ->
+                if (!response.isSuccessful) {
+                    null
+                } else {
+                    val html = response.body.string()
+                    val site = parseSitePage(exactSlug, html)
+                    if (site != null) {
+                        siteMemoryCache[lowerSlug] = site
+                        slugLookup[lowerSlug] = site.slug
+                        saveDiskCache()
+                    }
+                    site
                 }
-                null
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
-            logcat(LogPriority.WARN) { "Failed to fetch EverythingMoe site page for $rawSlug: ${e.message}" }
+            logcat(LogPriority.WARN) { "Failed to fetch EverythingMoe site page for $rawSlug (${e.javaClass.simpleName})." }
             null
+        }
+    }
+
+    private suspend fun <T> executeCancellable(
+        client: OkHttpClient,
+        request: Request,
+        block: (okhttp3.Response) -> T,
+    ): T {
+        val call = client.newCall(request)
+        val coroutineContext = currentCoroutineContext()
+        val cancellationHandle = coroutineContext.job.invokeOnCompletion { cause ->
+            if (cause is CancellationException) call.cancel()
+        }
+        return try {
+            call.execute().use(block)
+        } catch (e: Exception) {
+            coroutineContext.ensureActive()
+            throw e
+        } finally {
+            cancellationHandle.dispose()
         }
     }
 
@@ -320,7 +347,7 @@ class EverythingMoeScraper(
                     .header("User-Agent", USER_AGENT)
                     .build()
 
-                timedClient.newCall(mainCacheReq).execute().use { response ->
+                executeCancellable(timedClient, mainCacheReq) { response ->
                     if (response.isSuccessful) {
                         val mainJsonStr = response.body.string()
                         val rootObj = json.parseToJsonElement(mainJsonStr).jsonObject
@@ -400,7 +427,7 @@ class EverythingMoeScraper(
                     .header("User-Agent", USER_AGENT)
                     .build()
 
-                timedClient.newCall(dirReq).execute().use { response ->
+                executeCancellable(timedClient, dirReq) { response ->
                     if (response.isSuccessful) {
                         val html = response.body.string()
                         val cardRegex = """<a[^>]+href="/s/([a-zA-Z0-9_-]+)"[^>]*data-link="([^"]+)"[^>]*>(.*?)</a>""".toRegex(RegexOption.DOT_MATCHES_ALL)
@@ -438,8 +465,10 @@ class EverythingMoeScraper(
 
                 lastCacheFetch = now
                 saveDiskCache()
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
-                logcat(LogPriority.WARN) { "Failed to refresh EverythingMoe directory: ${e.message}" }
+                logcat(LogPriority.WARN) { "Failed to refresh EverythingMoe directory (${e.javaClass.simpleName})." }
             }
         }
     }

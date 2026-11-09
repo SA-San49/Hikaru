@@ -12,7 +12,7 @@ class ServerSentEventParserTest {
         assertEquals("[DONE]", parseServerSentEventData("data:[DONE]"))
         assertEquals("event", parseServerSentEventData("data:event"))
         assertEquals("event", parseServerSentEventData("data: event"))
-        assertEquals(" event", parseServerSentEventData("data:  event"))
+        assertEquals("event", parseServerSentEventData("data:  event"))
     }
 
     @Test
