@@ -80,7 +80,7 @@ internal fun LibraryList(
             items = items,
             key = { _, item -> 
                 when (item) {
-                    is LibraryDisplayItem.Anime -> "library-list-${item.libraryItem.libraryAnime.anime.id}"
+                    is LibraryDisplayItem.Anime -> "library-list-${item.libraryItem.libraryAnime.categoryId}-${item.libraryItem.libraryAnime.anime.id}"
                     is LibraryDisplayItem.Folder -> "library-list-folder-${item.folder.id}"
                     is LibraryDisplayItem.Header -> "library-list-header-${item.name}"
                 }

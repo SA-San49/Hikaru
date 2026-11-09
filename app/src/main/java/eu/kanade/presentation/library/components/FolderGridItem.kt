@@ -139,6 +139,7 @@ private fun FolderPreviewCover(item: LibraryItem, usePanorama: Boolean) {
         modifier = Modifier.fillMaxSize(),
         shape = RoundedCornerShape(4.dp),
         shouldExtractColor = false,
+        shouldUpdateRatio = usePanorama,
         ratio = coverEntry.ratio,
     )
 }

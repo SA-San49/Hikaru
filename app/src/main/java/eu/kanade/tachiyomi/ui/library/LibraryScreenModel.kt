@@ -516,12 +516,24 @@ class LibraryScreenModel(
      * Get the categories and all its anime from the database.
      */
     private fun getLibraryFlow(): Flow<AnimeLibraryMap> {
+        // Download cache updates only affect visible library data when download badges are enabled.
+        // Avoid rebuilding/sorting the whole library for each cache change when they are hidden.
+        val downloadCacheChanges = libraryPreferences.downloadBadge().changes()
+            .distinctUntilChanged()
+            .flatMapLatest { enabled ->
+                if (enabled) {
+                    downloadCache.changes.debounce(500L)
+                } else {
+                    flowOf(Unit)
+                }
+            }
+
         val animelibAnimesFlow = combine(
             getLibraryAnime.subscribe(),
             getAnimelibItemPreferencesFlow(),
             getSourcesWithFavoriteCount.subscribe(),
             libraryPreferences.animeFolderMap().changes(),
-            downloadCache.changes.debounce(500L),
+            downloadCacheChanges,
         ) { libraryMangaList, prefs, sources, folderMapStringSet, _ ->
             val animeSourceUrlMap = libraryMangaList.associate { (it.anime.source to it.anime.url) to it.id }
             val domainSourcesById = sources.associate { (source, _) -> source.id to source }

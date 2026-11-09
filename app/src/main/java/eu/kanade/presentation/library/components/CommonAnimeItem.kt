@@ -126,6 +126,7 @@ fun AnimeCompactGridItem(
                     data = coverData,
                     ratio = ratio,
                     shouldExtractColor = shouldExtractColor,
+                    shouldUpdateRatio = usePanorama != false,
                     shape = RectangleShape, // Optimization: Parent clips
                 )
             },
@@ -243,6 +244,7 @@ fun AnimeComfortableGridItem(
                         data = coverData,
                         ratio = ratio,
                         shouldExtractColor = shouldExtractColor,
+                        shouldUpdateRatio = usePanorama != false,
                         shape = RectangleShape, // Optimization: Parent clips
                     )
                 },
@@ -470,6 +472,7 @@ fun AnimeListItem(
             data = coverData,
             ratio = ratio,
             shouldExtractColor = shouldExtractColor,
+            shouldUpdateRatio = usePanorama != false,
         )
         Text(
             text = title,

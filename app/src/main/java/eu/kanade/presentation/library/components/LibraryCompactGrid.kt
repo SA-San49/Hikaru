@@ -64,7 +64,7 @@ fun LibraryCompactGrid(
             items = items,
             key = { _, item -> 
                 when (item) {
-                    is LibraryDisplayItem.Anime -> "library-grid-${item.libraryItem.libraryAnime.anime.id}"
+                    is LibraryDisplayItem.Anime -> "library-grid-${item.libraryItem.libraryAnime.categoryId}-${item.libraryItem.libraryAnime.anime.id}"
                     is LibraryDisplayItem.Folder -> "library-folder-${item.folder.id}"
                     is LibraryDisplayItem.Header -> "library-header-${item.name}"
                 }

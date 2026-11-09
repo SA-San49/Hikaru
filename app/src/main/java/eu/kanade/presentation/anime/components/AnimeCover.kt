@@ -80,6 +80,7 @@ enum class AnimeCover(val ratio: Float) {
         scale: ContentScale = ContentScale.Crop,
         ratio: Float = this.ratio,
         shouldExtractColor: Boolean = true,
+        shouldUpdateRatio: Boolean = true,
         // KMK <--
     ) {
         val context = LocalContext.current
@@ -90,7 +91,7 @@ enum class AnimeCover(val ratio: Float) {
         val isSuccess = state is AsyncImagePainter.State.Success
         val isError = state is AsyncImagePainter.State.Error
 
-        LaunchedEffect(state, data, shouldExtractColor) {
+        LaunchedEffect(state, data, shouldExtractColor, shouldUpdateRatio) {
             val currentState = state
             if (currentState is AsyncImagePainter.State.Success) {
                 val cover = when (data) {
@@ -98,11 +99,12 @@ enum class AnimeCover(val ratio: Float) {
                     is DomainMangaCover -> data
                     else -> null
                 }
-                if (cover != null) {
+                if (cover != null && (shouldExtractColor || shouldUpdateRatio)) {
                     eu.kanade.tachiyomi.util.system.CoverColorExtractor.extract(
                         cover = cover,
                         state = currentState,
                         extractColor = shouldExtractColor,
+                        updateRatio = shouldUpdateRatio,
                     )
                 }
                 if (data is Anime) onCoverLoaded?.invoke(data.asAnimeCover(), currentState)

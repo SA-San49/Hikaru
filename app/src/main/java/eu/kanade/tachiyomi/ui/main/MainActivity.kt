@@ -169,7 +169,7 @@ class MainActivity : BaseActivity() {
         val startTime = System.currentTimeMillis()
         splashScreen?.setKeepOnScreenCondition {
             val elapsed = System.currentTimeMillis() - startTime
-            elapsed <= SPLASH_MIN_DURATION || !ready && elapsed <= SPLASH_MAX_DURATION
+            !ready && elapsed <= SPLASH_MAX_DURATION
         }
         setSplashScreenExitAnimation(splashScreen)
 
@@ -234,7 +234,7 @@ class MainActivity : BaseActivity() {
 
                     LaunchedEffect(navigator) {
                         this@MainActivity.navigator = navigator
-                    
+
                         // Set performance screen provider
                         eu.kanade.tachiyomi.util.system.PerformanceBenchmarkHelper.setCurrentScreenProvider {
                             navigator.lastItem::class.simpleName
@@ -627,13 +627,13 @@ class MainActivity : BaseActivity() {
                     withUIContext { Injekt.get<Application>().toast(e.message) }
                     null
                 } ?: return
-                
+
                 val chooserIntent = if (intent.getPackage() == null && intent.component == null) {
                     Intent.createChooser(intent, context.getString(R.string.action_play_externally))
                 } else {
                     intent
                 }
-                
+
                 try {
                     externalPlayerResult?.launch(chooserIntent)
                 } catch (e: Exception) {
@@ -657,6 +657,5 @@ class MainActivity : BaseActivity() {
 }
 
 // Splash screen
-private const val SPLASH_MIN_DURATION = 500 // ms
 private const val SPLASH_MAX_DURATION = 5000 // ms
 private const val SPLASH_EXIT_ANIM_DURATION = 400L // ms

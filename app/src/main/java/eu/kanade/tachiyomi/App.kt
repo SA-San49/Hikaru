@@ -274,10 +274,20 @@ class App : Application(), DefaultLifecycleObserver, SingletonImageLoader.Factor
             // Keep cache/decoder pressure bounded on low-memory devices while using available
             // headroom on larger devices for fewer cover reloads during library scrolling.
             val isLowRamDevice = DeviceUtil.isLowRamDevice(this@App)
-            val processorCount = Runtime.getRuntime().availableProcessors()
-            // Limit concurrent image work, with less decoder pressure on low-RAM devices.
-            val fetcherParallelism = if (isLowRamDevice) 4 else processorCount.coerceIn(4, 8)
-            val decoderParallelism = if (isLowRamDevice) 2 else processorCount.coerceIn(3, 6)
+            val processorCount = Runtime.getRuntime().availableProcessors().coerceAtLeast(1)
+            val isLowCoreDevice = processorCount <= 2
+            // Keep image work from competing with UI composition on dual-core/low-RAM devices.
+            val fetcherParallelism = when {
+                isLowCoreDevice -> processorCount
+                isLowRamDevice -> 4
+                else -> processorCount.coerceIn(4, 8)
+            }
+            val decoderParallelism = when {
+                isLowCoreDevice -> 1
+                isLowRamDevice -> 2
+                processorCount <= 4 -> 2
+                else -> processorCount.coerceIn(3, 6)
+            }
             crossfade((300 * this@App.animatorDurationScale).toInt())
             allowRgb565(isLowRamDevice)
             if (networkPreferences.verboseLogging().get()) logger(DebugLogger())
