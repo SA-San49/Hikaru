@@ -31,7 +31,7 @@ abstract class CommonStorageScreenModel<T>(
     private val getDownloadSize: T.() -> Long,
     private val getDownloadCount: T.() -> Int,
     private val getId: T.() -> Long,
-    private val getCategoryId: T.() -> Long,
+    private val getCategoryIds: T.() -> List<Long>,
     private val getTitle: T.() -> String,
     private val getThumbnail: T.() -> String?,
     private val libraryPreferences: LibraryPreferences = Injekt.get(),
@@ -77,11 +77,11 @@ abstract class CommonStorageScreenModel<T>(
                 calculationJob = launch {
                     coroutineScope {
                         val distinctLibraries = libraries.distinctBy { it.getId() }.filter { item ->
-                            val categoryId = item.getCategoryId()
+                            val categoryIds = item.getCategoryIds()
                             if (selectedCategory == AllCategory) {
-                                categories.any { it.id == categoryId }
+                                categories.any { it.id in categoryIds }
                             } else {
-                                categoryId == selectedCategory.id
+                                selectedCategory.id in categoryIds
                             }
                         }
 
