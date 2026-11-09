@@ -1705,7 +1705,7 @@ private fun logRequestMetrics(metrics: AiRequestDiagnostics, apiKey: String? = n
     val safeEngine = redactSecrets(metrics.engine, apiKey).replace(Regex("[\\r\\n]+"), " ").take(40)
     val safeModel = redactSecrets(metrics.model, apiKey).replace(Regex("[\\r\\n]+"), " ").take(80)
     val elapsedMs = (System.nanoTime() - metrics.startedAtNanos) / 1_000_000L
-    logcat(LogPriority.INFO, tag = "AiAssistant") {
+    metrics.logcat(LogPriority.INFO, tag = "AiAssistant") {
         "engine=$safeEngine model=$safeModel toolContextChars=${metrics.toolContextChars} " +
             "httpStatus=${metrics.httpStatus ?: "none"} charsEmitted=${metrics.charsEmitted.get()} " +
             "elapsedMs=$elapsedMs outcome=${metrics.outcome}"
@@ -1744,7 +1744,7 @@ private fun StringBuilder.appendBoundedLine(line: String) {
 
 private fun logInvalidStreamPayload(provider: String, payload: String, apiKey: String) {
     val safePayload = redactSecrets(payload, apiKey).take(120)
-    logcat(LogPriority.DEBUG, tag = "AiAssistant") {
+    provider.logcat(LogPriority.DEBUG, tag = "AiAssistant") {
         "Skipped an unrecognized $provider stream payload: $safePayload"
     }
 }
