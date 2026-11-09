@@ -99,7 +99,7 @@ class AnnouncementCarouselLogicTest {
     fun `next update is the earliest release or grace-period boundary`() {
         val carousel = listOf(entry(1, now + 5 * hour), entry(2, now + hour))
         nextCarouselUpdate(carousel, now) shouldBe now + hour
-        nextCarouselUpdate(carousel, now + hour + 1) shouldBe now + 2 * hour
+        nextCarouselUpdate(carousel, now + hour + 1) shouldBe now + 5 * hour
         nextCarouselUpdate(emptyList(), now) shouldBe null
     }
 

@@ -34,10 +34,12 @@ import eu.kanade.tachiyomi.ui.player.loader.HosterLoader
 import tachiyomi.core.common.util.system.logcat
 import eu.kanade.tachiyomi.util.storage.DiskUtil
 import eu.kanade.tachiyomi.util.subtitles.StremioSubtitleResolver
-import eu.kanade.tachiyomi.util.system.copyToClipboard
+import eu.kanade.tachiyomi.util.system.DeviceUtil
 import eu.kanade.tachiyomi.util.system.activeNetworkState
+import eu.kanade.tachiyomi.util.system.copyToClipboard
 import okhttp3.Headers
 import okhttp3.Request
+import okhttp3.Response
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -46,6 +48,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -53,6 +56,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
@@ -97,7 +101,16 @@ class Downloader(
     private val _queueState = MutableStateFlow<List<Download>>(emptyList())
     val queueState = _queueState.asStateFlow()
 
-    private val memorySemaphore = Semaphore(12)
+    private val isLowRamDevice: Boolean by lazy { DeviceUtil.isLowRamDevice(context) }
+    private val memorySemaphore = Semaphore(if (isLowRamDevice) 3 else 8)
+    val maxConcurrentDownloads: Int
+        get() = globalConcurrencyLimit(preferences.concurrentDownloads().get().coerceAtLeast(1))
+
+    private fun globalConcurrencyLimit(maxPerSource: Int): Int = if (isLowRamDevice) {
+        maxPerSource.coerceIn(1, 2)
+    } else {
+        (maxPerSource * 4).coerceIn(4, 16)
+    }
     private val ffmpegMutex = kotlinx.coroutines.sync.Mutex()
     private val notifier by lazy { DownloadNotifier(context) }
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -143,8 +156,7 @@ class Downloader(
         if (host.contains("animepahe") || host.contains("sibnet") || host.contains("video.sibnet")) return 1 // Adaptive: Hosters failing with multi-threading
         
         val userThreads = preferences.downloadThreads().get().coerceAtLeast(1)
-        val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as? android.app.ActivityManager
-        return if (activityManager?.isLowRamDevice == true) userThreads.coerceIn(1, 4) else userThreads.coerceIn(1, 64)
+        return if (isLowRamDevice) userThreads.coerceIn(1, 4) else userThreads.coerceIn(1, 64)
     }
 
     fun start(): Boolean {
@@ -171,7 +183,7 @@ class Downloader(
             while (isRunning) {
                 // ANZ -->
                 val maxConcurrencyPerSource = preferences.concurrentDownloads().get().coerceAtLeast(1) // ANZ
-                val maxGlobalConcurrency = (maxConcurrencyPerSource * 4).coerceIn(4, 16)
+                val maxGlobalConcurrency = globalConcurrencyLimit(maxConcurrencyPerSource)
                 
                 // Clean up completed jobs
                 activeDownloads.entries.removeIf { !it.value.isActive }
@@ -441,6 +453,7 @@ class Downloader(
                 return block()
             } catch (e: Exception) {
                 if (e is CancellationException) throw e
+                if (e is RangeNotSupportedException) throw e
                 
                 // FATAL ERROR CHECK: Do not retry dead/forbidden links
                 if (e is HttpException) {
@@ -788,181 +801,322 @@ class Downloader(
         return builder.build()
     }
 
+    private data class ContentRange(
+        val start: Long,
+        val end: Long,
+        val total: Long?,
+    )
+
+    private data class RangeProbe(
+        val supported: Boolean,
+        val totalSize: Long,
+    )
+
+    private class RangeNotSupportedException(message: String) : IOException(message)
+
+    private fun parseContentRange(value: String?): ContentRange? {
+        val match = value?.let {
+            Regex("(?i)^bytes\\s+(\\d+)-(\\d+)/(\\d+|\\*)$").matchEntire(it.trim())
+        } ?: return null
+        return ContentRange(
+            start = match.groupValues[1].toLongOrNull() ?: return null,
+            end = match.groupValues[2].toLongOrNull() ?: return null,
+            total = match.groupValues[3].takeUnless { it == "*" }?.toLongOrNull(),
+        )
+    }
+
+    private suspend fun probeRangeSupport(
+        client: okhttp3.OkHttpClient,
+        video: Video,
+        headers: Headers,
+    ): RangeProbe {
+        val request = Request.Builder()
+            .url(video.videoUrl)
+            .headers(headers)
+            .header("Range", "bytes=0-0")
+            .build()
+        return executeCancellable(client, request) { response ->
+            val contentRange = parseContentRange(response.header("Content-Range"))
+            val contentLength = response.header("Content-Length")?.toLongOrNull() ?: -1L
+            val totalSize = contentRange?.total
+                ?: contentLength.takeIf { response.code == 200 }
+                ?: -1L
+            val supportsRanges = response.code == 206 &&
+                contentRange != null &&
+                contentRange.start == 0L &&
+                contentRange.end == 0L &&
+                contentRange.total != null &&
+                contentRange.total > 0L
+            RangeProbe(supportsRanges, totalSize)
+        }
+    }
+
+    private suspend fun <T> executeCancellable(
+        client: okhttp3.OkHttpClient,
+        request: Request,
+        block: (Response) -> T,
+    ): T {
+        val call = client.newCall(request)
+        val cancellationHandle = currentCoroutineContext().job.invokeOnCompletion { cause ->
+            if (cause is CancellationException) call.cancel()
+        }
+        return try {
+            call.execute().use(block)
+        } finally {
+            cancellationHandle.dispose()
+        }
+    }
+
     private suspend fun internalDownload(download: Download, sandboxDir: File, filename: String): UniFile {
         val video = download.video!!
-        
-        // Scheme Validation: OkHttp only supports http/https
         if (!video.videoUrl.startsWith("http", ignoreCase = true)) {
             throw IllegalArgumentException("Unsupported URL scheme: ${video.videoUrl.substringBefore(":")}")
         }
 
         val client = networkHelper.downloadClient
-        val host = Uri.parse(video.videoUrl).host ?: ""
-        val threadCount = calculateDynamicConcurrency(host)
+        val host = Uri.parse(video.videoUrl).host.orEmpty()
+        val requestedThreads = calculateDynamicConcurrency(host)
         val headers = getHeaders(video)
-        
-        // Instant Startup: Use cached size if available, otherwise probe in parallel
         var size = download.totalSize
-        if (size <= 0) {
+
+        if (size <= 0L) {
             try {
-                client.newCall(Request.Builder().url(video.videoUrl).headers(headers).head().build()).execute().use { res ->
-                    size = if (res.isSuccessful) res.header("Content-Length")?.toLongOrNull() ?: -1L else -1L
+                executeCancellable(
+                    client,
+                    Request.Builder().url(video.videoUrl).headers(headers).head().build(),
+                ) { response ->
+                    if (response.isSuccessful) size = response.header("Content-Length")?.toLongOrNull() ?: -1L
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 logcat(LogPriority.DEBUG) { "HEAD request failed: ${e.message}" }
             }
-            
-            // Pro-Active: Fallback to partial GET if HEAD failed (Sibnet/sensitive hoster support)
-            if (size <= 0) {
-                try {
-                    client.newCall(Request.Builder().url(video.videoUrl).headers(headers).header("Range", "bytes=0-0").build()).execute().use { res ->
-                        val contentRange = res.header("Content-Range")
-                        size = if (contentRange != null) {
-                            contentRange.substringAfterLast("/").toLongOrNull() ?: -1L
-                        } else {
-                            // If server returned 200 OK instead of 206 Partial Content
-                            res.header("Content-Length")?.toLong() ?: -1L
-                        }
-                    }
-                } catch (e: Exception) {
-                    logcat(LogPriority.DEBUG) { "Fallback GET failed: ${e.message}" }
-                }
-            }
-            
-            download.totalSize = size
         }
 
-        if (size > 0) checkFreeSpace(sandboxDir, size)
-        
+        var rangeProbe = RangeProbe(supported = false, totalSize = -1L)
+        if (size <= 0L || requestedThreads > 1) {
+            try {
+                rangeProbe = probeRangeSupport(client, video, headers)
+                if (rangeProbe.totalSize > 0L) size = rangeProbe.totalSize
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                logcat(LogPriority.DEBUG) { "Range support probe failed; using a single connection: ${e.message}" }
+            }
+        }
+        download.totalSize = size
+        if (size > 0L) checkFreeSpace(sandboxDir, size)
+
+        val rangeSupported = rangeProbe.supported && rangeProbe.totalSize == size
+        val threadCount = if (rangeSupported && size > 0L) {
+            requestedThreads.coerceAtMost(size.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()).coerceAtLeast(1)
+        } else {
+            1
+        }
         download.activeThreads = threadCount
 
-        val finalExt = if (download.video?.videoUrl?.contains(".mp4") == true) "mp4" else "mkv"
         val finalFile = File(sandboxDir, "$filename.tmp")
-        val downloadedBytes = LongAdder()
-
-        if (size > 0 && threadCount > 1) {
-            download.partProgress.clear()
+        if (size > 0L && threadCount > 1) {
             val partSize = size / threadCount
-            coroutineScope {
-                (0 until threadCount).map { i ->
-                    async {
-                        val partFile = File(sandboxDir, "$filename.part$i")
-                        var localDownloaded = partFile.length()
-                        downloadedBytes.add(localDownloaded)
-                        
-                        val partTotalSize = if (i == threadCount - 1) size - (i * partSize) else partSize
-                        download.partProgress[i] = (localDownloaded.toDouble() / partTotalSize.coerceAtLeast(1L)).toFloat().coerceIn(0f, 1f)
+            val partFiles = (0 until threadCount).map { File(sandboxDir, "$filename.part$it") }
+            val downloadedBytes = LongAdder()
 
-                        retry(times = 5) {
-                            val start = i * partSize + localDownloaded
-                            val end = if (i == threadCount - 1) size - 1 else (i + 1) * partSize - 1
-                            
-                            // Server-Side Safety: Skip if part is already finished
-                            if (start > end) {
-                                download.partProgress[i] = 1f
-                                return@retry
+            try {
+                download.partProgress.clear()
+                coroutineScope {
+                    (0 until threadCount).map { index ->
+                        async {
+                            val coroutineContext = currentCoroutineContext()
+                            val partFile = partFiles[index]
+                            val partTotalSize = if (index == threadCount - 1) {
+                                size - (index * partSize)
+                            } else {
+                                partSize
                             }
+                            if (partFile.length() > partTotalSize) partFile.delete()
+                            var localDownloaded = partFile.length()
+                            downloadedBytes.add(localDownloaded)
+                            download.partProgress[index] =
+                                (localDownloaded.toDouble() / partTotalSize.coerceAtLeast(1L)).toFloat().coerceIn(0f, 1f)
 
-                            val req = Request.Builder().url(video.videoUrl).headers(headers)
-                                .header("Range", "bytes=$start-$end").build()
-                            client.newCall(req).execute().use { res ->
-                                if (!res.isSuccessful) throw IOException("Unexpected code $res")
-                                val source = res.body?.source() ?: throw IOException("Empty body")
-                                java.io.FileOutputStream(partFile, true).use { out ->
-                                    val buffer = BufferPool.obtain()
-                                    try {
-                                        var read: Int
-                                        var lastUpdate = System.currentTimeMillis()
-                                        while (source.read(buffer).also { read = it } != -1) {
-                                            coroutineContext.ensureActive()
-                                            if (download.status == Download.State.PAUSED) throw CancellationException()
-                                            out.write(buffer, 0, read)
-                                            localDownloaded += read
-                                            downloadedBytes.add(read.toLong())
+                            retry(times = 5) {
+                                val start = index * partSize + localDownloaded
+                                val end = if (index == threadCount - 1) size - 1L else (index + 1L) * partSize - 1L
+                                if (start > end) {
+                                    if (localDownloaded == partTotalSize) {
+                                        download.partProgress[index] = 1f
+                                        return@retry
+                                    }
+                                    throw RangeNotSupportedException("Saved range part exceeds its assigned byte range")
+                                }
 
-                                            download.partProgress[i] = (localDownloaded.toDouble() / partTotalSize.coerceAtLeast(1L)).toFloat().coerceIn(0f, 1f)
+                                val request = Request.Builder()
+                                    .url(video.videoUrl)
+                                    .headers(headers)
+                                    .header("Range", "bytes=$start-$end")
+                                    .build()
+                                executeCancellable(client, request) { response ->
+                                    val contentRange = parseContentRange(response.header("Content-Range"))
+                                        ?: throw RangeNotSupportedException("Server omitted Content-Range for a partial response")
+                                    if (response.code != 206 ||
+                                        contentRange.start != start ||
+                                        contentRange.end != end ||
+                                        contentRange.total != size
+                                    ) {
+                                        throw RangeNotSupportedException("Server returned an invalid Content-Range header")
+                                    }
+                                    val source = response.body?.source() ?: throw IOException("Empty response body")
+                                    FileOutputStream(partFile, true).use { output ->
+                                        val buffer = BufferPool.obtain()
+                                        try {
+                                            var read: Int
+                                            var lastUpdate = System.currentTimeMillis()
+                                            while (source.read(buffer).also { read = it } != -1) {
+                                                coroutineContext.ensureActive()
+                                                if (download.status == Download.State.PAUSED) throw CancellationException()
+                                                output.write(buffer, 0, read)
+                                                localDownloaded += read
+                                                downloadedBytes.add(read.toLong())
+                                                download.partProgress[index] =
+                                                    (localDownloaded.toDouble() / partTotalSize.coerceAtLeast(1L)).toFloat().coerceIn(0f, 1f)
 
-                                            val now = System.currentTimeMillis()
-                                            if (now - lastUpdate > 500) {
-                                                download.update(downloadedBytes.sum(), size, false)
-                                                notifier.onProgressChange(download)
-                                                store.update(download)
-                                                lastUpdate = now
+                                                val now = System.currentTimeMillis()
+                                                if (now - lastUpdate > 500L) {
+                                                    download.update(downloadedBytes.sum(), size, false)
+                                                    notifier.onProgressChange(download)
+                                                    store.update(download)
+                                                    lastUpdate = now
+                                                }
                                             }
+                                        } finally {
+                                            BufferPool.recycle(buffer)
                                         }
-                                    } finally {
-                                        BufferPool.recycle(buffer)
+                                    }
+                                    if (localDownloaded != partTotalSize) {
+                                        throw IOException("Range response ended before the requested bytes were received")
                                     }
                                 }
                             }
                         }
+                    }.awaitAll()
+                }
+
+                download.status = Download.State.MERGING
+                download.progress = 0
+                notifyProgress(download)
+                FileOutputStream(finalFile).use { output ->
+                    mergeChannels(partFiles, output.channel, download)
+                }
+                return UniFile.fromFile(finalFile)!!
+            } catch (e: RangeNotSupportedException) {
+                logcat(LogPriority.WARN) { "Server did not honor byte ranges; restarting this transfer as one stream." }
+                partFiles.forEach(File::delete)
+                download.clearProgress()
+                download.totalSize = size
+                download.activeThreads = 1
+            }
+        }
+
+        // Safe single-stream path: used for servers without byte-range support and unknown sizes.
+        download.partProgress.clear()
+        download.activeThreads = 1
+        retry {
+            val start = if (finalFile.exists()) finalFile.length() else 0L
+            if (size > 0L) download.partProgress[0] = (start.toFloat() / size).coerceIn(0f, 1f)
+            val requestBuilder = Request.Builder().url(video.videoUrl).headers(headers)
+            if (start > 0L) requestBuilder.header("Range", "bytes=$start-")
+            val coroutineContext = currentCoroutineContext()
+
+            executeCancellable(client, requestBuilder.build()) { response ->
+                if (!response.isSuccessful) throw IOException("Unexpected response code ${response.code}")
+                val responseRange = parseContentRange(response.header("Content-Range"))
+                if (response.code == 206) {
+                    if (responseRange == null) {
+                        throw IOException("Server returned a partial response without Content-Range")
                     }
-                }.awaitAll()
-            }
+                    if (responseRange.start != start || responseRange.end < responseRange.start) {
+                        throw IOException("Partial response did not match the requested byte offset")
+                    }
+                    if (responseRange.total != null && responseRange.end >= responseRange.total) {
+                        throw IOException("Partial response exceeded the source byte range")
+                    }
+                    if (responseRange.total != null && size > 0L && responseRange.total != size) {
+                        throw IOException("Resume response size no longer matches the source")
+                    }
+                }
+                if (size <= 0L) {
+                    val contentLength = response.header("Content-Length")?.toLongOrNull() ?: -1L
+                    size = responseRange?.total
+                        ?: contentLength.takeIf { response.code == 200 }
+                        ?: -1L
+                    download.totalSize = size
+                    if (size > 0L) checkFreeSpace(sandboxDir, size)
+                } else if (response.code == 200) {
+                    val fullContentLength = response.header("Content-Length")?.toLongOrNull() ?: -1L
+                    if (fullContentLength > 0L && fullContentLength != size) {
+                        size = fullContentLength
+                        download.totalSize = size
+                        checkFreeSpace(sandboxDir, size)
+                    }
+                }
 
-            download.status = Download.State.MERGING
-            download.progress = 0
-            notifyProgress(download)
-
-            java.io.FileOutputStream(finalFile).use { outStream ->
-                val outChannel = outStream.channel
-                val partFiles = (0 until threadCount).map { File(sandboxDir, "$filename.part$it") }
-                mergeChannels(partFiles, outChannel, download)
-            }
-            return UniFile.fromFile(finalFile)!!
-        } else {
-            // Robust Single-Threaded/Unknown Size Downloader
-            download.partProgress.clear()
-            retry {
-                val start = if (finalFile.exists()) finalFile.length() else 0L
-                if (size > 0) download.partProgress[0] = (start.toFloat() / size).coerceIn(0f, 1f)
-                
-                val reqBuilder = Request.Builder().url(video.videoUrl).headers(headers)
-                if (start > 0) reqBuilder.header("Range", "bytes=$start-")
-                
-                client.newCall(reqBuilder.build()).execute().use { res ->
-                    if (!res.isSuccessful) throw IOException("Unexpected code $res")
-
-                    // Handle 200 OK when 206 was requested (server doesn't support Range)
-                    val isResuming = start > 0 && res.code == 206
-                    val append = isResuming
-                    val actualStart = if (isResuming) start else 0L
-                    
-                    val source = res.body?.source() ?: throw IOException("Empty body")
-                    java.io.FileOutputStream(finalFile, append).use { out ->
-                        val buffer = BufferPool.obtain()
-                        try {
-                            var read: Int
-                            var totalRead = actualStart
-                            var lastUpdate = System.currentTimeMillis()
-                            while (source.read(buffer).also { read = it } != -1) {
-                                coroutineContext.ensureActive()
-                                if (download.status == Download.State.PAUSED) throw CancellationException()
-                                
-                                out.write(buffer, 0, read)
-                                totalRead += read
-                                
-                                if (size > 0) download.partProgress[0] = (totalRead.toFloat() / size).coerceIn(0f, 1f)
-
-                                val now = System.currentTimeMillis()
-                                if (now - lastUpdate > 500) {
-                                    download.update(totalRead, size, false)
-                                    notifier.onProgressChange(download)
-                                    lastUpdate = now
-                                }
+                val append = start > 0L && response.code == 206
+                val actualStart = if (append) start else 0L
+                val source = response.body?.source() ?: throw IOException("Empty response body")
+                FileOutputStream(finalFile, append).use { output ->
+                    val buffer = BufferPool.obtain()
+                    var totalRead = actualStart
+                    try {
+                        var read: Int
+                        var lastUpdate = System.currentTimeMillis()
+                        while (source.read(buffer).also { read = it } != -1) {
+                            coroutineContext.ensureActive()
+                            if (download.status == Download.State.PAUSED) throw CancellationException()
+                            output.write(buffer, 0, read)
+                            totalRead += read
+                            if (size > 0L) {
+                                download.partProgress[0] = (totalRead.toFloat() / size).coerceIn(0f, 1f)
                             }
-                        } finally {
-                            BufferPool.recycle(buffer)
+
+                            val now = System.currentTimeMillis()
+                            if (now - lastUpdate > 500L) {
+                                download.update(totalRead, size, false)
+                                notifier.onProgressChange(download)
+                                lastUpdate = now
+                            }
                         }
+                        if (size > 0L && totalRead < size) {
+                            throw IOException("Response ended before the full file was downloaded")
+                        }
+                        if (size > 0L && totalRead > size) {
+                            throw IOException("Response exceeded the expected source size")
+                        }
+                    } finally {
+                        BufferPool.recycle(buffer)
                     }
                 }
             }
-            return UniFile.fromFile(finalFile)!!
+        }
+        return UniFile.fromFile(finalFile)!!
+    }
+
+    private fun resolveHlsUrl(baseUrl: String, reference: String): String {
+        return if (reference.startsWith("http://", ignoreCase = true) || reference.startsWith("https://", ignoreCase = true)) {
+            reference
+        } else {
+            runCatching { java.net.URI(baseUrl).resolve(reference).toString() }
+                .getOrDefault(baseUrl.substringBeforeLast("/") + "/" + reference)
         }
     }
 
     private suspend fun nativeHlsDownload(download: Download, sandboxDir: File, filename: String): UniFile {
         val video = download.video!!
+        if (download.totalDuration <= 0L) {
+            // HLS does not expose one content length; a non-zero duration lets Download estimate
+            // remaining bytes from the completed-segment progress fraction.
+            download.totalDuration = download.episode.totalSeconds.coerceAtLeast(1L)
+        }
         val client = networkHelper.downloadClient
         val headers = getHeaders(video)
 
@@ -971,24 +1125,26 @@ class Downloader(
 
         // RECURSIVE RESOLUTION: Handle Master Playlists by picking the first variant
         while (true) {
-            val playlistRes = client.newCall(Request.Builder().url(playlistUrl).headers(headers).build()).execute()
-            if (!playlistRes.isSuccessful) throw IOException("Failed to fetch playlist: ${playlistRes.code}")
-            lines = playlistRes.body?.string()?.lines() ?: emptyList()
+            lines = executeCancellable(
+                client,
+                Request.Builder().url(playlistUrl).headers(headers).build(),
+            ) { response ->
+                if (!response.isSuccessful) throw IOException("Failed to fetch playlist: ${response.code}")
+                response.body?.string()?.lines().orEmpty()
+            }
 
             val isMaster = lines.any { it.startsWith("#EXT-X-STREAM-INF") }
             if (isMaster) {
-                val baseUrl = playlistUrl.substringBeforeLast("/") + "/"
                 val subUrl = lines.firstOrNull { it.isNotBlank() && !it.startsWith("#") }
                     ?: throw IOException("No variant playlist found in master playlist")
 
-                playlistUrl = if (subUrl.startsWith("http")) subUrl else baseUrl + subUrl
+                playlistUrl = resolveHlsUrl(playlistUrl, subUrl)
                 logcat(LogPriority.INFO) { "HLS Engine: Resolved master playlist to variant: $playlistUrl" }
                 continue
             }
             break
         }
 
-        val baseUrl = playlistUrl.substringBeforeLast("/") + "/"
         val segments = mutableListOf<String>()
         var encryptionKeyUrl: String? = null
         var mediaSequence = 0
@@ -1000,33 +1156,41 @@ class Downloader(
             } else if (line.startsWith("#EXT-X-KEY:METHOD=AES-128")) {
                 val match = Regex("URI=\"([^\"]+)\"").find(line)
                 encryptionKeyUrl = match?.groupValues?.get(1)
-                if (encryptionKeyUrl != null && !encryptionKeyUrl.startsWith("http")) {
-                    encryptionKeyUrl = baseUrl + encryptionKeyUrl
-                }
+                encryptionKeyUrl = encryptionKeyUrl?.let { resolveHlsUrl(playlistUrl, it) }
             } else if (!line.startsWith("#") && line.isNotBlank()) {
-                segments.add(if (line.startsWith("http")) line else baseUrl + line)
+                segments.add(resolveHlsUrl(playlistUrl, line))
             }
         }
 
         if (segments.isEmpty()) throw IOException("No segments found in HLS playlist")
+        download.clearProgress()
+        download.totalSize = -1L
         download.totalSegments = segments.size
-        
+
         var secretKey: javax.crypto.spec.SecretKeySpec? = null
-        if (encryptionKeyUrl != null) {
-            val keyRes = client.newCall(Request.Builder().url(encryptionKeyUrl).headers(headers).build()).execute()
-            val keyBytes = keyRes.body?.bytes() ?: throw IOException("Failed to fetch AES key")
+        val resolvedEncryptionKeyUrl = encryptionKeyUrl
+        if (resolvedEncryptionKeyUrl != null) {
+            val keyBytes = executeCancellable(
+                client,
+                Request.Builder().url(resolvedEncryptionKeyUrl).headers(headers).build(),
+            ) { response ->
+                if (!response.isSuccessful) throw IOException("Failed to fetch AES key: ${response.code}")
+                response.body?.bytes() ?: throw IOException("Failed to read AES key")
+            }
+            if (keyBytes.size != 16) throw IOException("HLS AES-128 key must be 16 bytes")
             secretKey = javax.crypto.spec.SecretKeySpec(keyBytes, "AES")
         }
 
-        val downloadedCount = java.util.concurrent.atomic.LongAdder()
+        val downloadedCount = java.util.concurrent.atomic.AtomicInteger()
         val downloadedBytes = java.util.concurrent.atomic.LongAdder()
         // ANZ -->
         val segmentIndex = java.util.concurrent.atomic.AtomicInteger(0) // ANZ: lock-free O(1) segment dispatch
         // ANZ <--
-        var lastUpdate = System.currentTimeMillis()
-        
-        val host = Uri.parse(video.videoUrl).host ?: ""
-        val threadCount = calculateDynamicConcurrency(host)
+        val lastUpdate = AtomicLong(System.currentTimeMillis())
+
+        val host = Uri.parse(video.videoUrl).host.orEmpty()
+        val hlsThreadLimit = if (isLowRamDevice) 3 else 8
+        val threadCount = calculateDynamicConcurrency(host).coerceAtMost(hlsThreadLimit)
         download.activeThreads = threadCount
 
         coroutineScope {
@@ -1045,53 +1209,53 @@ class Downloader(
                         val segmentFile = File(sandboxDir, "seg_$segIdx.part")
                         // ANZ <--
 
-                        if (segmentFile.exists() && segmentFile.length() > 0) {
-                            downloadedCount.increment()
+                        if (segmentFile.exists() && segmentFile.length() > 0L) {
+                            val currentCount = downloadedCount.incrementAndGet()
                             downloadedBytes.add(segmentFile.length())
-                            // ANZ -->
+                            download.downloadedSegments = currentCount
                             download.segmentProgress[segIdx] = true
-                            // ANZ <--
                             continue
                         }
 
                         retry(times = 5) {
-                            // ANZ -->
-                            client.newCall(Request.Builder().url(segUrl).headers(headers).build()).execute().use { res ->
-                                if (res.code == 429) {
-                                    kotlinx.coroutines.delay(500L)
+                            memorySemaphore.withPermit {
+                                val request = Request.Builder().url(segUrl).headers(headers).build()
+                                var data = executeCancellable(client, request) { response ->
+                                    if (!response.isSuccessful) throw IOException("Segment failed: ${response.code}")
+                                    response.body?.bytes()?.takeIf { it.isNotEmpty() }
+                                        ?: throw IOException("HLS segment was empty")
                                 }
-                                if (!res.isSuccessful) throw IOException("Segment failed: ${res.code}")
-                                var data = res.body?.bytes() ?: throw IOException("Empty segment")
 
                                 coroutineContext.ensureActive()
+                                if (download.status == Download.State.PAUSED) throw CancellationException()
 
-                                // THREAD-SAFE AES DECRYPTION WITH REUSED WORKER CIPHER
+                                // Each worker owns its Cipher instance, so decryption remains thread-safe.
                                 workerCipher?.let { cipher ->
-                                    val seqNum = mediaSequence + segIdx
-                                    val ivBytes = java.nio.ByteBuffer.allocate(16).putLong(8, seqNum.toLong()).array()
-                                    cipher.init(javax.crypto.Cipher.DECRYPT_MODE, secretKey, javax.crypto.spec.IvParameterSpec(ivBytes))
+                                    val sequenceNumber = mediaSequence + segIdx
+                                    val ivBytes = java.nio.ByteBuffer.allocate(16).putLong(8, sequenceNumber.toLong()).array()
+                                    cipher.init(
+                                        javax.crypto.Cipher.DECRYPT_MODE,
+                                        secretKey,
+                                        javax.crypto.spec.IvParameterSpec(ivBytes),
+                                    )
                                     data = cipher.doFinal(data)
                                 }
-                                // ANZ <--
+                                if (data.isEmpty()) throw IOException("Decrypted HLS segment was empty")
 
-                                java.io.FileOutputStream(segmentFile).use { it.write(data) }
-                                downloadedCount.increment()
+                                FileOutputStream(segmentFile).use { it.write(data) }
+                                val currentCount = downloadedCount.incrementAndGet()
                                 downloadedBytes.add(data.size.toLong())
-
-                                val currentCount = downloadedCount.sum().toInt()
                                 download.downloadedSegments = currentCount
-
-                                // NEW: Mark this exact segment as complete for the UI's secondary progress bar
-                                // ANZ -->
                                 download.segmentProgress[segIdx] = true
-                                // ANZ <--
 
                                 val now = System.currentTimeMillis()
-                                if (now - lastUpdate > 1000 || currentCount == segments.size) {
-                                    download.update(downloadedBytes.sum(), -1L, false)
-                                    store.update(download)
-                                    notifier.onProgressChange(download)
-                                    lastUpdate = now
+                                val previousUpdate = lastUpdate.get()
+                                if (now - previousUpdate > 1000L || currentCount == segments.size) {
+                                    if (currentCount == segments.size || lastUpdate.compareAndSet(previousUpdate, now)) {
+                                        download.update(downloadedBytes.sum(), -1L, false)
+                                        store.update(download)
+                                        notifier.onProgressChange(download)
+                                    }
                                 }
                             }
                         }

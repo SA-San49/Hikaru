@@ -1,11 +1,23 @@
-# Baseline profiles
+# Baseline profiles and macrobenchmarks
 
-The baseline profile for this app is located at [`app/src/main/baseline-prof.txt`](../app/src/main/baseline-prof.txt).
-It contains rules that enable AOT compilation of the critical user path taken during app launch.
-For more information on baseline profiles, read [this document](https://developer.android.com/studio/profile/baselineprofiles).
+The app baseline profile is stored at [`app/src/main/baseline-prof.txt`](../app/src/main/baseline-prof.txt). It contains AOT compilation rules for the app's critical paths. For background on baseline profiles, see the [Android documentation](https://developer.android.com/studio/profile/baselineprofiles).
 
-> Note: The baseline profile needs to be re-generated for release builds that touch code which changes app startup.
+Hikaru's macrobenchmarks target the `benchmark` app build type (`app.hikaru.benchmark`). Run the core suite on a connected Android device or emulator with a completed first-run setup:
 
-To generate the baseline profile, select the `devBenchmark` build variant and run the
-`BaselineProfileGenerator` benchmark test on an AOSP Android Emulator.
-Then copy the resulting baseline profile from the emulator to [`app/src/main/baseline-prof.txt`](../app/src/main/baseline-prof.txt).
+```bash
+./gradlew :macrobenchmark:connectedBenchmark -Pandroid.testInstrumentationRunnerArguments.class=tachiyomi.macrobenchmark.BaselineProfileGenerator
+./gradlew :macrobenchmark:connectedBenchmark -Pandroid.testInstrumentationRunnerArguments.class=tachiyomi.macrobenchmark.LibraryScrollingBenchmark
+./gradlew :macrobenchmark:connectedBenchmark -Pandroid.testInstrumentationRunnerArguments.class=tachiyomi.macrobenchmark.ColdStartupBenchmark
+```
+
+The baseline-profile and library-scrolling tests require a **populated library** on the benchmark device. The harness does not seed database contents and fails rather than silently recording a no-op scroll. Use representative, repeatable data when comparing changes, and report device/build conditions alongside results. The library tests navigate to the Library tab even when another start tab is configured.
+
+The baseline-profile test captures launch and library-scroll paths. Retrieve its generated profile from `macrobenchmark/build/outputs/connected_android_test_additional_output/` and copy it to `app/src/main/baseline-prof.txt` before using it in a build. Regenerate the profile on a representative device when startup-critical code changes; do not substitute hand-written rules for a captured profile.
+
+An optional browse-results benchmark is available with:
+
+```bash
+./gradlew :macrobenchmark:connectedBenchmark -Pandroid.testInstrumentationRunnerArguments.class=tachiyomi.macrobenchmark.BrowseScrollingBenchmark
+```
+
+It needs at least one installed, non-stub source that returns results. The test fails explicitly if usable source results are unavailable.

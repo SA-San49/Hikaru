@@ -4,9 +4,11 @@ import cafe.adriel.voyager.core.model.StateScreenModel
 import cafe.adriel.voyager.core.model.screenModelScope
 import eu.kanade.domain.ai.AiPreferences
 import eu.kanade.tachiyomi.data.ai.AiManager
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.collections.immutable.ImmutableList
 import kotlinx.collections.immutable.persistentListOf
 import kotlinx.collections.immutable.toImmutableList
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.collectLatest
@@ -17,16 +19,14 @@ import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
-import kotlinx.coroutines.launch
+import logcat.LogPriority
 import tachiyomi.core.common.util.lang.launchIO
 import tachiyomi.core.common.util.system.logcat
-import logcat.LogPriority
 import tachiyomi.domain.ai.model.ChatMessage
 import tachiyomi.domain.ai.model.ChatSession
 import tachiyomi.domain.ai.repository.ChatRepository
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
-import java.time.Instant
 
 class AiAssistantScreenModel(
     private val chatRepository: ChatRepository = Injekt.get(),
@@ -92,15 +92,22 @@ class AiAssistantScreenModel(
     }
 
     private var messageCollectionJob: kotlinx.coroutines.Job? = null
+    private var sendMessageJob: kotlinx.coroutines.Job? = null
+    private val sendMessageInFlight = AtomicBoolean(false)
 
     private fun loadSession(sessionId: Long) {
-        // Update ID immediately to prevent race conditions in sendMessage
-        mutableState.update { it.copy(activeSessionId = sessionId) }
-        
+        // Update ID immediately to prevent race conditions in sendMessage.
+        if (state.value.activeSessionId != sessionId) sendMessageJob?.cancel()
+        mutableState.update {
+            it.copy(activeSessionId = sessionId, messages = persistentListOf(), isLoading = false, streamingMessage = null)
+        }
+
         messageCollectionJob?.cancel()
         messageCollectionJob = screenModelScope.launchIO {
             chatRepository.getMessagesBySessionId(sessionId).collectLatest { messages ->
-                mutableState.update { it.copy(messages = messages.toImmutableList()) }
+                if (state.value.activeSessionId == sessionId) {
+                    mutableState.update { it.copy(messages = messages.toImmutableList()) }
+                }
             }
         }
     }
@@ -154,57 +161,86 @@ class AiAssistantScreenModel(
     }
 
     fun sendMessage(query: String) {
-        if (query.isBlank() || state.value.isLoading) return
+        if (query.isBlank() || state.value.isLoading || !sendMessageInFlight.compareAndSet(false, true)) return
 
-        screenModelScope.launchIO {
-            val sessionId = state.value.activeSessionId ?: return@launchIO
-            
-            // Check if session still exists
-            if (chatRepository.getSessionById(sessionId) == null) {
-                createNewSession()
-                return@launchIO
-            }
-
-            // 1. Save User Message
-            chatRepository.insertMessage(sessionId, "user", query)
-            
-            if (query.trim().equals("/reset", ignoreCase = true)) {
-                aiManager.resetCircuitBreaker()
-                chatRepository.insertMessage(sessionId, "model", "Neural stability reset. Circuit breaker cleared.")
-                return@launchIO
-            }
-
-            // 2. Update Loading State
-            mutableState.update { it.copy(isLoading = true, streamingMessage = "") }
-
-            // 3. Call AI with streaming
-            val history = state.value.messages.map { AiManager.ChatMessage(it.role, it.content) }
-            val fullResponse = StringBuilder()
-            
+        sendMessageJob = screenModelScope.launchIO {
+            var sessionId: Long? = null
             try {
+                mutableState.update { it.copy(isLoading = true, streamingMessage = null) }
+                val activeSessionId = state.value.activeSessionId ?: return@launchIO
+                sessionId = activeSessionId
+                if (chatRepository.getSessionById(activeSessionId) == null) {
+                    createNewSession()
+                    return@launchIO
+                }
+
+                // Capture the persisted conversation before inserting this turn, so the current user
+                // message is appended exactly once by AiManager.
+                val history = state.value.messages.map { AiManager.ChatMessage(it.role, it.content) }
+                val isFirstUserMessage = state.value.messages.none { it.role == "user" }
+                chatRepository.insertMessage(activeSessionId, "user", query)
+
+                if (query.trim().equals("/reset", ignoreCase = true)) {
+                    aiManager.resetCircuitBreaker()
+                    chatRepository.insertMessage(activeSessionId, "model", "Neural stability reset. Circuit breaker cleared.")
+                    return@launchIO
+                }
+
+                val fullResponse = StringBuilder()
+                var lastPublishedAt = 0L
+                var lastPublishedLength = 0
                 aiManager.chatWithAssistantStream(query, history).collect { chunk ->
                     fullResponse.append(chunk)
-                    mutableState.update { it.copy(streamingMessage = fullResponse.toString()) }
-                }
-
-                // 4. Save AI Response once complete
-                val response = fullResponse.toString()
-                if (response.isNotBlank()) {
-                    chatRepository.insertMessage(sessionId, "model", response)
-                    
-                    // 5. Update Session Title if it's the first message from human
-                    val userMessages = state.value.messages.filter { it.role == "user" }
-                    if (userMessages.size == 1) {
-                        updateSessionTitle(sessionId, query)
+                    val now = System.nanoTime()
+                    if (fullResponse.length - lastPublishedLength >= 24 || now - lastPublishedAt >= 80_000_000L) {
+                        if (state.value.activeSessionId == activeSessionId) {
+                            mutableState.update { it.copy(streamingMessage = fullResponse.toString()) }
+                        }
+                        lastPublishedAt = now
+                        lastPublishedLength = fullResponse.length
                     }
                 }
-            } catch (e: Exception) {
-                logcat(LogPriority.ERROR, e)
-                chatRepository.insertMessage(sessionId, "model", "System error during uplink: ${e.message}")
+
+                val response = assistantReplyOrFallback(fullResponse.toString())
+                if (fullResponse.isBlank()) {
+                    logcat(LogPriority.WARN, tag = "AiAssistant") {
+                        "Provider flow completed without text; inserted the assistant fallback reply."
+                    }
+                }
+                chatRepository.insertMessage(activeSessionId, "model", response)
+                if (isFirstUserMessage) updateSessionTitle(activeSessionId, query)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                logcat(LogPriority.ERROR, tag = "AiAssistant") {
+                    "Assistant message failed before completion (${e.javaClass.simpleName})."
+                }
+                val failedSessionId = sessionId
+                if (failedSessionId != null) {
+                    try {
+                        chatRepository.insertMessage(
+                            failedSessionId,
+                            "model",
+                            "The assistant request failed. Check your connection and provider settings, then try again.",
+                        )
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (_: Throwable) {
+                        // The original failure already has a safe log entry; avoid leaking its text.
+                    }
+                }
             } finally {
-                mutableState.update { it.copy(isLoading = false, streamingMessage = null) }
+                sendMessageInFlight.set(false)
+                mutableState.update { current ->
+                    if (sessionId == null || current.activeSessionId == sessionId) {
+                        current.copy(isLoading = false, streamingMessage = null)
+                    } else {
+                        current
+                    }
+                }
             }
         }
+        sendMessageJob?.invokeOnCompletion { sendMessageInFlight.set(false) }
     }
 
     private suspend fun updateSessionTitle(sessionId: Long, query: String) {
@@ -242,4 +278,8 @@ class AiAssistantScreenModel(
         val selectedSessionIds: Set<Long> = emptySet(),
         val streamingMessage: String? = null,
     )
+}
+
+internal fun assistantReplyOrFallback(response: String): String = response.ifBlank {
+    "No response received from the AI provider. Check your connection and API key, then try again."
 }

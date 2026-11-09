@@ -13,6 +13,10 @@ class GetHistory(
         return repository.getHistoryByAnimeId(animeId)
     }
 
+    suspend fun awaitRecent(limit: Int = 30): List<HistoryWithRelations> {
+        return repository.getRecentHistory(limit.coerceIn(1, 100))
+    }
+
     fun subscribe(query: String): Flow<List<HistoryWithRelations>> {
         return repository.getHistory(query)
     }

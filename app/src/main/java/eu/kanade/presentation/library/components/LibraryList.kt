@@ -8,6 +8,9 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.util.fastAny
 import eu.kanade.tachiyomi.ui.library.LibraryItem
@@ -57,7 +60,10 @@ internal fun LibraryList(
     val selectedIds = remember(selection) { selection.map { it.id }.toSet() }
 
     FastScrollLazyColumn(
-        modifier = Modifier.fillMaxSize(),
+        modifier = Modifier
+            .fillMaxSize()
+            .semantics { testTagsAsResourceId = true }
+            .testTag("library_grid"),
         contentPadding = contentPadding + PaddingValues(vertical = 8.dp),
     ) {
         item {
@@ -74,7 +80,7 @@ internal fun LibraryList(
             items = items,
             key = { _, item -> 
                 when (item) {
-                    is LibraryDisplayItem.Anime -> "library-list-${item.libraryItem.libraryAnime.anime.id}"
+                    is LibraryDisplayItem.Anime -> "library-list-${item.libraryItem.libraryAnime.categoryId}-${item.libraryItem.libraryAnime.anime.id}"
                     is LibraryDisplayItem.Folder -> "library-list-folder-${item.folder.id}"
                     is LibraryDisplayItem.Header -> "library-list-header-${item.name}"
                 }
@@ -122,6 +128,7 @@ internal fun LibraryList(
                         },
                         entries = entries,
                         containerHeight = containerHeight,
+                        shouldExtractColor = false,
                         usePanorama = usePanorama,
                     )
                 }

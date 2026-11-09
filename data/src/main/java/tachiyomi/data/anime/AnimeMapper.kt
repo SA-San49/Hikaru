@@ -116,7 +116,7 @@ object AnimeMapper {
         lastSeen: Long,
         bookmarkCount: Double,
         fillermarkCount: Double,
-        category: Long,
+        categories: String,
     ): LibraryAnime {
         val anime = mapAnime(
             id,
@@ -153,9 +153,14 @@ object AnimeMapper {
             backgroundLastModified,
             castMembers,
         )
+        val categoryIds = categories
+            .split(',')
+            .mapNotNull { it.toLongOrNull() }
+            .ifEmpty { listOf(0L) }
         return LibraryAnime(
             anime = anime,
-            category = category,
+            categories = categoryIds,
+            categoryId = categoryIds.first(),
             totalEpisodes = totalCount,
             seenCount = seenCount.toLong(),
             latestUpload = latestUpload,

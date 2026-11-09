@@ -221,8 +221,28 @@ object SettingsAiScreen : SearchableSettings {
                 ),
                 Preference.PreferenceItem.SwitchPreference(
                     pref = aiPreferences.aiAssistantLibrary(),
-                    title = "Ingest Library Context",
-                    subtitle = "Allows the assistant to analyze your collection",
+                    title = "Share Library Context",
+                    subtitle = "Send a small summary of your collection when relevant",
+                ),
+                Preference.PreferenceItem.SwitchPreference(
+                    pref = aiPreferences.aiAssistantHistory(),
+                    title = "Share Watch History",
+                    subtitle = "Send up to 30 recent watched titles when relevant",
+                ),
+                Preference.PreferenceItem.SwitchPreference(
+                    pref = aiPreferences.aiAssistantBrowse(),
+                    title = "Share Browse Context",
+                    subtitle = "Send visible sources and aggregate recent source activity",
+                ),
+                Preference.PreferenceItem.SwitchPreference(
+                    pref = aiPreferences.aiAssistantSchedule(),
+                    title = "Share Airing Schedule",
+                    subtitle = "Send upcoming titles from the local schedule cache; it will not refresh online",
+                ),
+                Preference.PreferenceItem.SwitchPreference(
+                    pref = aiPreferences.aiAssistantFeed(),
+                    title = "Share Saved Feed Setup",
+                    subtitle = "Send feed names and saved-search settings, not live feed results",
                 ),
                 Preference.PreferenceItem.SwitchPreference(
                     pref = aiPreferences.aiAssistantEverythingMoe(),

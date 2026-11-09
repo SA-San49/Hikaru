@@ -22,6 +22,9 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import dev.icerock.moko.resources.StringResource
@@ -46,6 +49,7 @@ fun TabbedScreen(
     scrollable: Boolean = false,
     searchQuery: String? = null,
     onChangeSearchQuery: (String?) -> Unit = {},
+    testTagPrefix: String? = null,
 ) {
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
@@ -83,7 +87,14 @@ fun TabbedScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(contentPadding),
+                .padding(contentPadding)
+                .then(
+                    if (testTagPrefix != null) {
+                        Modifier.semantics { testTagsAsResourceId = true }
+                    } else {
+                        Modifier
+                    },
+                ),
         ) {
             FlexibleTabRow(
                 scrollable = scrollable,
@@ -92,6 +103,11 @@ fun TabbedScreen(
             ) {
                 tabs.forEachIndexed { index, tab ->
                     Tab(
+                        modifier = testTagPrefix?.let { prefix ->
+                            Modifier
+                                .semantics { testTagsAsResourceId = true }
+                                .testTag("${prefix}_tab_$index")
+                        } ?: Modifier,
                         selected = state.currentPage == index,
                         onClick = { scope.launch { state.animateScrollToPage(index) } },
                         text = {

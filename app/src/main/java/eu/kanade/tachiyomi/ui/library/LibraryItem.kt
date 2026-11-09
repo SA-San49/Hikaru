@@ -3,8 +3,24 @@ package eu.kanade.tachiyomi.ui.library
 import eu.kanade.tachiyomi.source.getNameForAnimeInfo
 import tachiyomi.domain.library.model.LibraryAnime
 import tachiyomi.domain.source.service.SourceManager
-import uy.kohesive.injekt.Injekt
-import uy.kohesive.injekt.api.get
+import uy.kohesive.injekt.injectLazy
+
+private val sourceManager: SourceManager by injectLazy()
+
+/** A parsed query so per-item search does not re-split comma-separated constraints. */
+internal class LibrarySearchQuery(private val text: String) {
+
+    private val metadataConstraints = text.split(",").map { it.trim() }
+
+    fun matches(item: LibraryItem): Boolean {
+        val anime = item.libraryAnime.anime
+        return anime.title.contains(text, true) ||
+            (anime.author?.contains(text, true) ?: false) ||
+            (anime.artist?.contains(text, true) ?: false) ||
+            (anime.description?.contains(text, true) ?: false) ||
+            metadataConstraints.all(item::matchesMetadataConstraint)
+    }
+}
 
 data class LibraryItem(
     val libraryAnime: LibraryAnime,
@@ -16,47 +32,18 @@ data class LibraryItem(
     val showLanguageIcon: Boolean = false,
     val domainSource: tachiyomi.domain.source.model.Source? = null,
 ) {
-    private val sourceManager: SourceManager = Injekt.get()
-
     val source by lazy { sourceManager.getOrStub(libraryAnime.anime.source) }
     val sourceName by lazy { source.getNameForAnimeInfo() }
 
-    /**
-     * Checks if a query matches the anime
-     *
-     * @param constraint the query to check.
-     * @return true if the anime matches the query, false otherwise.
-     */
-    fun matches(constraint: String): Boolean {
-        return libraryAnime.anime.title.contains(constraint, true) ||
-            (libraryAnime.anime.author?.contains(constraint, true) ?: false) ||
-            (libraryAnime.anime.artist?.contains(constraint, true) ?: false) ||
-            (libraryAnime.anime.description?.contains(constraint, true) ?: false) ||
-            constraint.split(",").map { it.trim() }.all { subconstraint ->
-                checkNegatableConstraint(subconstraint) {
-                    sourceName.contains(it, true) ||
-                        (libraryAnime.anime.genre?.any { genre -> genre.equals(it, true) } ?: false)
-                }
-            }
-    }
+    fun matches(constraint: String): Boolean = LibrarySearchQuery(constraint).matches(this)
 
-    /**
-     * Checks a predicate on a negatable constraint. If the constraint starts with a minus character,
-     * the minus is stripped and the result of the predicate is inverted.
-     *
-     * @param constraint the argument to the predicate. Inverts the predicate if it starts with '-'.
-     * @param predicate the check to be run against the constraint.
-     * @return !predicate(x) if constraint = "-x", otherwise predicate(constraint)
-     */
-    private fun checkNegatableConstraint(
-        constraint: String,
-        predicate: (String) -> Boolean,
-    ): Boolean {
-        return if (constraint.startsWith("-")) {
-            !predicate(constraint.substringAfter("-").trimStart())
-        } else {
-            predicate(constraint)
-        }
+    internal fun matches(query: LibrarySearchQuery): Boolean = query.matches(this)
+
+    internal fun matchesMetadataConstraint(constraint: String): Boolean {
+        val isNegated = constraint.startsWith("-")
+        val value = if (isNegated) constraint.substringAfter("-").trimStart() else constraint
+        val matches = sourceName.contains(value, true) ||
+            (libraryAnime.anime.genre?.any { it.equals(value, true) } ?: false)
+        return if (isNegated) !matches else matches
     }
 }
-

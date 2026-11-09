@@ -66,9 +66,11 @@ import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.util.fastFilter
@@ -184,7 +186,9 @@ object HomeScreen : Screen() {
             // Provide usable navigator to content screen
             CompositionLocalProvider(LocalNavigator provides navigator) {
                 Scaffold(
-                    modifier = Modifier.nestedScroll(nestedScrollConnection),
+                    modifier = Modifier
+                        .nestedScroll(nestedScrollConnection)
+                        .semantics { testTagsAsResourceId = true },
                     hazeEnabled = hazeEnabled,
                     startBar = {
                         if (isTabletUi()) {
@@ -401,6 +405,9 @@ object HomeScreen : Screen() {
                 }
             } else null
         }
+        val homeTabTestTag = Modifier
+            .semantics { testTagsAsResourceId = true }
+            .testTag("home_${navItem.id}_tab")
 
         with(rowScope) {
             NavigationBarItem(
@@ -410,13 +417,13 @@ object HomeScreen : Screen() {
                     behavior.onLongClick != NavAction.Default ||
                     behavior.onDoubleTap != NavAction.Default
                 ) {
-                    Modifier.combinedClickable(
+                    homeTabTestTag.combinedClickable(
                         onLongClick = onLongClick,
                         onDoubleClick = onDoubleClick,
                         onClick = onClick,
                     )
                 } else {
-                    Modifier
+                    homeTabTestTag
                 },
                 icon = { NavigationIconItem(navItem, adaptiveDecision, updatesCount, extensionUpdatesCount) },
                 label = label,
@@ -502,6 +509,10 @@ object HomeScreen : Screen() {
             } else null
         }
 
+        val homeTabTestTag = Modifier
+            .semantics { testTagsAsResourceId = true }
+            .testTag("home_${navItem.id}_tab")
+
         NavigationRailItem(
             selected = selected,
             onClick = onClick,
@@ -509,13 +520,13 @@ object HomeScreen : Screen() {
                 behavior.onLongClick != NavAction.Default ||
                     behavior.onDoubleTap != NavAction.Default
             ) {
-                Modifier.combinedClickable(
+                homeTabTestTag.combinedClickable(
                     onLongClick = onLongClick,
                     onDoubleClick = onDoubleClick,
                     onClick = combinedClick,
                 )
             } else {
-                Modifier
+                homeTabTestTag
             },
             icon = { NavigationIconItem(navItem, adaptiveDecision, updatesCount, extensionUpdatesCount) },
             label = label,

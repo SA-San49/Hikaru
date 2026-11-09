@@ -29,7 +29,7 @@ SELECT
         WHEN 1 THEN coalesce(ES.fillermarkCount, 0)
         WHEN 0 THEN coalesce(ASS.total_fillermarks, 0)
     END AS fillermarkCount,
-    coalesce(AC.category_id, 0) AS category
+    coalesce(AC.categories, '0') AS categories
 FROM animes AS A
 LEFT JOIN episodestatsView AS ES
 ON A._id = ES.anime_id
@@ -37,7 +37,11 @@ LEFT JOIN historystatsView AS HS
 ON A._id = HS.anime_id
 LEFT JOIN animeseasonstatsView AS ASS
 ON A._id = ASS.parent_id
-LEFT JOIN animes_categories AS AC
+LEFT JOIN (
+    SELECT anime_id, group_concat(category_id) AS categories
+    FROM animes_categories
+    GROUP BY anime_id
+) AS AC
 ON AC.anime_id = A._id
 WHERE A.source <> 6969
 UNION
@@ -50,7 +54,7 @@ SELECT
     coalesce(EP.lastSeen, 0) AS lastSeen,
     coalesce(EP.bookmarkCount, 0) AS bookmarkCount,
     coalesce(EP.fillermarkCount, 0) AS fillermarkCount,
-    coalesce(AC.category_id, 0) AS category
+    coalesce(AC.categories, '0') AS categories
 FROM animes A
 LEFT JOIN (
     SELECT merged.anime_id,merged.merge_id
@@ -81,7 +85,11 @@ LEFT JOIN(
     GROUP BY ME.merge_id
 ) AS EP
 ON A._id = EP.merge_id
-LEFT JOIN animes_categories AS AC
+LEFT JOIN (
+    SELECT anime_id, group_concat(category_id) AS categories
+    FROM animes_categories
+    GROUP BY anime_id
+) AS AC
 ON AC.anime_id = A._id
 WHERE A.source = 6969;
 

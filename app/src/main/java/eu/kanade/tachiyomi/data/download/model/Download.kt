@@ -56,6 +56,8 @@ data class Download(
     // Rich Notification Fields
     @Transient var speed: String = ""
     @Transient var eta: String = ""
+    @Transient var etaSecondsRemaining: Long? = null
+    @Transient var speedBytesPerSecond: Double = 0.0
     var totalSize: Long = -1L
     var totalDuration: Long = 0L
     @Transient var downloadedSize: String = ""
@@ -111,6 +113,8 @@ data class Download(
         progress = 0
         speed = ""
         eta = ""
+        etaSecondsRemaining = null
+        speedBytesPerSecond = 0.0
         downloadedSize = ""
         downloadedSegments = 0
         totalSegments = 0
@@ -136,6 +140,7 @@ data class Download(
             speedSamples.add(currentSpeed)
             if (speedSamples.size > 5) speedSamples.removeAt(0)
             val smoothSpeed = speedSamples.average()
+            speedBytesPerSecond = smoothSpeed.coerceAtLeast(0.0)
 
             speed = when {
                 smoothSpeed > 1024 * 1024 -> "%.2f MB/s".format(smoothSpeed / (1024 * 1024))
@@ -157,14 +162,17 @@ data class Download(
             if (totalSize > bytesRead && smoothSpeed > 0) {
                 val remainingBytes = totalSize - bytesRead
                 val remainingSeconds = (remainingBytes / smoothSpeed).toLong().coerceAtLeast(0L)
+                etaSecondsRemaining = remainingSeconds
                 eta = formatRemainingTime(remainingSeconds)
             } else if (totalDuration > 0 && progress > 0 && smoothSpeed > 0) { // ANZ
                 val downloadedFraction = (progress / 100.0).coerceIn(0.01, 1.0)
                 val estimatedTotal = bytesRead / downloadedFraction
                 val remainingBytes = (estimatedTotal - bytesRead).toLong().coerceAtLeast(0L)
                 val remainingSeconds = (remainingBytes / smoothSpeed).toLong().coerceAtLeast(0L)
+                etaSecondsRemaining = remainingSeconds
                 eta = formatRemainingTime(remainingSeconds)
             } else {
+                etaSecondsRemaining = null
                 eta = ""
             }
             // ANZ <--

@@ -42,6 +42,7 @@ fun BrowseSourceComfortableGrid(
     val selectionIds = remember(selection) { selection.map { it.id }.toSet() }
     LazyVerticalGrid(
         columns = columns,
+        modifier = animeList.benchmarkScrollTag(),
         contentPadding = contentPadding + PaddingValues(8.dp),
         verticalArrangement = Arrangement.spacedBy(CommonAnimeItemDefaults.GridVerticalSpacer),
         horizontalArrangement = Arrangement.spacedBy(CommonAnimeItemDefaults.GridHorizontalSpacer),

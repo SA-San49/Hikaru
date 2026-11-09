@@ -12,12 +12,7 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 
-/**
- * Benchmark to measure the frame timing (smoothness) of the Browse Source screen.
- * 
- * Rationale: Scrolling through potentially thousands of sources or media items 
- * is the ultimate stress test for image loading and UI thread performance.
- */
+/** Measures browse-result frame timing using a configured, working source with loaded results. */
 @RunWith(AndroidJUnit4::class)
 class BrowseScrollingBenchmark {
 
@@ -26,7 +21,7 @@ class BrowseScrollingBenchmark {
 
     @Test
     fun scrollBrowseSource() = benchmarkRule.measureRepeated(
-        packageName = "eu.kanade.tachiyomi",
+        packageName = APP_PACKAGE,
         metrics = listOf(FrameTimingMetric()),
         compilationMode = CompilationMode.Partial(),
         iterations = 5,
@@ -34,25 +29,48 @@ class BrowseScrollingBenchmark {
         setupBlock = {
             pressHome()
             startActivityAndWait()
-            
-            // Navigate to Browse
-            device.findObject(By.text("Browse")).click()
-            device.waitForIdle()
-            
-            // Navigate to first source (e.g. Gogoanime)
-            device.findObject(By.res("sources_list"))?.children?.firstOrNull()?.click()
-            
-            // Wait for media items to load
-            device.wait(Until.hasObject(By.res("browse_grid")), 15_000)
-        }
+
+            val sourceItemSelector = By.res(APP_PACKAGE, SOURCE_ITEM_ID)
+            if (!device.wait(Until.hasObject(sourceItemSelector), 10_000)) {
+                val sourcesTabSelector = By.res(APP_PACKAGE, BROWSE_SOURCES_TAB_ID)
+                if (!device.wait(Until.hasObject(sourcesTabSelector), 1_000)) {
+                    val browseTabSelector = By.res(APP_PACKAGE, BROWSE_TAB_ID)
+                    check(device.wait(Until.hasObject(browseTabSelector), 10_000)) {
+                        "Browse tab is not exposed in the benchmark app's home navigation"
+                    }
+                    device.findObject(browseTabSelector)?.click()
+                    check(device.wait(Until.hasObject(sourcesTabSelector), 10_000)) {
+                        "Browse Sources tab did not become visible"
+                    }
+                }
+                device.findObject(sourcesTabSelector)?.click()
+            }
+
+            check(device.wait(Until.hasObject(sourceItemSelector), 15_000)) {
+                "Browse benchmark needs at least one installed, non-stub source"
+            }
+            val firstSource = device.findObject(sourceItemSelector)
+                ?: error("The first usable source disappeared before it could be opened")
+            firstSource.click()
+
+            check(device.wait(Until.hasObject(By.res(APP_PACKAGE, BROWSE_GRID_ID)), 30_000)) {
+                "Browse source returned no loaded results; use a working source with representative data"
+            }
+        },
     ) {
-        val browseGrid = device.findObject(By.res("browse_grid"))
+        val browseGrid = device.findObject(By.res(APP_PACKAGE, BROWSE_GRID_ID))
+            ?: error("Browse result list disappeared")
         browseGrid.setGestureMargin(device.displayWidth / 4)
-        
-        // Measure sustained fling performance
         repeat(5) {
             browseGrid.fling(Direction.DOWN)
             device.waitForIdle()
         }
+    }
+
+    private companion object {
+        const val BROWSE_TAB_ID = "home_browse_tab"
+        const val BROWSE_SOURCES_TAB_ID = "browse_tab_0"
+        const val SOURCE_ITEM_ID = "benchmark_source_item"
+        const val BROWSE_GRID_ID = "browse_grid"
     }
 }

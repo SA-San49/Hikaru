@@ -11,6 +11,9 @@ interface HistoryRepository {
 
     suspend fun getLastHistory(): HistoryWithRelations?
 
+    /** Returns a bounded, newest-first history slice for lightweight local summaries. */
+    suspend fun getRecentHistory(limit: Int): List<HistoryWithRelations>
+
     suspend fun getTotalWatchDuration(): Long
 
     suspend fun getHistoryByAnimeId(animeId: Long): List<History>

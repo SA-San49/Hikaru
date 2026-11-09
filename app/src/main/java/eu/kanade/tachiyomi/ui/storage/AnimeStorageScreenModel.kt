@@ -31,7 +31,7 @@ class AnimeStorageScreenModel(
     getDownloadSize = { downloadManager.getDownloadSize(anime) },
     getDownloadCount = { downloadManager.getDownloadCount(anime) },
     getId = { id },
-    getCategoryId = { category },
+    getCategoryIds = { categories },
     getTitle = { anime.title },
     getThumbnail = { anime.thumbnailUrl },
 ) {

@@ -31,7 +31,8 @@ data class SeasonAnime(
     fun toLibraryAnime(): LibraryAnime {
         return LibraryAnime(
             anime = anime,
-            category = 0, // Default to 0/un-categorized for seasons
+            categories = listOf(0L), // Default to 0/un-categorized for seasons
+            categoryId = 0,
             totalEpisodes = totalCount,
             seenCount = seenCount,
             bookmarkCount = bookmarkCount,

@@ -54,6 +54,9 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
@@ -96,6 +99,11 @@ fun SourcesScreen(
     val focusManager = LocalFocusManager.current
 
     val lazyListState = rememberLazyListState()
+    val firstSourceId = remember(state.items) {
+        state.items.firstNotNullOfOrNull {
+            (it as? SourceUiModel.Item)?.takeIf { source -> !source.isStub }?.source?.id
+        }
+    }
     val searchBoxHeight = SOURCE_SEARCH_BOX_HEIGHT
 
     // Handle system back button: 1 click to clear text and focus if text exists.
@@ -153,6 +161,13 @@ fun SourcesScreen(
                         }
                         is SourceUiModel.Item -> {
                             val itemModifier = remember { Modifier.animateItem() }
+                            val sourceModifier = if (model.source.id == firstSourceId) {
+                                itemModifier
+                                    .semantics { testTagsAsResourceId = true }
+                                    .testTag("benchmark_source_item")
+                            } else {
+                                itemModifier
+                            }
                             if (useContainer) {
                                 Surface(
                                     modifier = Modifier
@@ -168,7 +183,7 @@ fun SourcesScreen(
                                         onLongClickItem = onLongClickItem,
                                         onClickPin = onClickPin,
                                         hideLatest = state.hideLatest,
-                                        modifier = itemModifier,
+                                        modifier = sourceModifier,
                                     )
                                 }
                             } else {
@@ -178,7 +193,7 @@ fun SourcesScreen(
                                     onLongClickItem = onLongClickItem,
                                     onClickPin = onClickPin,
                                     hideLatest = state.hideLatest,
-                                    modifier = itemModifier,
+                                    modifier = sourceModifier,
                                 )
                             }
                         }

@@ -49,7 +49,20 @@ jobs:
           test -s app/hikaru.jks
 
       - name: Build arm64-v8a maximum R8 Hikaru-signed APK
-        run: ./gradlew assembleR8Debug -PabiList=arm64-v8a -Pandroid.enableR8.fullMode=true -Pinclude-telemetry=false -Penable-updater=false --no-daemon
+        run: |
+          set +e
+          ./gradlew assembleR8Debug -PabiList=arm64-v8a -Pandroid.enableR8.fullMode=true -Pinclude-telemetry=false -Penable-updater=false --no-daemon --stacktrace 2>&1 | tee r8-debug-build.log
+          BUILD_STATUS=${PIPESTATUS[0]}
+          if [ "$BUILD_STATUS" -ne 0 ]; then
+            {
+              grep -E '^e: ' r8-debug-build.log | tail -n 15 || true
+              grep -E '^> Task .* FAILED|^Execution failed for task|^FAILURE:|^Caused by:' r8-debug-build.log | tail -n 15 || true
+              tail -n 10 r8-debug-build.log
+            } | awk '!seen[$0]++' | tail -n 40 | while IFS= read -r line; do
+              echo "::error::$line"
+            done
+          fi
+          exit "$BUILD_STATUS"
         env:
           SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
           SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}

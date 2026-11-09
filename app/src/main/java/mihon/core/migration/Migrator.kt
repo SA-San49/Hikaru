@@ -5,11 +5,11 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.runBlocking
 
 object Migrator {
 
     private var result: Deferred<Boolean>? = null
+    private val initialized = CompletableDeferred<Unit>()
     val scope = CoroutineScope(Dispatchers.IO + Job())
 
     fun initialize(
@@ -19,23 +19,25 @@ object Migrator {
         dryrun: Boolean = false,
         onMigrationComplete: () -> Unit,
     ) {
-        val migrationContext = MigrationContext(dryrun)
-        val migrationJobFactory = MigrationJobFactory(migrationContext, scope)
-        val migrationStrategyFactory = MigrationStrategyFactory(migrationJobFactory, onMigrationComplete)
-        val strategy = migrationStrategyFactory.create(old, new)
-        result = strategy(migrations)
+        try {
+            val migrationContext = MigrationContext(dryrun)
+            val migrationJobFactory = MigrationJobFactory(migrationContext, scope)
+            val migrationStrategyFactory = MigrationStrategyFactory(migrationJobFactory, onMigrationComplete)
+            val strategy = migrationStrategyFactory.create(old, new)
+            result = strategy(migrations)
+        } finally {
+            initialized.complete(Unit)
+        }
     }
 
     suspend fun await(): Boolean {
-        val result = result ?: CompletableDeferred(false)
-        return result.await()
+        initialized.await()
+        return result?.await() ?: false
     }
 
     fun release() {
         result = null
     }
 
-    fun awaitAndRelease(): Boolean = runBlocking {
-        await().also { release() }
-    }
+    suspend fun awaitAndRelease(): Boolean = await().also { release() }
 }
