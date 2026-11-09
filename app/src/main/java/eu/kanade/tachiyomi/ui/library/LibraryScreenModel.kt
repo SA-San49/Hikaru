@@ -163,7 +163,9 @@ class LibraryScreenModel(
                 } else {
                     library.mapValues { (_, items) -> items.fastFilter { it.matches(parsedQuery) } }
                 }
-            }.collectLatest { library ->
+            }
+                .distinctUntilChanged { old, new -> old.entries.toList() == new.entries.toList() }
+                .collectLatest { library ->
                 val categoriesCount = library.size
                 if (activeCategoryIndex >= categoriesCount && categoriesCount > 0) {
                     activeCategoryIndex = categoriesCount - 1
@@ -398,7 +400,7 @@ class LibraryScreenModel(
         val sortByCategoryId = this.keys.associate { it.id to it.sort }
         fun LibrarySort.comparator(): Comparator<LibraryItem> = Comparator { i1, i2 ->
             // Use groupSort when provided, otherwise use the sort from the category.
-            val sort = groupSort ?: sortByCategoryId[i1.libraryAnime.category] ?: LibrarySort.default
+            val sort = groupSort ?: sortByCategoryId[i1.libraryAnime.categoryId] ?: LibrarySort.default
             when (sort.type) {
                 LibrarySort.Type.Alphabetical -> {
                     sortAlphabetically(i1, i2)
@@ -541,30 +543,37 @@ class LibraryScreenModel(
                 }
             }
 
-            libraryMangaList
-                .map { libraryManga ->
-                    val mangaWithFolder = libraryManga.copy(folderId = folderMap[libraryManga.id])
-                    // Display mode based on user preference: take it from global library setting or category
-                    LibraryItem(
-                        mangaWithFolder,
-                        downloadCount = if (prefs.downloadBadge) {
-                            downloadManager.getDownloadCount(mangaWithFolder.anime).toLong()
-                        } else {
-                            0
-                        },
-                        unseenCount = mangaWithFolder.unseenCount,
-                        isLocal = if (prefs.localBadge) mangaWithFolder.anime.isLocal() else false,
-                        sourceLanguage = if (prefs.languageBadge || prefs.showLanguageIcon) {
-                            sourceManager.getOrStub(mangaWithFolder.anime.source).lang
-                        } else {
-                            ""
-                        },
-                        showSourceIcon = prefs.showSourceIcon,
-                        showLanguageIcon = prefs.showLanguageIcon,
-                        domainSource = domainSourcesById[mangaWithFolder.anime.source],
-                    )
+            val itemsByCategory = mutableMapOf<Long, MutableList<LibraryItem>>()
+            for (libraryAnime in libraryMangaList) {
+                val animeWithFolder = libraryAnime.copy(folderId = folderMap[libraryAnime.id])
+                val item = LibraryItem(
+                    animeWithFolder,
+                    downloadCount = if (prefs.downloadBadge) {
+                        downloadManager.getDownloadCount(animeWithFolder.anime).toLong()
+                    } else {
+                        0
+                    },
+                    unseenCount = animeWithFolder.unseenCount,
+                    isLocal = if (prefs.localBadge) animeWithFolder.anime.isLocal() else false,
+                    sourceLanguage = if (prefs.languageBadge || prefs.showLanguageIcon) {
+                        sourceManager.getOrStub(animeWithFolder.anime.source).lang
+                    } else {
+                        ""
+                    },
+                    showSourceIcon = prefs.showSourceIcon,
+                    showLanguageIcon = prefs.showLanguageIcon,
+                    domainSource = domainSourcesById[animeWithFolder.anime.source],
+                )
+                for (categoryId in animeWithFolder.categories) {
+                    val categoryItem = if (categoryId == animeWithFolder.categoryId) {
+                        item
+                    } else {
+                        item.copy(libraryAnime = animeWithFolder.copy(categoryId = categoryId))
+                    }
+                    itemsByCategory.getOrPut(categoryId) { ArrayList() }.add(categoryItem)
                 }
-                .groupBy { it.libraryAnime.category }
+            }
+            itemsByCategory
         }
 
         return combine(getCategories.subscribe(), animelibAnimesFlow) { categories, animelibAnime ->
@@ -723,7 +732,7 @@ class LibraryScreenModel(
         val selection = state.value.selection.toList()
         screenModelScope.launchIO {
             selection.forEach {
-                eu.kanade.tachiyomi.data.library.LibraryUpdateJob.startNow(context, category = Category(it.category, "", 0L, 0L, false))
+                eu.kanade.tachiyomi.data.library.LibraryUpdateJob.startNow(context, category = Category(it.categoryId, "", 0L, 0L, false))
             }
         }
         clearSelection()

@@ -1,20 +1,21 @@
 #!/bin/bash
 
-# Anikku Performance Benchmark Suite
-# Rationale: Automated performance tracking to eliminate UI jank and monitor system regression.
+# Hikaru's local startup and library-scroll benchmark suite.
+# The library-scroll benchmark requires a non-empty library on the benchmark device.
+set -euo pipefail
 
-echo "🚀 Starting Anikku Benchmark Suite..."
+echo "Starting Hikaru benchmark suite..."
 
-# 1. Generate Baseline Profile
-echo "📊 Generating Baseline Profiles (Optimization)..."
-./gradlew :macrobenchmark:connectedBenchmark -P android.testInstrumentationRunnerArguments.class=tachiyomi.macrobenchmark.BaselineProfileGenerator
+# 1. Generate a baseline profile for the Hikaru benchmark application ID.
+echo "Generating baseline profile..."
+./gradlew :macrobenchmark:connectedBenchmark -Pandroid.testInstrumentationRunnerArguments.class=tachiyomi.macrobenchmark.BaselineProfileGenerator
 
-# 2. Run Frame Timing Benchmarks (Jank detection)
-echo "📈 Measuring Frame Smoothness (Library Scrolling)..."
-./gradlew :macrobenchmark:connectedBenchmark -P android.testInstrumentationRunnerArguments.class=tachiyomi.macrobenchmark.LibraryScrollingBenchmark
+# 2. Measure library frame timing (requires populated benchmark data).
+echo "Measuring library scrolling..."
+./gradlew :macrobenchmark:connectedBenchmark -Pandroid.testInstrumentationRunnerArguments.class=tachiyomi.macrobenchmark.LibraryScrollingBenchmark
 
-# 3. Run Startup Benchmarks
-echo "⚡ Measuring App Startup Speed..."
-./gradlew :macrobenchmark:connectedBenchmark -P android.testInstrumentationRunnerArguments.class=tachiyomi.macrobenchmark.ColdStartupBenchmark
+# 3. Measure cold startup timing.
+echo "Measuring cold startup..."
+./gradlew :macrobenchmark:connectedBenchmark -Pandroid.testInstrumentationRunnerArguments.class=tachiyomi.macrobenchmark.ColdStartupBenchmark
 
-echo "✅ Benchmarks complete. Results are available in macrobenchmark/build/outputs/connected_android_test_additional_output/"
+echo "Benchmarks complete. See macrobenchmark/build/outputs/connected_android_test_additional_output/."

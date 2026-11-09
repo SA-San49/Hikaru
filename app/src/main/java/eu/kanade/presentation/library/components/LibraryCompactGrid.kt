@@ -118,6 +118,7 @@ fun LibraryCompactGrid(
                         } else {
                             null
                         },
+                        shouldExtractColor = false,
                         usePanorama = usePanorama,
                     )
                 }

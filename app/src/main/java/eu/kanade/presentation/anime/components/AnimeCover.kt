@@ -16,7 +16,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -41,7 +40,6 @@ import eu.kanade.tachiyomi.R
 import eu.kanade.tachiyomi.util.system.CoverColorObserver
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.launch
 import tachiyomi.domain.anime.model.Anime
 import tachiyomi.domain.anime.model.asAnimeCover
 import tachiyomi.presentation.core.components.SkeletonItem
@@ -92,7 +90,6 @@ enum class AnimeCover(val ratio: Float) {
         val isSuccess = state is AsyncImagePainter.State.Success
         val isError = state is AsyncImagePainter.State.Error
 
-        val scope = rememberCoroutineScope()
         LaunchedEffect(state, data, shouldExtractColor) {
             val currentState = state
             if (currentState is AsyncImagePainter.State.Success) {
@@ -102,13 +99,11 @@ enum class AnimeCover(val ratio: Float) {
                     else -> null
                 }
                 if (cover != null) {
-                    scope.launch {
-                        eu.kanade.tachiyomi.util.system.CoverColorExtractor.extract(
-                            cover = cover,
-                            state = currentState,
-                            extractColor = shouldExtractColor,
-                        )
-                    }
+                    eu.kanade.tachiyomi.util.system.CoverColorExtractor.extract(
+                        cover = cover,
+                        state = currentState,
+                        extractColor = shouldExtractColor,
+                    )
                 }
                 if (data is Anime) onCoverLoaded?.invoke(data.asAnimeCover(), currentState)
                 if (data is DomainMangaCover) onCoverLoaded?.invoke(data, currentState)

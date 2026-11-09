@@ -103,6 +103,7 @@ fun AnimeCompactGridItem(
     coverAlpha: Float = 1f,
     coverBadgeStart: @Composable (RowScope.() -> Unit)? = null,
     coverBadgeEnd: @Composable (RowScope.() -> Unit)? = null,
+    shouldExtractColor: Boolean = true,
     usePanorama: Boolean? = null,
     modifier: Modifier = Modifier,
 ) {
@@ -124,6 +125,7 @@ fun AnimeCompactGridItem(
                         },
                     data = coverData,
                     ratio = ratio,
+                    shouldExtractColor = shouldExtractColor,
                     shape = RectangleShape, // Optimization: Parent clips
                 )
             },
@@ -217,6 +219,7 @@ fun AnimeComfortableGridItem(
     coverBadgeStart: (@Composable RowScope.() -> Unit)? = null,
     coverBadgeEnd: (@Composable RowScope.() -> Unit)? = null,
     onClickContinueWatching: (() -> Unit)? = null,
+    shouldExtractColor: Boolean = true,
     usePanorama: Boolean? = null,
     modifier: Modifier = Modifier,
 ) {
@@ -239,6 +242,7 @@ fun AnimeComfortableGridItem(
                             },
                         data = coverData,
                         ratio = ratio,
+                        shouldExtractColor = shouldExtractColor,
                         shape = RectangleShape, // Optimization: Parent clips
                     )
                 },
@@ -429,6 +433,7 @@ fun AnimeListItem(
     onClickContinueWatching: (() -> Unit)? = null,
     entries: Int = 0,
     containerHeight: Int = 0,
+    shouldExtractColor: Boolean = true,
     usePanorama: Boolean? = null,
     modifier: Modifier = Modifier,
 ) {
@@ -464,6 +469,7 @@ fun AnimeListItem(
                 },
             data = coverData,
             ratio = ratio,
+            shouldExtractColor = shouldExtractColor,
         )
         Text(
             text = title,

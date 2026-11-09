@@ -4,7 +4,10 @@ import tachiyomi.domain.anime.model.Anime
 
 data class LibraryAnime(
     val anime: Anime,
-    val category: Long,
+    /** All categories this anime belongs to. */
+    val categories: List<Long>,
+    /** Category represented by this row in a category-scoped library list. */
+    val categoryId: Long,
     val totalEpisodes: Long,
     val seenCount: Long,
     val bookmarkCount: Long,

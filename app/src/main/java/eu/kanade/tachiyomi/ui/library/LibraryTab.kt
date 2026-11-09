@@ -24,6 +24,9 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -117,6 +120,15 @@ data object LibraryTab : Tab {
         val screenModel = rememberScreenModel { LibraryScreenModel() }
         val settingsScreenModel = rememberScreenModel { LibrarySettingsScreenModel() }
         val state by screenModel.state.collectAsState()
+        val categories = remember(state.libraryVersion) { state.categories }
+        val foldersById = remember(state.folders) { state.folders.associateBy { it.id } }
+        val displayCategories = remember(categories, state.searchQuery) {
+            if (state.searchQuery.isNullOrEmpty()) {
+                categories.toImmutableList()
+            } else {
+                persistentListOf(Category(0, "Search Results", 0, 0, false))
+            }
+        }
         val collapseFolders by settingsScreenModel.libraryPreferences.collapseFolders().collectAsStatePref()
         val libraryDisplayItemsKey = remember(
             state.libraryVersion,
@@ -131,8 +143,8 @@ data object LibraryTab : Tab {
         // Context menu state: which anime had long-press to add to folder
         var folderContextAnimeList by remember { mutableStateOf<List<LibraryAnime>?>(null) }
         // Active category folders for context menu
-        val activeCategoryFolders = remember(state.folders, screenModel.activeCategoryIndex, state.categories) {
-            val activeCategoryId = state.categories.getOrNull(screenModel.activeCategoryIndex)?.id
+        val activeCategoryFolders = remember(state.folders, screenModel.activeCategoryIndex, categories) {
+            val activeCategoryId = categories.getOrNull(screenModel.activeCategoryIndex)?.id
             if (activeCategoryId != null) state.folders.filter { it.categoryId == activeCategoryId } else emptyList()
         }
 
@@ -189,7 +201,12 @@ data object LibraryTab : Tab {
         val displayMode by screenModel.getDisplayMode()
         val columns by screenModel.getColumnsPreferenceForCurrentOrientation(isLandscape)
 
-        Box(modifier = Modifier.fillMaxSize()) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .semantics { testTagsAsResourceId = true }
+                .testTag("library_screen"),
+        ) {
             Scaffold(
                 topBar = { scrollBehavior ->
                     val title = state.getToolbarTitle(
@@ -197,7 +214,7 @@ data object LibraryTab : Tab {
                         defaultCategoryTitle = stringResource(MR.strings.label_default),
                         page = screenModel.activeCategoryIndex,
                     )
-                    val tabVisible = state.showCategoryTabs && state.categories.isNotEmpty() && (state.categories.size > 1 || !state.categories.first().isSystemCategory)
+                    val tabVisible = state.showCategoryTabs && categories.isNotEmpty() && (categories.size > 1 || !categories.first().isSystemCategory)
                     LibraryToolbar(
                         hasActiveFilters = state.hasActiveFilters,
                         selectedCount = state.selection.size,
@@ -211,7 +228,7 @@ data object LibraryTab : Tab {
                         },
                         onClickFilter = screenModel::showSettingsDialog,
                         onClickRefresh = {
-                            state.categories.getOrNull(screenModel.activeCategoryIndex)?.let {
+                            categories.getOrNull(screenModel.activeCategoryIndex)?.let {
                                 onClickRefresh(it)
                             } ?: false
                         },
@@ -290,7 +307,7 @@ data object LibraryTab : Tab {
                     }
                     else -> {
                         LibraryContent(
-                            categories = if (state.searchQuery.isNullOrEmpty()) state.categories.toImmutableList() else persistentListOf(Category(0, "Search Results", 0, 0, false)),
+                            categories = displayCategories,
                             searchQuery = state.searchQuery,
                             selection = state.selection.toImmutableList(),
                             contentPadding = contentPadding,
@@ -331,10 +348,9 @@ data object LibraryTab : Tab {
                                 folderLongClickItem = folderItem
                             },
                             getAnimeLibraryForPage = { page ->
-                                val foldersById = state.folders.associateBy { it.id }
                                 if (!state.searchQuery.isNullOrEmpty()) {
                                     buildList {
-                                        state.categories.forEach { category ->
+                                        categories.forEach { category ->
                                             val categoryItems = state.library[category].orEmpty()
                                             if (categoryItems.isNotEmpty()) {
                                                 add(LibraryDisplayItem.Header(category.visualName(context)))
@@ -424,7 +440,7 @@ data object LibraryTab : Tab {
 
         // Folder Context Menu – shown for adding anime to a folder
         folderContextAnimeList?.let { animeList ->
-            val activeCategoryId = state.categories.getOrNull(screenModel.activeCategoryIndex)?.id
+            val activeCategoryId = categories.getOrNull(screenModel.activeCategoryIndex)?.id
             val title = if (animeList.size == 1) animeList.first().anime.title else "${animeList.size} items selected"
             val currentFolderId = if (animeList.size == 1) animeList.first().folderId else null
 
@@ -461,13 +477,13 @@ data object LibraryTab : Tab {
         val onDismissRequest = screenModel::closeDialog
         when (val dialog = state.dialog) {
             is LibraryScreenModel.Dialog.SettingsSheet -> run {
-                val category = state.categories.getOrNull(screenModel.activeCategoryIndex)
+                val category = categories.getOrNull(screenModel.activeCategoryIndex)
                 LibrarySettingsDialog(
                     onDismissRequest = onDismissRequest,
                     screenModel = settingsScreenModel,
                     category = category,
                     // SY -->
-                    hasCategories = state.categories.fastAny { !it.isSystemCategory },
+                    hasCategories = categories.fastAny { !it.isSystemCategory },
                     // SY <--
                 )
             }

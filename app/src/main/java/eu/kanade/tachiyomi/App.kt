@@ -131,11 +131,11 @@ class App : Application(), DefaultLifecycleObserver, SingletonImageLoader.Factor
 
         // Startup Optimization: Initialize non-critical components on background thread
         ProcessLifecycleOwner.get().lifecycleScope.launch(Dispatchers.IO) {
-            setupNotificationChannels()
             if (!WorkManager.isInitialized()) {
                 WorkManager.initialize(this@App, Configuration.Builder().build())
             }
             initializeMigrator()
+            setupNotificationChannels()
 
             // Re-arm Schedule tab alerts (force-stop/updates wipe AlarmManager) and keep followed
             // series syncing their next episode even if the Schedule tab is never opened.
@@ -271,14 +271,20 @@ class App : Application(), DefaultLifecycleObserver, SingletonImageLoader.Factor
                 add(AnimeKeyer())
             }
 
-            // Scrolling Optimization: Smooth transitions and better memory handling
+            // Keep cache/decoder pressure bounded on low-memory devices while using available
+            // headroom on larger devices for fewer cover reloads during library scrolling.
+            val isLowRamDevice = DeviceUtil.isLowRamDevice(this@App)
+            val processorCount = Runtime.getRuntime().availableProcessors()
+            // Limit concurrent image work, with less decoder pressure on low-RAM devices.
+            val fetcherParallelism = if (isLowRamDevice) 4 else processorCount.coerceIn(4, 8)
+            val decoderParallelism = if (isLowRamDevice) 2 else processorCount.coerceIn(3, 6)
             crossfade((300 * this@App.animatorDurationScale).toInt())
-            allowRgb565(DeviceUtil.isLowRamDevice(this@App))
+            allowRgb565(isLowRamDevice)
             if (networkPreferences.verboseLogging().get()) logger(DebugLogger())
 
             memoryCache {
                 MemoryCache.Builder()
-                    .maxSizePercent(this@App, 0.1) // Reduced from 25% to 10% for low-end stability
+                    .maxSizePercent(this@App, if (isLowRamDevice) 0.1 else 0.25)
                     .build()
             }
             diskCache {
@@ -288,9 +294,8 @@ class App : Application(), DefaultLifecycleObserver, SingletonImageLoader.Factor
                     .build()
             }
 
-            val coreCount = Runtime.getRuntime().availableProcessors()
-            fetcherCoroutineContext(Dispatchers.IO.limitedParallelism(coreCount.coerceIn(4, 12)))
-            decoderCoroutineContext(Dispatchers.IO.limitedParallelism(coreCount.coerceIn(3, 8))) // Balanced for performance and UI smoothness
+            fetcherCoroutineContext(Dispatchers.IO.limitedParallelism(fetcherParallelism))
+            decoderCoroutineContext(Dispatchers.IO.limitedParallelism(decoderParallelism))
         }.build()
     }
 

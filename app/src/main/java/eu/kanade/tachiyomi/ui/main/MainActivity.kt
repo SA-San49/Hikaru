@@ -56,6 +56,7 @@ import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.core.util.Consumer
 import androidx.interpolator.view.animation.FastOutSlowInInterpolator
 import androidx.interpolator.view.animation.LinearOutSlowInInterpolator
+import androidx.lifecycle.ProcessLifecycleOwner
 import androidx.lifecycle.lifecycleScope
 import cafe.adriel.voyager.navigator.LocalNavigator
 import cafe.adriel.voyager.navigator.Navigator
@@ -80,6 +81,7 @@ import eu.kanade.tachiyomi.animesource.model.Video
 import eu.kanade.tachiyomi.data.connections.discord.DiscordRPCService
 import eu.kanade.tachiyomi.data.connections.discord.DiscordScreen
 import eu.kanade.tachiyomi.data.download.DownloadCache
+import eu.kanade.tachiyomi.data.coil.AnimeCoverMetadata
 import eu.kanade.tachiyomi.data.notification.NotificationReceiver
 import eu.kanade.tachiyomi.data.updater.AppUpdateChecker
 import eu.kanade.tachiyomi.data.updater.AppUpdateJob
@@ -114,7 +116,6 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import logcat.LogPriority
 import mihon.core.migration.Migrator
@@ -125,6 +126,7 @@ import tachiyomi.core.common.util.system.logcat
 import tachiyomi.domain.release.interactor.GetApplicationRelease
 import tachiyomi.i18n.MR
 import tachiyomi.presentation.core.components.material.Scaffold
+import tachiyomi.presentation.core.screens.LoadingScreen
 import tachiyomi.presentation.core.util.collectAsState
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
@@ -164,188 +166,199 @@ class MainActivity : BaseActivity() {
             return
         }
 
-        val didMigration = Migrator.awaitAndRelease()
-
-        setComposeContent {
-            val context = LocalContext.current
-
-            val incognito by preferences.incognitoMode().collectAsState()
-            val downloadOnly by preferences.downloadedOnly().collectAsState()
-            val indexingAnime by remember {
-                flow {
-                    val cache = withContext(Dispatchers.IO) { downloadCache }
-                    emitAll(cache.isInitializing)
-                }
-            }.collectAsState(initial = false)
-
-            val libraryUpdateProgress by remember(context) {
-                flow {
-                    val progressFlow = withContext(Dispatchers.IO) {
-                        eu.kanade.tachiyomi.data.library.LibraryUpdateProgress.getProgress(context)
-                    }
-                    emitAll(progressFlow)
-                }
-            }.collectAsState(initial = null)
-
-            val isSystemInDarkTheme = isSystemInDarkTheme()
-            val statusBarBackgroundColor = when {
-                libraryUpdateProgress != null -> MaterialTheme.colorScheme.primary
-                indexingAnime -> IndexingBannerBackgroundColor
-                downloadOnly -> DownloadedOnlyBannerBackgroundColor
-                incognito -> IncognitoModeBannerBackgroundColor
-                else -> MaterialTheme.colorScheme.background
-            }
-            LaunchedEffect(isSystemInDarkTheme, statusBarBackgroundColor) {
-                // Draw edge-to-edge and set system bars color to transparent
-                val lightStyle = SystemBarStyle.light(Color.TRANSPARENT, Color.BLACK)
-                val darkStyle = SystemBarStyle.dark(Color.TRANSPARENT)
-                enableEdgeToEdge(
-                    statusBarStyle = if (statusBarBackgroundColor.luminance() > 0.5) lightStyle else darkStyle,
-                    navigationBarStyle = if (isSystemInDarkTheme) darkStyle else lightStyle,
-                )
-            }
-
-            Navigator(
-                screen = HomeScreen,
-                disposeBehavior = NavigatorDisposeBehavior(
-                    disposeNestedNavigators = false,
-                    disposeSteps = true,
-                ),
-            ) { navigator ->
-
-                LaunchedEffect(navigator) {
-                    this@MainActivity.navigator = navigator
-                    
-                    // Set performance screen provider
-                    eu.kanade.tachiyomi.util.system.PerformanceBenchmarkHelper.setCurrentScreenProvider {
-                        navigator.lastItem::class.simpleName
-                    }
-
-                    if (isLaunch) {
-                        // Set start screen
-                        handleIntentAction(intent, navigator)
-
-                        // Reset Incognito Mode on relaunch
-                        preferences.incognitoMode().set(false)
-                    }
-                }
-
-                val scaffoldInsets = WindowInsets.navigationBars.only(WindowInsetsSides.Horizontal)
-                CompositionLocalProvider(LocalBackPress provides navigator::pop) {
-                    Scaffold(
-                        topBar = {
-                            AppStateBanners(
-                                downloadedOnlyMode = downloadOnly,
-                                incognitoMode = incognito,
-                                indexing = indexingAnime,
-                                libraryUpdateProgress = libraryUpdateProgress,
-                                modifier = Modifier.windowInsetsPadding(scaffoldInsets),
-                            )
-                        },
-                        containerColor = MaterialTheme.colorScheme.background,
-                        contentWindowInsets = scaffoldInsets,
-                    ) { contentPadding ->
-                        // Consume insets already used by app state banners
-                        Box(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .background(MaterialTheme.colorScheme.background),
-                        ) {
-                            // Shows current screen
-                            DefaultNavigatorScreenTransition(
-                                navigator = navigator,
-                                modifier = Modifier
-                                    .padding(contentPadding)
-                                    .consumeWindowInsets(contentPadding),
-                            )
-                        }
-                    }
-                }
-
-                // Pop source-related screens when incognito mode is turned off
-                LaunchedEffect(Unit) {
-                    preferences.incognitoMode().changes()
-                        .drop(1)
-                        .filter { !it }
-                        .onEach {
-                            val currentScreen = navigator.lastItem
-                            if (
-                                currentScreen is BrowseSourceScreen ||
-                                (currentScreen is AnimeScreen && currentScreen.fromSource)
-                            ) {
-                                navigator.popUntilRoot()
-                            }
-                        }
-                        .launchIn(this)
-
-                    // AM (DISCORD) -->
-                    connectionsPreferences.enableDiscordRPC().changes()
-                        .drop(1)
-                        .onEach {
-                            if (it) {
-                                DiscordRPCService.start(this@MainActivity.applicationContext)
-                            } else {
-                                DiscordRPCService.stop(this@MainActivity.applicationContext, 0L)
-                            }
-                        }.launchIn(this)
-
-                    connectionsPreferences.discordRPCStatus().changes()
-                        .drop(1)
-                        .onEach {
-                            DiscordRPCService.stop(this@MainActivity.applicationContext, 0L)
-                            DiscordRPCService.start(this@MainActivity.applicationContext)
-                            DiscordRPCService.setAnimeScreen(this@MainActivity, DiscordScreen.APP)
-                        }.launchIn(this)
-
-                    preferences.incognitoMode().changes()
-                        .drop(1)
-                        .onEach {
-                            DiscordRPCService.setAnimeScreen(this@MainActivity, DiscordRPCService.lastUsedScreen)
-                        }.launchIn(this)
-
-                    connectionsPreferences.discordRPCIncognito().changes()
-                        .drop(1)
-                        .onEach {
-                            DiscordRPCService.setAnimeScreen(this@MainActivity, DiscordRPCService.lastUsedScreen)
-                        }.launchIn(this)
-                    // <-- AM (DISCORD)
-                }
-
-                HandleOnNewIntent(context = context, navigator = navigator)
-
-                CheckForUpdates()
-                ShowOnboarding()
-            }
-
-            var showChangelog by remember { mutableStateOf(didMigration && !isDebugBuildType) }
-            if (showChangelog) {
-                AlertDialog(
-                    onDismissRequest = { showChangelog = false },
-                    title = {
-                        Text(
-                            text = stringResource(MR.strings.updated_version, BuildConfig.VERSION_NAME),
-                        )
-                    },
-                    dismissButton = {
-                        TextButton(onClick = { openInBrowser(RELEASE_URL) }) {
-                            Text(text = stringResource(MR.strings.whats_new))
-                        }
-                    },
-                    confirmButton = {
-                        TextButton(onClick = { showChangelog = false }) {
-                            Text(text = stringResource(MR.strings.action_ok))
-                        }
-                    },
-                )
-            }
-        }
-
         val startTime = System.currentTimeMillis()
         splashScreen?.setKeepOnScreenCondition {
             val elapsed = System.currentTimeMillis() - startTime
             elapsed <= SPLASH_MIN_DURATION || !ready && elapsed <= SPLASH_MAX_DURATION
         }
         setSplashScreenExitAnimation(splashScreen)
+
+        setComposeContent {
+            var migrationResult by remember { mutableStateOf<Boolean?>(null) }
+            LaunchedEffect(Unit) {
+                migrationResult = withContext(Dispatchers.IO) {
+                    Migrator.awaitAndRelease().also {
+                        runCatching { AnimeCoverMetadata.load() }
+                    }
+                }
+            }
+            if (migrationResult == null) {
+                LoadingScreen()
+            } else {
+                val didMigration = migrationResult == true
+                val context = LocalContext.current
+
+                val incognito by preferences.incognitoMode().collectAsState()
+                val downloadOnly by preferences.downloadedOnly().collectAsState()
+                val indexingAnime by remember {
+                    flow {
+                        val cache = withContext(Dispatchers.IO) { downloadCache }
+                        emitAll(cache.isInitializing)
+                    }
+                }.collectAsState(initial = false)
+
+                val libraryUpdateProgress by remember(context) {
+                    flow {
+                        val progressFlow = withContext(Dispatchers.IO) {
+                            eu.kanade.tachiyomi.data.library.LibraryUpdateProgress.getProgress(context)
+                        }
+                        emitAll(progressFlow)
+                    }
+                }.collectAsState(initial = null)
+
+                val isSystemInDarkTheme = isSystemInDarkTheme()
+                val statusBarBackgroundColor = when {
+                    libraryUpdateProgress != null -> MaterialTheme.colorScheme.primary
+                    indexingAnime -> IndexingBannerBackgroundColor
+                    downloadOnly -> DownloadedOnlyBannerBackgroundColor
+                    incognito -> IncognitoModeBannerBackgroundColor
+                    else -> MaterialTheme.colorScheme.background
+                }
+                LaunchedEffect(isSystemInDarkTheme, statusBarBackgroundColor) {
+                    // Draw edge-to-edge and set system bars color to transparent
+                    val lightStyle = SystemBarStyle.light(Color.TRANSPARENT, Color.BLACK)
+                    val darkStyle = SystemBarStyle.dark(Color.TRANSPARENT)
+                    enableEdgeToEdge(
+                        statusBarStyle = if (statusBarBackgroundColor.luminance() > 0.5) lightStyle else darkStyle,
+                        navigationBarStyle = if (isSystemInDarkTheme) darkStyle else lightStyle,
+                    )
+                }
+
+                Navigator(
+                    screen = HomeScreen,
+                    disposeBehavior = NavigatorDisposeBehavior(
+                        disposeNestedNavigators = false,
+                        disposeSteps = true,
+                    ),
+                ) { navigator ->
+
+                    LaunchedEffect(navigator) {
+                        this@MainActivity.navigator = navigator
+                    
+                        // Set performance screen provider
+                        eu.kanade.tachiyomi.util.system.PerformanceBenchmarkHelper.setCurrentScreenProvider {
+                            navigator.lastItem::class.simpleName
+                        }
+
+                        if (isLaunch) {
+                            // Set start screen
+                            handleIntentAction(intent, navigator)
+
+                            // Reset Incognito Mode on relaunch
+                            preferences.incognitoMode().set(false)
+                        }
+                    }
+
+                    val scaffoldInsets = WindowInsets.navigationBars.only(WindowInsetsSides.Horizontal)
+                    CompositionLocalProvider(LocalBackPress provides navigator::pop) {
+                        Scaffold(
+                            topBar = {
+                                AppStateBanners(
+                                    downloadedOnlyMode = downloadOnly,
+                                    incognitoMode = incognito,
+                                    indexing = indexingAnime,
+                                    libraryUpdateProgress = libraryUpdateProgress,
+                                    modifier = Modifier.windowInsetsPadding(scaffoldInsets),
+                                )
+                            },
+                            containerColor = MaterialTheme.colorScheme.background,
+                            contentWindowInsets = scaffoldInsets,
+                        ) { contentPadding ->
+                            // Consume insets already used by app state banners
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .background(MaterialTheme.colorScheme.background),
+                            ) {
+                                // Shows current screen
+                                DefaultNavigatorScreenTransition(
+                                    navigator = navigator,
+                                    modifier = Modifier
+                                        .padding(contentPadding)
+                                        .consumeWindowInsets(contentPadding),
+                                )
+                            }
+                        }
+                    }
+
+                    // Pop source-related screens when incognito mode is turned off
+                    LaunchedEffect(Unit) {
+                        preferences.incognitoMode().changes()
+                            .drop(1)
+                            .filter { !it }
+                            .onEach {
+                                val currentScreen = navigator.lastItem
+                                if (
+                                    currentScreen is BrowseSourceScreen ||
+                                    (currentScreen is AnimeScreen && currentScreen.fromSource)
+                                ) {
+                                    navigator.popUntilRoot()
+                                }
+                            }
+                            .launchIn(this)
+
+                        // AM (DISCORD) -->
+                        connectionsPreferences.enableDiscordRPC().changes()
+                            .drop(1)
+                            .onEach {
+                                if (it) {
+                                    DiscordRPCService.start(this@MainActivity.applicationContext)
+                                } else {
+                                    DiscordRPCService.stop(this@MainActivity.applicationContext, 0L)
+                                }
+                            }.launchIn(this)
+
+                        connectionsPreferences.discordRPCStatus().changes()
+                            .drop(1)
+                            .onEach {
+                                DiscordRPCService.stop(this@MainActivity.applicationContext, 0L)
+                                DiscordRPCService.start(this@MainActivity.applicationContext)
+                                DiscordRPCService.setAnimeScreen(this@MainActivity, DiscordScreen.APP)
+                            }.launchIn(this)
+
+                        preferences.incognitoMode().changes()
+                            .drop(1)
+                            .onEach {
+                                DiscordRPCService.setAnimeScreen(this@MainActivity, DiscordRPCService.lastUsedScreen)
+                            }.launchIn(this)
+
+                        connectionsPreferences.discordRPCIncognito().changes()
+                            .drop(1)
+                            .onEach {
+                                DiscordRPCService.setAnimeScreen(this@MainActivity, DiscordRPCService.lastUsedScreen)
+                            }.launchIn(this)
+                        // <-- AM (DISCORD)
+                    }
+
+                    HandleOnNewIntent(context = context, navigator = navigator)
+
+                    CheckForUpdates()
+                    ShowOnboarding()
+                }
+
+                var showChangelog by remember { mutableStateOf(didMigration && !isDebugBuildType) }
+                if (showChangelog) {
+                    AlertDialog(
+                        onDismissRequest = { showChangelog = false },
+                        title = {
+                            Text(
+                                text = stringResource(MR.strings.updated_version, BuildConfig.VERSION_NAME),
+                            )
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { openInBrowser(RELEASE_URL) }) {
+                                Text(text = stringResource(MR.strings.whats_new))
+                            }
+                        },
+                        confirmButton = {
+                            TextButton(onClick = { showChangelog = false }) {
+                                Text(text = stringResource(MR.strings.action_ok))
+                            }
+                        },
+                    )
+                }
+            }
+        }
 
         externalPlayerResult = registerForActivityResult(
             ActivityResultContracts.StartActivityForResult(),
@@ -565,6 +578,13 @@ class MainActivity : BaseActivity() {
 
         ready = true
         return true
+    }
+
+    override fun onPause() {
+        super.onPause()
+        ProcessLifecycleOwner.get().lifecycleScope.launch(Dispatchers.IO) {
+            runCatching { AnimeCoverMetadata.save() }
+        }
     }
 
     override fun onSaveInstanceState(outState: Bundle) {

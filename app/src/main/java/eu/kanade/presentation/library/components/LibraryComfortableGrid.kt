@@ -101,6 +101,7 @@ internal fun LibraryComfortableGrid(
                         } else {
                             null
                         },
+                        shouldExtractColor = false,
                         usePanorama = usePanorama,
                     )
                 }

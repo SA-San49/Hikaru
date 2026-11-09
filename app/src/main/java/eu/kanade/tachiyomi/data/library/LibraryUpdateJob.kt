@@ -197,7 +197,7 @@ class LibraryUpdateJob(private val context: Context, workerParams: WorkerParamet
         // SY <--
 
         val listToUpdate = if (categoryId != -1L) {
-            libraryAnime.filter { it.category == categoryId }
+            libraryAnime.filter { categoryId in it.categories }
         } else if (
             group == LibraryGroup.BY_DEFAULT ||
             groupAnimeLibraryUpdateType == GroupLibraryMode.GLOBAL ||
@@ -206,16 +206,18 @@ class LibraryUpdateJob(private val context: Context, workerParams: WorkerParamet
                     group == LibraryGroup.UNGROUPED
                 )
         ) {
-            val categoriesToUpdate = libraryPreferences.updateCategories().get().map { it.toLong() }
+            val categoriesToUpdate = libraryPreferences.updateCategories().get().map { it.toLong() }.toSet()
             val includedAnime = if (categoriesToUpdate.isNotEmpty()) {
-                libraryAnime.filter { it.category in categoriesToUpdate }
+                libraryAnime.filter { anime -> anime.categories.any(categoriesToUpdate::contains) }
             } else {
                 libraryAnime
             }
 
-            val categoriesToExclude = libraryPreferences.updateCategoriesExclude().get().map { it.toLong() }
+            val categoriesToExclude = libraryPreferences.updateCategoriesExclude().get().map { it.toLong() }.toSet()
             val excludedAnimeIds = if (categoriesToExclude.isNotEmpty()) {
-                libraryAnime.filter { it.category in categoriesToExclude }.map { it.anime.id }
+                libraryAnime
+                    .filter { anime -> anime.categories.any(categoriesToExclude::contains) }
+                    .map { it.anime.id }
             } else {
                 emptyList()
             }

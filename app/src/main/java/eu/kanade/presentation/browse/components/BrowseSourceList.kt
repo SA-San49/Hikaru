@@ -40,7 +40,9 @@ fun BrowseSourceList(
     val selectionIds = remember(selection) { selection.map { it.id }.toSet() }
     LazyColumn(
         contentPadding = contentPadding + PaddingValues(vertical = 8.dp),
-        modifier = Modifier.fillMaxSize(),
+        modifier = Modifier
+            .fillMaxSize()
+            .then(animeList.benchmarkScrollTag()),
     ) {
         if (animeList.loadState.prepend is LoadState.Loading) {
             item(key = "browse-list-load-prepend") {
