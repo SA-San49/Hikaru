@@ -1,32 +1,24 @@
-<!-- version: 0.5.220 -->
+<!-- version: 0.5.221 -->
 <!--
-  Hand-written release notes for v0.5.220 - the first public release.
+  Hand-written release notes for v0.5.221.
 
-  Everything outside this comment block is published verbatim to the GitHub
-  release and to the Discord update message. Update the version marker when the
-  version moves on, otherwise this file is skipped and Gemini writes the notes.
-
-  Keep it friendly and aimed at users, not developers. No tables: the Discord
-  message gets buttons instead.
+  Everything outside this comment block is published to the GitHub release
+  and Discord update message. Keep the notes friendly, accurate, and user-facing.
 -->
 
-Hey everyone, and welcome! 🎉
+Here’s what’s new in Hikaru v0.5.221. 🚀
 
-This is **Hikaru's very first public release** — the moment this little app stops being something we build for ourselves and starts being something you can actually use. Thank you for showing up this early. It genuinely means a lot, and it's only the beginning.
+### AI assistant
+- Ask questions using relevant information from your library, watch history, browse sources, airing schedule, saved feeds, or community directory.
+- Choose which information the assistant can use; only enabled and relevant information is included.
+- Improved streamed replies and handling of provider errors, cancelled requests, interrupted streams, and empty responses.
 
-There's no long changelog to catch up on yet, so here's what you're getting on day one:
+### Downloads
+- Parallel downloads now check server support and use a single connection when needed.
+- Improved HLS download handling and network-request cancellation.
+- The download queue now shows progress, speed, estimated time remaining, and pause/resume controls.
 
-### What's inside
-- **Your library, your way** — the grid opens in three columns by default, so more of your collection fits on screen at once
-- **Everything a tap away** — Library · History · Schedule · Browse · More, right there in the bottom bar
-- **Google Drive sync that actually syncs** — backups run on Hikaru's own sync project, so your library follows you between devices
-- **Schedules that stay close** — upcoming episodes live in their own tab instead of being buried
-- **A lighter download** — a separate build for each CPU type, so your phone only carries what it needs
-
-### A small note on updates
-This is release one of many. When the next version lands you'll hear about it right here — no store, no gatekeeping, no waiting for approval.
-
-### Thank you
-Hikaru is made by a small team that cares a lot about the details. If something feels off, or something you love is missing, tell us. In the early days your feedback shapes everything that comes next.
-
-Happy watching 💜
+### Startup and library
+- Removed an unnecessary minimum splash wait and moved migration work off the main thread.
+- Tuned image loading for phones with two CPU cores or limited memory.
+- Reduced unnecessary cover processing and library refreshes, and improved category handling.
