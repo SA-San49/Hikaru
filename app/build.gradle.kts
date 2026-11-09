@@ -50,8 +50,8 @@ android {
     defaultConfig {
         applicationId = "app.hikaru"
 
-        versionCode = 221
-        versionName = "0.5.221"
+        versionCode = 222
+        versionName = "0.5.222"
 
         manifestPlaceholders["author"] = "@SA-San49"
 
