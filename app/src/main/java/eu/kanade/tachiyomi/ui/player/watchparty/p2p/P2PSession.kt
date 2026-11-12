@@ -230,6 +230,14 @@ class P2PSession(
         onEvent.onLocalDescription(this, parsed)
     }
 
+    /**
+     * The open channel, or `null` before it exists.
+     *
+     * Exposed so the link adapter can write to it and read its state, without
+     * handing out the `PeerConnection` itself.
+     */
+    fun dataChannel(): DataChannel? = dataChannel
+
     /** True while this session holds a factory reference. */
     private var retained = false
 
