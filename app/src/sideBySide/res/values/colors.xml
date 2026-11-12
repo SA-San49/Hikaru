@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      Side-by-side build only. The normal install keeps its black launcher
+      background; this variant uses the accent so the two icons are
+      distinguishable at a glance on the home screen and in the app switcher.
+    -->
+    <color name="ic_launcher_background">#FF3D5AFE</color>
+</resources>

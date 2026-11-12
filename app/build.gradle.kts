@@ -104,6 +104,31 @@ android {
             )
             matchingFallbacks.add(debug.name)
         }
+        /**
+         * Side-by-side build: installs *beside* the normal Hikaru instead of
+         * replacing it. That requires a distinct applicationId, which is also
+         * what keeps content-provider authorities (`${applicationId}.provider`,
+         * `${applicationId}.shizuku`) from colliding across the two installs.
+         *
+         * It is a debug-shaped build so it can be installed over an existing
+         * install of the same variant without a signature downgrade.
+         */
+        maybeCreate("sideBySide").apply {
+            initWith(debug)
+            // Must match `AutoBackupNaming.SIDE_BY_SIDE_SUFFIX` in the app module.
+            applicationIdSuffix = ".sideby"
+            versionNameSuffix = "-${getCommitCount()}-sideby"
+            isDebuggable = false
+            isMinifyEnabled = true
+            isShrinkResources = true
+            signingConfig = signingConfigs.getByName("release")
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-android-optimize.txt",
+                "proguard-rules.pro",
+            )
+            matchingFallbacks.add(debug.name)
+        }
         val release by getting {
             isMinifyEnabled = Config.enableCodeShrink
             isShrinkResources = Config.enableCodeShrink
@@ -164,6 +189,8 @@ android {
     sourceSets {
         getByName("preview").res.srcDirs("src/beta/res")
         getByName("benchmark").res.srcDirs("src/debug/res")
+        // App name + launcher tint only; nothing else is overridden.
+        getByName("sideBySide").res.srcDirs("src/sideBySide/res")
     }
 
     splits {

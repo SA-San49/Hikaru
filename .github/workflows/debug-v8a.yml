@@ -2,17 +2,38 @@ name: Hikaru v8a R8 Debug
 
 on:
   workflow_dispatch:
+    inputs:
+      variant:
+        description: 'Build type to assemble'
+        required: true
+        default: 'r8Debug'
+        type: choice
+        options:
+          # Normal Hikaru: installs over an existing Hikaru install.
+          - r8Debug
+          # Same app, distinct applicationId: installs BESIDE Hikaru.
+          - sideBySide
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.variant || 'r8Debug' }}
   cancel-in-progress: true
+
+permissions:
+  contents: read
 
 jobs:
   build-debug-v8a:
     name: Build arm64-v8a R8 Hikaru-signed APK
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
+
+    env:
+      # workflow_dispatch always supplies an input here; the fallback keeps
+      # `gh workflow run debug-v8a.yml` without -f behaving exactly as before.
+      VARIANT: ${{ inputs.variant || 'r8Debug' }}
+      # The Gradle output directory is named after the build type.
+      APK_DIR: ${{ (inputs.variant || 'r8Debug') == 'sideBySide' && 'sideBySide' || 'r8Debug' }}
+      # Human-readable tag, so the two flavours never share an artifact name.
+      VARIANT_TAG: ${{ (inputs.variant || 'r8Debug') == 'sideBySide' && 'sideby' || 'r8-debug' }}
 
     steps:
       - name: Clone repo
@@ -38,7 +59,7 @@ jobs:
           CURRENT_VN=$(sed -n 's/.*versionName = "\([^"]*\)".*/\1/p' app/build.gradle.kts | head -1)
           test -n "$CURRENT_VN"
           echo "VERSION=$CURRENT_VN" >> "$GITHUB_ENV"
-          echo "Building Hikaru v$CURRENT_VN"
+          echo "Building Hikaru v$CURRENT_VN ($VARIANT)"
 
       - name: Decode signing keystore
         env:
@@ -51,13 +72,13 @@ jobs:
       - name: Build arm64-v8a maximum R8 Hikaru-signed APK
         run: |
           set +e
-          ./gradlew assembleR8Debug -PabiList=arm64-v8a -Pandroid.enableR8.fullMode=true -Pinclude-telemetry=false -Penable-updater=false --no-daemon --stacktrace 2>&1 | tee r8-debug-build.log
+          ./gradlew "assemble${VARIANT^}" -PabiList=arm64-v8a -Pandroid.enableR8.fullMode=true -Pinclude-telemetry=false -Penable-updater=false --no-daemon --stacktrace 2>&1 | tee build.log
           BUILD_STATUS=${PIPESTATUS[0]}
           if [ "$BUILD_STATUS" -ne 0 ]; then
             {
-              grep -E '^e: ' r8-debug-build.log | tail -n 15 || true
-              grep -E '^> Task .* FAILED|^Execution failed for task|^FAILURE:|^Caused by:' r8-debug-build.log | tail -n 15 || true
-              tail -n 10 r8-debug-build.log
+              grep -E '^e: ' build.log | tail -n 15 || true
+              grep -E '^> Task .* FAILED|^Execution failed for task|^FAILURE:|^Caused by:' build.log | tail -n 15 || true
+              tail -n 10 build.log
             } | awk '!seen[$0]++' | tail -n 40 | while IFS= read -r line; do
               echo "::error::$line"
             done
@@ -74,14 +95,14 @@ jobs:
         run: |
           VERSION="${{ env.VERSION }}"
           mkdir -p dist
-          APK="dist/Hikaru-v${VERSION}-v8a-r8-debug.apk"
-          mapfile -t APKS < <(find app/build/outputs/apk/r8Debug -type f -name "*.apk" | sort)
+          APK="dist/Hikaru-v${VERSION}-v8a-${VARIANT_TAG}.apk"
+          mapfile -t APKS < <(find "app/build/outputs/apk/${APK_DIR}" -type f -name "*.apk" | sort)
           test "${#APKS[@]}" -gt 0
           printf 'Generated APKs:\n'
           for candidate in "${APKS[@]}"; do
             printf '  %s (%s bytes)\n' "$candidate" "$(stat -c%s "$candidate")"
           done
-          SOURCE_APK=$(find app/build/outputs/apk/r8Debug -type f -name "*arm64-v8a*.apk" | head -1)
+          SOURCE_APK=$(find "app/build/outputs/apk/${APK_DIR}" -type f -name "*arm64-v8a*.apk" | head -1)
           test -n "$SOURCE_APK"
           cp "$SOURCE_APK" "$APK"
           test -s "$APK"
@@ -89,10 +110,36 @@ jobs:
           SIZE_MB=$((SIZE_BYTES / 1024 / 1024))
           echo "APK size: ${SIZE_MB} MiB (${SIZE_BYTES} bytes)"
 
+          # Prove which package this APK will install as: this is the whole point
+          # of the side-by-side variant, and a silent regression here would make
+          # the APK overwrite the normal install instead of sitting beside it.
+          if command -v aapt2 >/dev/null 2>&1; then
+            AAPT=aapt2
+          else
+            AAPT=$(find "$ANDROID_HOME/build-tools" -name aapt2 -type f 2>/dev/null | sort -V | tail -1)
+          fi
+          if [ -n "$AAPT" ]; then
+            PACKAGE=$("$AAPT" dump packagename "$APK" | head -1)
+            echo "APK package: $PACKAGE"
+            echo "### ${VARIANT}: \`$PACKAGE\`" >> "$GITHUB_STEP_SUMMARY"
+            if [ "$VARIANT" = "sideBySide" ]; then
+              case "$PACKAGE" in
+                *.sideby) echo "Side-by-side package confirmed: $PACKAGE" ;;
+                *) echo "::error::sideBySide APK has package '$PACKAGE', expected a *.sideby suffix"; exit 1 ;;
+              esac
+              if [ "$PACKAGE" = "app.hikaru" ]; then
+                echo "::error::sideBySide APK would replace the normal Hikaru install"
+                exit 1
+              fi
+            fi
+          else
+            echo "::warning::aapt2 not found; package name was not verified"
+          fi
+
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Hikaru-v${{ env.VERSION }}-v8a-r8-debug
+          name: Hikaru-v${{ env.VERSION }}-v8a-${{ env.VARIANT_TAG }}
           path: dist/*.apk
           if-no-files-found: error
           retention-days: 7
