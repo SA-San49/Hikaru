@@ -1,5 +1,6 @@
 package eu.kanade.tachiyomi.ui.player.watchparty
 
+import eu.kanade.tachiyomi.data.database.models.toDomainEpisode
 import eu.kanade.tachiyomi.data.track.TrackerManager
 import eu.kanade.tachiyomi.ui.player.PlayerViewModel
 import `is`.xyz.mpv.MPVLib
@@ -66,7 +67,9 @@ class WatchPartyController(
         override fun isBuffering(): Boolean = viewModel.pausedForCache.value || viewModel.isLoading.value
 
         override fun localEpisode(): EpisodeIdentity? {
-            val episode = viewModel.currentEpisode.value ?: return null
+            // The player holds the legacy DB episode (SEpisode: `episode_number`);
+            // convert once here so the rest of the feature sees the domain model.
+            val episode = viewModel.currentEpisode.value?.toDomainEpisode() ?: return null
             return EpisodeIdentity(
                 animeTitle = viewModel.currentAnime.value?.title ?: "",
                 episodeNumber = episode.episodeNumber,
