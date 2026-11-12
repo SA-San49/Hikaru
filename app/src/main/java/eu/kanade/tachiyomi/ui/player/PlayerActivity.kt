@@ -348,6 +348,23 @@ class PlayerActivity : BaseActivity() {
         castManager
         // <-- Cast
 
+        // Watch Party reclaims the letterbox band for chat by constraining the
+        // mpv surface. It is a real view, not a Compose node, so this is the only
+        // place it can be done.
+        lifecycleScope.launch {
+            viewModel.watchParty.state.collect { state ->
+                applyVideoRegionHeight(
+                    if (state.active) computeWatchPartyVideoHeight() else null,
+                )
+            }
+        }
+        // Orientation changes alter the split (stacked vs side-by-side).
+        view.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
+            if (viewModel.watchParty.state.value.active) {
+                applyVideoRegionHeight(computeWatchPartyVideoHeight())
+            }
+        }
+
  binding.controls.setContent {
             val uiPreferences = remember { Injekt.get<UiPreferences>() }
             val dynamicPlayerTheme by uiPreferences.dynamicPlayerTheme().collectAsStatePref()
@@ -1783,4 +1800,79 @@ class PlayerActivity : BaseActivity() {
             }
         }
     }
+    /**
+     * Constrains the mpv surface to [heightPx], or restores full screen for `null`.
+     *
+     * The surface is matched to the video region rather than the whole window so
+     * that mpv has no space left to letterbox into above and below the picture.
+     * That dead band is precisely what the Watch Party layout reclaims for chat.
+     *
+     * Only the height is changed: the width stays full, and mpv keeps its own
+     * accurate aspect handling inside the smaller region.
+     */
+    /**
+     * The video region for the current window, in pixels.
+     *
+     * Uses the same arithmetic the chat panel uses, so the two always agree —
+     * they are two views of one split, not two independent guesses.
+     */
+    private fun computeWatchPartyVideoHeight(): Int {
+        val metrics = resources.displayMetrics
+        val heightPx = binding.root.height.takeIf { it > 0 } ?: metrics.heightPixels
+        val widthPx = binding.root.width.takeIf { it > 0 } ?: metrics.widthPixels
+        val mode = eu.kanade.tachiyomi.ui.player.watchparty.WatchPartyLayout.modeFor(widthPx, heightPx)
+
+        // In landscape the video owns the full height beside the chat column, so
+        // there is nothing to reclaim; only the portrait split needs a constraint.
+        if (mode == eu.kanade.tachiyomi.ui.player.watchparty.WatchPartyLayout.Mode.SIDE_BY_SIDE) {
+            return heightPx
+        }
+
+        val insets = androidx.core.view.ViewCompat.getRootWindowInsets(binding.root)
+            ?: return heightPx
+        val statusBar = insets.getInsets(
+            androidx.core.view.WindowInsetsCompat.Type.statusBars() or
+                androidx.core.view.WindowInsetsCompat.Type.displayCutout(),
+        ).top
+        val ime = insets.getInsets(androidx.core.view.WindowInsetsCompat.Type.ime()).bottom
+
+        val geometry = eu.kanade.tachiyomi.ui.player.watchparty.WatchPartyLayout.compute(
+            eu.kanade.tachiyomi.ui.player.watchparty.WatchPartyLayout.Request(
+                widthPx = widthPx,
+                heightPx = heightPx,
+                statusBarPx = statusBar,
+                imePx = ime,
+                inputRowPx = (64 * resources.displayMetrics.density).toInt(),
+                videoAspect = currentVideoAspect(),
+                sideChatWidthPx = (320 * resources.displayMetrics.density).toInt(),
+                mode = mode,
+            ),
+        )
+        return geometry.video.bottom
+    }
+
+    /**
+     * The playing video's aspect ratio, from mpv.
+     *
+     * Falls back to 16:9 when nothing is loaded rather than collapsing the region
+     * to zero, which would make the screen flash black while switching episodes.
+     */
+    private fun currentVideoAspect(): Double {
+        // The view already resolves this correctly, including rotated video, where
+        // a raw width/height ratio would be wrong by 90 degrees.
+        return runCatching { binding.player.getVideoOutAspect() }
+            .getOrNull()
+            ?.takeIf { it > 0.01 }
+            ?: (16.0 / 9.0)
+    }
+
+    private fun applyVideoRegionHeight(heightPx: Int?) {
+        val view = binding.player
+        val params = view.layoutParams ?: return
+        val target = heightPx ?: android.view.ViewGroup.LayoutParams.MATCH_PARENT
+        if (params.height == target) return
+        params.height = target
+        view.layoutParams = params
+    }
+
 }

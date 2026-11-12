@@ -208,6 +208,23 @@ class PlayerViewModel @JvmOverloads constructor(
      */
     private var watchPartyCreated = false
 
+    /**
+     * Height of the video region while Watch Party is on screen, in pixels.
+     *
+     * The mpv surface is a real Android view owned by the activity, not a Compose
+     * node, so Compose cannot reflow it. The activity observes this and resizes
+     * the view, which is what removes the dead letterbox band and frees the space
+     * for chat.
+     *
+     * `null` means "full screen", i.e. the ordinary player.
+     */
+    private val _watchPartyVideoHeight = MutableStateFlow<Int?>(null)
+    val watchPartyVideoHeight = _watchPartyVideoHeight.asStateFlow()
+
+    fun setWatchPartyVideoHeight(heightPx: Int?) {
+        _watchPartyVideoHeight.value = heightPx
+    }
+
     val watchParty: WatchPartyController by lazy {
         watchPartyCreated = true
         WatchPartyController(this, watchPartyPreferences)

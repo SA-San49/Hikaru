@@ -808,6 +808,31 @@ fun PlayerControls(
             onDismissRequest = { viewModel.showDialog(Dialogs.None) },
         )
 
+        // Watch Party's chat occupies the space the video does not need: the
+        // activity shrinks the mpv surface to the picture's own height, and this
+        // panel fills the band beneath it. It is a sibling of the controls rather
+        // than a sheet so it stays visible while watching.
+        if (watchPartyState.active) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(top = watchPartyPanelTopPadding(viewModel)),
+                contentAlignment = Alignment.BottomCenter,
+            ) {
+                eu.kanade.tachiyomi.ui.player.watchparty.WatchPartyPanel(
+                    state = watchPartyState,
+                    selfId = watchPartySelfId,
+                    localReady = watchPartyLocalReady,
+                    onSendChat = { text -> viewModel.watchParty.sendChatMessage(text) },
+                    onReaction = { emoji -> viewModel.watchParty.sendReaction(emoji) },
+                    onReady = { viewModel.watchParty.requestReady() },
+                    onNotReady = { viewModel.watchParty.requestNotReady() },
+                    onCancelCountdown = { viewModel.watchParty.requestCancelCountdown() },
+                    onSyncNow = { viewModel.watchParty.requestSyncNow() },
+                )
+            }
+        }
+
         // Watch Party overlays: only rendered while a room is open.
         if (watchPartyState.active) {
             LaunchedEffect(Unit) {
@@ -851,6 +876,24 @@ fun PlayerControls(
             onDismissRequest = { showCastSheet = false },
         )
     }
+/**
+ * Top padding that makes the panel begin exactly where the picture ends.
+ *
+ * The activity constrains the mpv surface to that height, so the panel fills the
+ * band underneath instead of overlapping the picture.
+ */
+@Composable
+private fun watchPartyPanelTopPadding(viewModel: PlayerViewModel): androidx.compose.ui.unit.Dp {
+    val heightPx by viewModel.watchPartyVideoHeight.collectAsState()
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    val configuration = androidx.compose.ui.platform.LocalConfiguration.current
+    // The activity publishes the video height as soon as a room is active. Until
+    // that value lands, fall back to half the screen so the panel is never drawn
+    // over the whole picture.
+    val px = heightPx ?: (with(density) { configuration.screenHeightDp.dp.roundToPx() } / 2)
+    return with(density) { px.toDp() }
+}
+
 }
 
 fun <T> playerControlsExitAnimationSpec(): FiniteAnimationSpec<T> = tween(
