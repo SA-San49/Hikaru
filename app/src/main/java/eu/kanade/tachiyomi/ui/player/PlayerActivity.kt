@@ -359,11 +359,27 @@ class PlayerActivity : BaseActivity() {
             }
         }
         // Orientation changes alter the split (stacked vs side-by-side).
-        view.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
-            if (viewModel.watchParty.state.value.active) {
-                applyVideoRegionHeight(computeWatchPartyVideoHeight())
-            }
-        }
+        // View.OnLayoutChangeListener takes nine arguments: the view plus eight
+        // bounds. Naming the receiver keeps the arity obvious.
+        binding.root.addOnLayoutChangeListener(
+            object : android.view.View.OnLayoutChangeListener {
+                override fun onLayoutChange(
+                    v: android.view.View?,
+                    left: Int,
+                    top: Int,
+                    right: Int,
+                    bottom: Int,
+                    oldLeft: Int,
+                    oldTop: Int,
+                    oldRight: Int,
+                    oldBottom: Int,
+                ) {
+                    if (viewModel.watchParty.state.value.active) {
+                        applyVideoRegionHeight(computeWatchPartyVideoHeight())
+                    }
+                }
+            },
+        )
 
  binding.controls.setContent {
             val uiPreferences = remember { Injekt.get<UiPreferences>() }
