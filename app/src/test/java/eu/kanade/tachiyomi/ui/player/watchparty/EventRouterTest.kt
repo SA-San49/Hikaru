@@ -116,16 +116,19 @@ class EventRouterTest {
 
     @Test
     fun `duplicate chat messages are dropped even with a new seq`() {
+        // Message-id dedupe only applies to chat; other event types are ordered
+        // purely by seq, so the event type has to be explicit here.
         val payload = EventPayload(messageId = "m-1", text = "hi")
-        assertTrue(delivered(event(seq = 1, payload = payload)))
+        val chat = WatchPartyEventType.CHAT_MESSAGE
+        assertTrue(delivered(event(type = chat, seq = 1, payload = payload)))
         assertEquals(
             EventRouter.Result.Dropped("stale-seq"),
-            router.route(event(seq = 1, payload = payload)),
+            router.route(event(type = chat, seq = 1, payload = payload)),
         )
         // A replayed message id with a fresh seq must also be rejected.
         assertEquals(
             EventRouter.Result.Dropped("duplicate-message"),
-            router.route(event(seq = 2, payload = payload)),
+            router.route(event(type = chat, seq = 2, payload = payload)),
         )
     }
 

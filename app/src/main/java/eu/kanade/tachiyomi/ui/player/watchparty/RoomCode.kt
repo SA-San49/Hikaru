@@ -5,12 +5,17 @@ package eu.kanade.tachiyomi.ui.player.watchparty
  *
  * Room ids double as the signalling topic, so they must be short, easy to type
  * and read aloud, and hard to guess: 8 characters from a 32 symbol alphabet
- * (40 bits) with visually ambiguous characters removed.
+ * (just under 40 bits) with visually ambiguous characters removed.
  */
 object RoomCode {
 
-    /** Characters that survive being read over voice chat. */
-    private const val ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"
+    /**
+     * Characters that survive being read over voice chat.
+     *
+     * Excludes `0/O`, `1/I` and `L`, because those are the pairs people
+     * mistype when copying a code by hand or reading it aloud.
+     */
+    private const val ALPHABET = "23456789ABCDEFGHJKMNPQRSTUVWXYZ"
 
     const val LENGTH = 8
 

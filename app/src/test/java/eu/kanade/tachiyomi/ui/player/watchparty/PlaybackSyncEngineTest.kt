@@ -15,7 +15,8 @@ class PlaybackSyncEngineTest {
     fun `small drift is ignored so playback is not thrashed`() {
         val decision = engine().evaluate(expected = 100_000, actual = 100_300, paused = false, buffering = false, nowMs = 0)
         assertEquals(PlaybackSyncEngine.Action.NONE, decision.action)
-        assertEquals(300, decision.driftMs)
+        // drift is `expected - actual`, so local playback running ahead is negative.
+        assertEquals(-300L, decision.driftMs)
     }
 
     @Test
@@ -82,10 +83,12 @@ class PlaybackSyncEngineTest {
     fun `projection forwards a playing snapshot and freezes a paused one`() {
         val engine = engine()
         val playing = PlaybackSnapshot(positionMs = 10_000, paused = false, sentAtMs = 1_000)
-        assertEquals(14_000, engine.projectPosition(playing, nowMs = 4_000))
+        // Long literals matter: the snapshot fields are Long, so an Int literal
+        // compares against a boxed Int and fails on an equal value.
+        assertEquals(13_000L, engine.projectPosition(playing, nowMs = 4_000))
 
         val paused = playing.copy(paused = true)
-        assertEquals(10_000, engine.projectPosition(paused, nowMs = 4_000))
+        assertEquals(10_000L, engine.projectPosition(paused, nowMs = 4_000))
     }
 
     @Test

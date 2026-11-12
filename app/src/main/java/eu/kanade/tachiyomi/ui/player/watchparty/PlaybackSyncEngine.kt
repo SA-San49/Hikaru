@@ -55,12 +55,25 @@ class PlaybackSyncEngine(
         val reason: String = "",
     )
 
-    private var lastSeekAtMs: Long = Long.MIN_VALUE
-    private var lastSpeedAtMs: Long = Long.MIN_VALUE
+    /**
+     * Timestamps of the last corrective action, or `null` when none happened yet.
+     *
+     * A sentinel such as [Long.MIN_VALUE] is not usable here: `now - last`
+     * overflows to a large negative number, which reads as "still cooling down"
+     * and silently blocks the very first seek or speed nudge for the whole
+     * session.
+     */
+    private var lastSeekAtMs: Long? = null
+    private var lastSpeedAtMs: Long? = null
 
     fun reset() {
-        lastSeekAtMs = Long.MIN_VALUE
-        lastSpeedAtMs = Long.MIN_VALUE
+        lastSeekAtMs = null
+        lastSpeedAtMs = null
+    }
+
+    /** True while a corrective action of the given kind is still rate limited. */
+    private fun isCoolingDown(lastAtMs: Long?, cooldownMs: Long, nowMs: Long): Boolean {
+        return lastAtMs != null && nowMs - lastAtMs < cooldownMs
     }
 
     /** Epoch-millis projection of a snapshot, compensating for transport delay. */
@@ -98,7 +111,7 @@ class PlaybackSyncEngine(
         }
 
         if (absDrift > config.seekDriftMs) {
-            if (nowMs - lastSeekAtMs < config.seekCooldownMs) {
+            if (isCoolingDown(lastSeekAtMs, config.seekCooldownMs, nowMs)) {
                 return Decision(Action.NONE, driftMs = drift, reason = "seek-cooldown")
             }
             val target = if (duration != null && duration > 0) {
@@ -116,7 +129,7 @@ class PlaybackSyncEngine(
         }
 
         // Soft correction: nudge the playback rate for a few seconds.
-        if (nowMs - lastSpeedAtMs < config.speedCooldownMs) {
+        if (isCoolingDown(lastSpeedAtMs, config.speedCooldownMs, nowMs)) {
             return Decision(Action.NONE, driftMs = drift, reason = "speed-cooldown")
         }
         lastSpeedAtMs = nowMs
