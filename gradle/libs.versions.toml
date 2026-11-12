@@ -14,6 +14,11 @@ ktlint-core = "1.5.0"
 firebase-bom = "33.16.0"
 markdown = "0.35.0"
 junit = "5.13.4"
+# Watch Party P2P: WebRTC (BSD-3), ZXing core (Apache-2.0), CameraX (Apache-2.0).
+# No ML Kit: it would pull in Play Services, which Hikaru can run without.
+webrtc = "150.7871.04"
+zxing = "3.5.4"
+camerax = "1.6.2"
 
 [libraries]
 desugar = "com.android.tools:desugar_jdk_libs:2.1.5"
@@ -90,6 +95,17 @@ shizuku-provider = { module = "dev.rikka.shizuku:provider", version.ref = "shizu
 
 leakcanary-plumber = { module = "com.squareup.leakcanary:plumber-android", version.ref = "leakcanary" }
 
+# Watch Party P2P stack.
+# webrtc-sdk is the actively maintained Android WebRTC build (BSD-3-Clause);
+# it exposes the standard org.webrtc API, so nothing else here is vendor-specific.
+webrtc-android = { module = "io.github.webrtc-sdk:android", version.ref = "webrtc" }
+# ZXing core generates and decodes the QR images; the camera itself is CameraX.
+zxing-core = { module = "com.google.zxing:core", version.ref = "zxing" }
+camerax-core = { module = "androidx.camera:camera-core", version.ref = "camerax" }
+camerax-camera2 = { module = "androidx.camera:camera-camera2", version.ref = "camerax" }
+camerax-lifecycle = { module = "androidx.camera:camera-lifecycle", version.ref = "camerax" }
+camerax-view = { module = "androidx.camera:camera-view", version.ref = "camerax" }
+
 sqldelight-android-driver = { module = "app.cash.sqldelight:android-driver", version.ref = "sqldelight" }
 sqldelight-coroutines = { module = "app.cash.sqldelight:coroutines-extensions-jvm", version.ref = "sqldelight" }
 sqldelight-android-paging = { module = "app.cash.sqldelight:androidx-paging3-extensions", version.ref = "sqldelight" }
@@ -132,3 +148,4 @@ sqldelight = ["sqldelight-android-driver", "sqldelight-coroutines", "sqldelight-
 voyager = ["voyager-navigator", "voyager-screenmodel", "voyager-tab-navigator", "voyager-transitions"]
 test = ["junit-jupiter", "kotest-assertions", "mockk"]
 markdown = ["markdown-core", "markdown-coil"]
+watchparty = ["webrtc-android", "zxing-core", "camerax-core", "camerax-camera2", "camerax-lifecycle", "camerax-view"]

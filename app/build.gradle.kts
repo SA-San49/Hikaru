@@ -406,6 +406,9 @@ dependencies {
     // Shizuku
     implementation(libs.bundles.shizuku)
 
+    // Watch Party P2P (serverless): direct WebRTC data channels + QR pairing.
+    implementation(libs.bundles.watchparty)
+
     // Tests
     testImplementation(libs.bundles.test)
     testRuntimeOnly(libs.junit.platform.launcher)

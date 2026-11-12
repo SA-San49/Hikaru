@@ -24,6 +24,25 @@ class WatchPartyPreferences(
 
     fun autoOpenPanel() = preferenceStore.getBoolean("pref_watch_party_auto_open_panel", true)
 
+    /**
+     * Signalling mode.
+     *
+     * [SignallingMode.SERVERLESS_QR] is the default: no Hikaru-operated backend
+     * exists, pairing happens by exchanging QR codes. [SignallingMode.RELAY] is
+     * the opt-in escape hatch for people who run `relay/watch-party-relay.js`
+     * themselves; it is never selected automatically.
+     */
+    fun signallingMode() = preferenceStore.getEnum("pref_watch_party_signalling_mode", SignallingMode.SERVERLESS_QR)
+
+    /**
+     * When true, ICE never queries the internet: the STUN list is empty and only
+     * host candidates are exchanged. Used for same-Wi-Fi and hotspot play.
+     */
+    fun lanOnly() = preferenceStore.getBoolean("pref_watch_party_lan_only", false)
+
+    /** Comma separated STUN URLs; only used when [lanOnly] is false. */
+    fun stunServers() = preferenceStore.getString("pref_watch_party_stun_servers", DEFAULT_STUN_SERVERS)
+
     /** Stable per-install participant id; never derived from account data. */
     fun participantId(): String {
         val pref = preferenceStore.getString("pref_watch_party_participant_id", "")
@@ -50,10 +69,21 @@ class WatchPartyPreferences(
 
     companion object {
         /**
-         * Public, self-hostable signalling relay (see `relay/watch-party-relay.js`
-         * in this repository). It only fans out presence and room events; media is
-         * never proxied and WebRTC media/data channels are peer-to-peer.
+         * Self-hostable signalling relay (see `relay/watch-party-relay.js`).
+         *
+         * Only used when [signallingMode] is [SignallingMode.RELAY]; it fans out
+         * room events and never proxies media. Serverless QR pairing needs no
+         * server at all.
          */
         const val DEFAULT_RELAY_URL = "wss://hikaru-watchparty.fly.dev/ws"
+
+        /**
+         * Public STUN servers used for candidate discovery.
+         *
+         * STUN only reveals a device's public address to itself; it does not
+         * relay any traffic. Two independent providers are listed so one outage
+         * does not break pairing.
+         */
+        const val DEFAULT_STUN_SERVERS = "stun:stun.l.google.com:19302,stun:stun1.l.google.com:19302,stun:stun.cloudflare.com:3478"
     }
 }

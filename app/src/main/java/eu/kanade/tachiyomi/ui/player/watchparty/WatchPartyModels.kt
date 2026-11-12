@@ -96,6 +96,57 @@ enum class ConnectionState {
 }
 
 /**
+ * How room frames actually travel.
+ *
+ * [SERVERLESS_QR] is the default and needs no infrastructure at all: pairing
+ * data is exchanged through QR codes / pasted text, and messages then flow over
+ * direct WebRTC DataChannels. [RELAY] exists for people who self-host
+ * `relay/watch-party-relay.js`; it is opt-in and never chosen automatically.
+ */
+enum class SignallingMode {
+    SERVERLESS_QR,
+    RELAY,
+}
+
+/**
+ * Fine-grained pairing state, surfaced to the UI.
+ *
+ * Distinct from [ConnectionState] because "creating an invitation" and "waiting
+ * for the host to accept my answer" are not connection states — they are steps
+ * of the out-of-band handshake.
+ */
+enum class PairingState {
+    /** Nothing in flight. */
+    IDLE,
+
+    /** Creating a WebRTC offer and gathering candidates. */
+    CREATING_INVITATION,
+
+    /** Invitation QR is on screen; waiting for a guest to scan it. */
+    WAITING_FOR_GUEST,
+
+    /** Guest is producing an answer to a scanned invitation. */
+    CREATING_ANSWER,
+
+    /** Guest finished its answer QR and is waiting for the host. */
+    WAITING_FOR_ANSWER,
+
+    /** Host is processing a scanned answer. */
+    VALIDATING_ANSWER,
+
+    /** ICE checks and DTLS handshake in progress. */
+    ESTABLISHING,
+
+    CONNECTED,
+
+    /** Invitation lifetime elapsed; a fresh one must be generated. */
+    INVITATION_EXPIRED,
+
+    /** Direct connectivity could not be established. */
+    FAILED,
+}
+
+/**
  * Readiness of a participant for the shared countdown.
  *
  * A participant is [READY] only when their episode is resolved *and* their
