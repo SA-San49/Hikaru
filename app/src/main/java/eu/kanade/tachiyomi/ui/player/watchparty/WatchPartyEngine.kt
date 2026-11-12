@@ -164,6 +164,22 @@ class WatchPartyEngine(
         return code
     }
 
+    /**
+     * Starts a guest session against a room id that arrived out-of-band.
+     *
+     * Serverless pairing takes its room identity from the scanned invitation, so
+     * there is no code to normalise or validate — the invitation already proved
+     * which room it belongs to. Everything else is the ordinary guest path.
+     */
+    fun startAsGuest(roomId: String): Boolean {
+        if (roomId.isBlank()) {
+            _state.update { it.copy(error = "That invitation has no room.") }
+            return false
+        }
+        startSession(roomId, isHost = false)
+        return true
+    }
+
     fun joinRoom(rawCode: String): Boolean {
         val code = RoomCode.normalize(rawCode)
         if (code == null) {

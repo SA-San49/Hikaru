@@ -2,6 +2,7 @@ package eu.kanade.tachiyomi.ui.player.watchparty
 
 import android.content.Context
 import eu.kanade.tachiyomi.ui.player.watchparty.p2p.P2PWatchPartySession
+import eu.kanade.tachiyomi.ui.player.watchparty.p2p.PairingPayload
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -111,21 +112,62 @@ class WatchPartyRoomScope(
         return code
     }
 
-    /** Joins the room [code] for [animeKey]. */
+    /**
+     * Joins a room.
+     *
+     * Two different things can arrive here, and they are not interchangeable:
+     *
+     *  - a **room code** in relay mode, which the engine validates and dials;
+     *  - a **scanned invitation** in serverless mode, which carries its own room
+     *    identity and needs no code at all.
+     *
+     * In serverless mode the room id comes from the invitation, so the engine is
+     * started with that id instead of demanding a code the guest never had.
+     */
     fun joinRoom(animeKey: String, code: String, bridge: WatchPartyPlayerBridge): Boolean {
-        val normalized = RoomCode.normalize(code) ?: run {
+        this.animeKey = animeKey
+        val serverlessMode = P2PWatchPartySession.usesServerlessPairing(prefs)
+
+        // In serverless mode `code` is a scanned/pasted invitation payload.
+        val invitation = if (serverlessMode) PairingPayload.decode(code) else null
+        if (serverlessMode && invitation == null) {
+            _state.value = WatchPartyUiState(
+                error = "That is not a Hikaru Watch Party invitation.",
+            )
+            return false
+        }
+
+        val normalized = RoomCode.normalize(code) ?: if (serverlessMode) null else run {
             _state.value = WatchPartyUiState(error = "That room code is not valid.")
             return false
         }
-        this.animeKey = animeKey
-        prepare(animeKey, isHost = false, bridge = bridge, roomIdHint = normalized)
-        val joined = engine().joinRoom(normalized)
+
+        val roomId = invitation?.roomId ?: normalized!!
+        prepare(animeKey, isHost = false, bridge = bridge, roomIdHint = roomId)
+
+        // The engine still owns room lifecycle and presence; in serverless mode
+        // there is no code to validate, so its normal join path is bypassed and
+        // the session is started directly against the invitation's room.
+        val joined = if (serverlessMode) {
+            engine().startAsGuest(roomId)
+        } else {
+            engine().joinRoom(roomId)
+        }
         if (!joined) {
             stop()
             return false
         }
-        roomCode = normalized
-        serverless?.bindRoom(normalized)
+
+        if (serverlessMode) {
+            if (!beginPairing(invitation!!)) {
+                // Pairing failed; the session already holds the reason.
+                stop()
+                return false
+            }
+        } else {
+            roomCode = roomId
+        }
+        serverless?.bindRoom(roomId)
         startTicker()
         return true
     }
@@ -170,7 +212,7 @@ class WatchPartyRoomScope(
                         url = prefs.relayUrl().get(),
                         roomId = animeKey,
                         participantId = prefs.participantId(),
-                        displayName = prefs.effectiveDisplayName(),
+                        displayName = { prefs.effectiveDisplayName() },
                         scope = ensureScope(),
                         client = RelayRoomTransport.defaultClient(),
                     )

@@ -326,10 +326,17 @@ class AnimeScreen(
                         // A room needs a player bridge for position/pause state.
                         // Before any episode is open there is nothing playing, so
                         // the room starts paused at zero — which is the truth.
-                        watchPartyScope.createRoom(animeKey, IdlePlayerBridge)
+                        watchPartyScope.createRoom(
+                            animeKey,
+                            eu.kanade.tachiyomi.ui.player.watchparty.IdlePlayerBridge,
+                        )
                     },
                     onJoinRoom = { code ->
-                        watchPartyScope.joinRoom(animeKey, code, IdlePlayerBridge)
+                        watchPartyScope.joinRoom(
+                            animeKey,
+                            code,
+                            eu.kanade.tachiyomi.ui.player.watchparty.IdlePlayerBridge,
+                        )
                     },
                     onLeaveRoom = {
                         watchPartyScope.leave()

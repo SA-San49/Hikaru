@@ -52,7 +52,7 @@ class P2PWatchPartySession(
 
     /** ICE servers come from settings; empty in LAN-only mode. */
     private val factoryHolder = PeerConnectionFactoryHolder(context.applicationContext) {
-        if (prefs.lanOnly().get()) emptyList() else prefs.stunServers().get().splitStunList()
+        if (prefs.lanOnly().get()) emptyList() else prefs.stunServers().get().split(',')
     }
 
     private val _pairing = MutableStateFlow(PairingSnapshot())
@@ -98,8 +98,13 @@ class P2PWatchPartySession(
         null
     }
 
-    /** Guest-only link to the host. */
-    private var guestLink: PeerLink? = null
+    /**
+     * Guest-only link to the host.
+     *
+     * Held as the concrete type because the guest needs the RoomTransport adapter,
+     * which only makes sense for the single connection a guest ever has.
+     */
+    private var guestLink: P2PSessionLink? = null
 
     /** Frames arriving from peers, already routed by the hub. */
     var onLocalFrame: ((text: String) -> Unit)? = null
@@ -164,7 +169,7 @@ class P2PWatchPartySession(
             }
 
             override fun onConnected(link: PeerLink) {
-                guestLink = link
+                guestLink = link as? P2PSessionLink
                 _pairing.value = _pairing.value.copy(
                     state = PairingState.CONNECTED,
                     connectedGuests = 1,
@@ -232,17 +237,49 @@ class P2PWatchPartySession(
      * have nowhere to go, which is correct.
      */
     fun transport(): RoomTransport {
-        val hub = hub
-        if (hub != null) {
-            return hub.asTransport().also { transport ->
-                transport.listener = object : RoomTransport.Listener {
-                    override fun onStateChanged(state: RoomTransport.State) = Unit
-                    override fun onMessage(text: String) = Unit
-                }
+        hub?.let { return it.asTransport() }
+        // A guest asks for its transport *before* pairing has happened, so
+        // returning whatever link exists at that moment would hand the engine a
+        // dead object for the rest of the room's life. This delegates every call
+        // to the current link instead, so it starts working the moment the
+        // channel opens.
+        return GuestTransport()
+    }
+
+    /**
+     * A guest's single transport, resolved lazily against [guestLink].
+     *
+     * Identity is stable for the room's lifetime; only the target changes, once,
+     * when the host's data channel opens.
+     */
+    private inner class GuestTransport : RoomTransport {
+        override var listener: RoomTransport.Listener? = null
+
+        override fun connect() {
+            listener?.onStateChanged(
+                if (guestLink?.isOpen == true) RoomTransport.State.Connected else RoomTransport.State.Connecting,
+            )
+        }
+
+        override fun send(text: String) {
+            val link = guestLink
+            if (link == null) {
+                // Nothing to send to yet: pairing has not finished. Reporting a
+                // failure here would be wrong, and dropping silently would hide a
+                // genuine regression, so it is logged once per occurrence.
+                return
+            }
+            if (!link.send(text)) {
+                listener?.onStateChanged(
+                    RoomTransport.State.Failed("The connection to the host was lost."),
+                )
             }
         }
-        // Guest: until the channel opens there is no transport to speak of.
-        return guestLink?.asGuestTransport() ?: OfflineTransport()
+
+        override fun close() {
+            guestLink?.close()
+            guestLink = null
+        }
     }
 
     /** Recomputes countdowns. Called from the engine ticker. */
@@ -271,27 +308,7 @@ class P2PWatchPartySession(
         _pairing.value = _pairing.value.copy(codes = chunks.map { it.render() })
     }
 
-    private fun List<String>.splitStunList(): List<String> = flatMap { it.split(',') }
-
     // </editor-fold>
-
-    /**
-     * A transport with nowhere to go.
-     *
-     * Used on a guest before the data channel opens. It reports the truth —
-     * not connected — rather than pretending to be connected and eating frames.
-     */
-    private class OfflineTransport : RoomTransport {
-        override var listener: RoomTransport.Listener? = null
-
-        override fun connect() {
-            listener?.onStateChanged(RoomTransport.State.Connecting)
-        }
-
-        override fun send(text: String) = Unit
-
-        override fun close() = Unit
-    }
 
     companion object {
         /** True when this build should use QR pairing rather than the relay. */
