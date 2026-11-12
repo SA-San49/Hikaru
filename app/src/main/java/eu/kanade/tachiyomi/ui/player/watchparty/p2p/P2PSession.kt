@@ -5,7 +5,6 @@ import org.webrtc.DataChannel
 import org.webrtc.IceCandidate
 import org.webrtc.MediaConstraints
 import org.webrtc.PeerConnection
-import org.webrtc.SdpObserver
 import org.webrtc.SessionDescription
 
 /**

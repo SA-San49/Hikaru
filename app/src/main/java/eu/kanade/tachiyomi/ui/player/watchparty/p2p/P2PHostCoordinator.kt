@@ -4,7 +4,6 @@ import eu.kanade.tachiyomi.ui.player.watchparty.PairingState
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.update
 import logcat.LogPriority
 import tachiyomi.core.common.util.system.logcat
 
