@@ -1,0 +1,240 @@
+package eu.kanade.presentation.anime.watchparty
+
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Groups
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.unit.dp
+import eu.kanade.tachiyomi.ui.player.watchparty.PairingState
+import eu.kanade.tachiyomi.ui.player.watchparty.p2p.PairingFailure
+import eu.kanade.tachiyomi.ui.player.watchparty.p2p.PairingProgress
+import eu.kanade.tachiyomi.ui.player.watchparty.p2p.PairingQr
+import eu.kanade.tachiyomi.ui.player.watchparty.p2p.VerificationCodeBadge
+import eu.kanade.tachiyomi.ui.player.watchparty.p2p.explanation
+import eu.kanade.tachiyomi.ui.player.watchparty.p2p.P2PWatchPartySession
+
+/**
+ * The Watch Party entry point on the anime detail page.
+ *
+ * Deliberately a dialog rather than a screen: creating a room must not require
+ * opening an episode first. The user picks the anime, invites people, and only
+ * then presses play — which is the order that matches how people actually watch
+ * together.
+ */
+@Composable
+fun AnimeWatchPartyDialog(
+    animeTitle: String,
+    isEnabled: Boolean,
+    isActive: Boolean,
+    isHost: Boolean,
+    roomCode: String?,
+    pairing: P2PWatchPartySession.PairingSnapshot,
+    isServerless: Boolean,
+    onCreateRoom: () -> Unit,
+    onJoinRoom: (String) -> Unit,
+    onLeaveRoom: () -> Unit,
+    onCreateInvitation: () -> Unit,
+    onAcceptAnswer: (String) -> Unit,
+    onBeginPairing: (String) -> Unit,
+    onScan: (title: String, apply: (String) -> Unit) -> Unit,
+    onDismissRequest: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismissRequest,
+        icon = { Icon(Icons.Outlined.Groups, contentDescription = null) },
+        title = { Text("Watch Party") },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Text(text = animeTitle, style = MaterialTheme.typography.bodyMedium)
+
+                when {
+                    !isEnabled -> Text(
+                        text = "Watch Party is turned off in Settings → Player.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+
+                    !isActive -> Lobby(
+                        isServerless = isServerless,
+                        onCreateRoom = onCreateRoom,
+                        onJoinRoom = onJoinRoom,
+                    )
+
+                    else -> Room(
+                        isHost = isHost,
+                        roomCode = roomCode,
+                        pairing = pairing,
+                        onCreateInvitation = onCreateInvitation,
+                        onAcceptAnswer = onAcceptAnswer,
+                        onBeginPairing = onBeginPairing,
+                        onScan = onScan,
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            if (isActive) {
+                TextButton(onClick = onLeaveRoom) { Text("Leave room") }
+            } else {
+                TextButton(onClick = onDismissRequest) { Text("Close") }
+            }
+        },
+    )
+}
+
+@Composable
+private fun Lobby(
+    isServerless: Boolean,
+    onCreateRoom: () -> Unit,
+    onJoinRoom: (String) -> Unit,
+) {
+    var code by remember { mutableStateOf("") }
+
+    OutlinedButton(onClick = onCreateRoom, modifier = Modifier.fillMaxWidth()) {
+        Text("Create a room")
+    }
+
+    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+
+    Text(text = "or join a room", style = MaterialTheme.typography.labelLarge)
+    OutlinedTextField(
+        value = code,
+        onValueChange = { code = it.uppercase().take(12) },
+        label = { Text("Room code") },
+        singleLine = true,
+        // Room codes are uppercase alphanumerics; forcing capitals avoids the
+        // most common cause of a failed join.
+        keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Characters),
+        modifier = Modifier.fillMaxWidth(),
+    )
+    Button(
+        onClick = { onJoinRoom(code) },
+        enabled = code.length >= 4,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Text("Join")
+    }
+
+    if (!isServerless) {
+        Text(
+            text = "This room uses the self-hosted relay configured in Settings.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+@Composable
+private fun Room(
+    isHost: Boolean,
+    roomCode: String?,
+    pairing: P2PWatchPartySession.PairingSnapshot,
+    onCreateInvitation: () -> Unit,
+    onAcceptAnswer: (String) -> Unit,
+    onBeginPairing: (String) -> Unit,
+    onScan: (title: String, apply: (String) -> Unit) -> Unit,
+) {
+    roomCode?.let {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(text = "Room code", style = MaterialTheme.typography.labelMedium)
+            Text(
+                text = it,
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.primary,
+            )
+        }
+    }
+
+    if (pairing.state == PairingState.CONNECTED) {
+        Text(
+            text = if (isHost) {
+                "${pairing.connectedGuests} guest(s) connected."
+            } else {
+                "Connected to the host."
+            },
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.primary,
+        )
+    }
+
+    pairing.failureReason?.let { reason -> PairingFailure(reason) }
+
+    when (pairing.state) {
+        PairingState.CREATING_INVITATION,
+        PairingState.CREATING_ANSWER,
+        PairingState.VALIDATING_ANSWER,
+        PairingState.ESTABLISHING,
+        -> PairingProgress(pairing.state.explanation(role = if (isHost) {
+            eu.kanade.tachiyomi.ui.player.watchparty.p2p.PairingPayload.Role.OFFER
+        } else {
+            eu.kanade.tachiyomi.ui.player.watchparty.p2p.PairingPayload.Role.ANSWER
+        }))
+
+        else -> Unit
+    }
+
+    if (pairing.codes.isNotEmpty()) {
+        PairingQr(payload = pairing.codes.first())
+        if (pairing.codes.size > 1) {
+            Text(
+                text = "This invitation has ${pairing.codes.size} parts; scan each in turn.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        pairing.verificationCode?.let { code -> VerificationCodeBadge(code) }
+    }
+
+    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+
+    if (isHost) {
+        OutlinedButton(onClick = onCreateInvitation, modifier = Modifier.fillMaxWidth()) {
+            Text(if (pairing.codes.isEmpty()) "Invite a guest" else "New invitation")
+        }
+        OutlinedButton(
+            onClick = { onScan("Scan the guest's answer") { onAcceptAnswer(it) } },
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text("Scan guest's answer")
+        }
+    } else {
+        OutlinedButton(
+            onClick = { onScan("Scan the host's invitation") { onBeginPairing(it) } },
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text("Scan invitation")
+        }
+    }
+}

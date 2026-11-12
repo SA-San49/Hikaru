@@ -112,6 +112,26 @@
     <string name="action_copy_link">Copy link</string>
     <string name="action_open_in_web_view">Open in WebView</string>
     <string name="action_web_view" translatable="false">WebView</string>
+    <!-- Watch Party: anime-level action on the detail page. -->
+    <string name="watch_party">Watch Party</string>
+    <string name="watch_party_create">Create a room</string>
+    <string name="watch_party_join">Join a room</string>
+    <string name="watch_party_leave">Leave room</string>
+    <string name="watch_party_scan_invitation">Scan invitation</string>
+    <string name="watch_party_scan_answer">Scan answer</string>
+    <string name="watch_party_show_invitation">Show invitation</string>
+    <string name="watch_party_create_invitation">Invite a guest</string>
+    <string name="watch_party_copy_code">Copy code</string>
+    <string name="watch_party_disabled">Watch Party is turned off in Settings.</string>
+    <string name="watch_party_pairing_failed">Could not connect</string>
+    <string name="watch_party_room_full">This room is full.</string>
+    <string name="watch_party_guest_joined">A guest joined</string>
+    <string name="watch_party_guest_left">A guest left</string>
+    <string name="watch_party_ready">Ready</string>
+    <string name="watch_party_not_ready">Not ready</string>
+    <string name="watch_party_sync_now">Sync now</string>
+    <string name="watch_party_send">Send</string>
+    <string name="watch_party_hint">Say something…</string>
     <string name="action_migrate">Migrate</string>
     <string name="action_display_mode">Display mode</string>
     <string name="action_display">Display</string>

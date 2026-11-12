@@ -89,11 +89,32 @@ sealed interface WatchPartyEffect {
  * releases every resource, so an idle player never opens a socket.
  */
 class WatchPartyEngine(
-    private val player: WatchPartyPlayerBridge,
+    player: WatchPartyPlayerBridge,
     private val prefs: WatchPartyPreferences,
     private val transportFactory: (roomId: String, displayName: () -> String) -> RoomTransport,
     private val clock: () -> Long = { System.currentTimeMillis() },
 ) : RoomTransport.Listener {
+
+    /**
+     * The player currently attached to this room.
+     *
+     * Swappable because the room is anime-level and outlives the player: when the
+     * user moves to the next episode a new player (with a new mpv instance) takes
+     * over, while the room, its participants and its chat stay exactly as they
+     * were. Every read goes through this field, never a captured reference.
+     */
+    @Volatile
+    private var player: WatchPartyPlayerBridge = player
+
+    /**
+     * Swaps the attached player without disturbing the room.
+     *
+     * Called when the user opens a different episode. The room keeps running: no
+     * socket is re-dialled, no participant list is rebuilt, no chat is lost.
+     */
+    fun attachPlayer(newPlayer: WatchPartyPlayerBridge) {
+        player = newPlayer
+    }
 
     val selfId: String = prefs.participantId()
     val selfName: () -> String = { prefs.effectiveDisplayName() }
@@ -235,6 +256,26 @@ class WatchPartyEngine(
             isApplyingRemote = false
             player.setSpeed(1.0)
         }
+    }
+
+    /**
+     * Swaps the live transport, keeping the room and its state.
+     *
+     * Serverless pairing needs this: the engine is started when the room is
+     * created, but a guest's data channel does not exist until the QR exchange
+     * completes. Rather than delay the engine (which would leave the host with no
+     * room at all), the transport is attached the moment it becomes real.
+     *
+     * Any frames already queued on the old transport are dropped: a room that
+     * changes transport has not been able to send anyway.
+     */
+    fun attachTransport(newTransport: RoomTransport) {
+        if (!_state.value.active) return
+        transport?.listener = null
+        transport?.close()
+        transport = newTransport
+        newTransport.listener = this
+        newTransport.connect()
     }
 
     // </editor-fold>
