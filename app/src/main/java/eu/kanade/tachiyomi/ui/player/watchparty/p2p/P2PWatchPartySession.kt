@@ -222,8 +222,17 @@ class P2PWatchPartySession(
             )
             return false
         }
-        return guest?.beginPairing(payload) ?: false
+        return beginPairing(payload)
     }
+
+    /**
+     * Guest: begins pairing from an already-decoded invitation.
+     *
+     * Separate from the string form because the room layer decodes the payload
+     * once to learn the room id, and decoding twice would be wasteful and could
+     * disagree if the string were re-interpreted.
+     */
+    fun beginPairing(payload: PairingPayload.Payload): Boolean = guest?.beginPairing(payload) ?: false
 
     // </editor-fold>
 

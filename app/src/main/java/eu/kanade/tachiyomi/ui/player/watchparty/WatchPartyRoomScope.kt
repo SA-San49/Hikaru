@@ -273,7 +273,16 @@ class WatchPartyRoomScope(
 
     fun acceptAnswer(raw: String): Boolean = serverless?.acceptAnswer(raw) == true
 
+    /** Guest: begins pairing from a scanned or pasted code. */
     fun beginPairing(raw: String): Boolean = serverless?.beginPairing(raw) == true
+
+    /**
+     * Guest: begins pairing from an invitation already decoded by [joinRoom].
+     *
+     * Private because callers outside the room layer always have a raw string.
+     */
+    private fun beginPairing(payload: PairingPayload.Payload): Boolean =
+        serverless?.beginPairing(payload) == true
 
     // </editor-fold>
 
