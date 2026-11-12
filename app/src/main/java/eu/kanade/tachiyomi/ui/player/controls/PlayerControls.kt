@@ -54,6 +54,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.constraintlayout.compose.ConstraintLayout
 import androidx.constraintlayout.compose.Dimension
@@ -876,6 +877,8 @@ fun PlayerControls(
             onDismissRequest = { showCastSheet = false },
         )
     }
+}
+
 /**
  * Top padding that makes the panel begin exactly where the picture ends.
  *
@@ -894,7 +897,6 @@ private fun watchPartyPanelTopPadding(viewModel: PlayerViewModel): androidx.comp
     return with(density) { px.toDp() }
 }
 
-}
 
 fun <T> playerControlsExitAnimationSpec(): FiniteAnimationSpec<T> = tween(
     durationMillis = 300,
