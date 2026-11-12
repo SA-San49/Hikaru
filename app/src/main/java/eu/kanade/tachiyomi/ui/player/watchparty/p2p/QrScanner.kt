@@ -199,7 +199,7 @@ private fun CameraPreview(
                                         }
                                     }
                                 } catch (e: Throwable) {
-                                    logcat(LogPriority.WARN, e) { "WatchParty: frame analysis failed" }
+                                    QrLog.warn(e) { "WatchParty: frame analysis failed" }
                                 } finally {
                                     // Must always close, or the pipeline stalls.
                                     imageProxy.close()
@@ -217,9 +217,7 @@ private fun CameraPreview(
                         )
                     }
                     if (bind.isFailure) {
-                        logcat(LogPriority.ERROR, bind.exceptionOrNull()) {
-                            "WatchParty: could not open the camera"
-                        }
+                        QrLog.error(bind.exceptionOrNull()) { "WatchParty: could not open the camera" }
                     }
                 },
                 ContextCompat.getMainExecutor(context),
@@ -228,6 +226,23 @@ private fun CameraPreview(
             previewView
         },
     )
+}
+
+/**
+ * Logging receiver for this file.
+ *
+ * `logcat` is an extension on `Any`, so it needs a receiver; the CameraX
+ * callbacks below are plain lambdas with none. A one-line object is cheaper than
+ * threading a receiver through three closures.
+ */
+private object QrLog {
+    fun warn(throwable: Throwable?, message: () -> String) =
+        logcat(LogPriority.WARN, throwable, TAG, message)
+
+    fun error(throwable: Throwable?, message: () -> String) =
+        logcat(LogPriority.ERROR, throwable, TAG, message)
+
+    private const val TAG = "WatchPartyScanner"
 }
 
 /**
