@@ -325,11 +325,6 @@ class P2PSession(
         override fun onIceConnectionReceivingChange(receiving: Boolean) = Unit
         override fun onIceGatheringChange(state: PeerConnection.IceGatheringState) = Unit
 
-        override fun onIceCandidateError(event: PeerConnection.IceCandidateErrorEvent) {
-            // A single failed STUN query is not fatal: other servers and host
-            // candidates may still succeed. Logged at the transport layer.
-        }
-
         override fun onAddStream(stream: org.webrtc.MediaStream) = Unit
 
         override fun onRemoveStream(stream: org.webrtc.MediaStream) = Unit

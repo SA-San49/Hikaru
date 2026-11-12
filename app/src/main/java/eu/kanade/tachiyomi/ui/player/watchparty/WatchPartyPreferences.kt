@@ -1,6 +1,7 @@
 package eu.kanade.tachiyomi.ui.player.watchparty
 
 import tachiyomi.core.common.preference.PreferenceStore
+import tachiyomi.core.common.preference.getEnum
 import java.util.UUID
 
 /**
