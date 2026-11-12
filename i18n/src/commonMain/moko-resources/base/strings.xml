@@ -207,6 +207,15 @@
     <string name="player_button_audio_tracks">Audio tracks</string>
     <string name="player_button_quality_tracks">Quality tracks</string>
     <string name="player_button_more_options">More options</string>
+    <string name="player_button_watch_party">Watch Party</string>
+    <string name="pref_watch_party_enabled">Watch Party</string>
+    <string name="pref_watch_party_enabled_summary">Watch the same episode with friends while keeping your own extension and stream</string>
+    <string name="pref_watch_party_display_name">Display name</string>
+    <string name="pref_watch_party_display_name_summary">Name shown to other participants</string>
+    <string name="pref_watch_party_floating_reactions">Floating reactions</string>
+    <string name="pref_watch_party_floating_reactions_summary">Show emoji reactions over the video</string>
+    <string name="pref_watch_party_relay">Signalling relay</string>
+    <string name="pref_watch_party_relay_summary">WebSocket endpoint used for room events. Media is never relayed.</string>
     <string name="player_button_playback_speed">Playback speed</string>
     <string name="player_button_current_chapter">Current chapter</string>
     <string name="player_button_lock_controls">Lock controls</string>

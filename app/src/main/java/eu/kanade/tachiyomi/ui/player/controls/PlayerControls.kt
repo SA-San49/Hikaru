@@ -31,6 +31,7 @@ import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
@@ -78,6 +79,10 @@ import eu.kanade.tachiyomi.ui.player.controls.components.TextPlayerUpdate
 import eu.kanade.tachiyomi.ui.player.controls.components.VolumeSlider
 import eu.kanade.tachiyomi.ui.player.controls.components.sheets.toFixed
 import eu.kanade.tachiyomi.ui.player.settings.AdvancedPlayerPreferences
+import eu.kanade.tachiyomi.ui.player.watchparty.FloatingReactions
+import eu.kanade.tachiyomi.ui.player.watchparty.WatchPartyEffect
+import eu.kanade.tachiyomi.ui.player.watchparty.WatchPartyPreferences
+import eu.kanade.tachiyomi.ui.player.watchparty.WatchPartyUiState
 import eu.kanade.tachiyomi.ui.player.settings.AudioPreferences
 import eu.kanade.tachiyomi.ui.player.settings.GesturePreferences
 import eu.kanade.tachiyomi.ui.player.settings.PlayerPreferences
@@ -165,6 +170,14 @@ fun PlayerControls(
 
     val customButtons by viewModel.customButtons.collectAsState()
     val customButton by viewModel.primaryButton.collectAsState()
+
+    // Watch Party: only collected once the feature has been engaged, so a normal
+    // playback session never allocates any of this.
+    val activity = LocalContext.current as PlayerActivity
+    val watchPartyState by viewModel.watchParty.state.collectAsState()
+    val watchPartySelfId = viewModel.watchParty.selfId
+    // Recomputed on every state change: readiness derives from local playback too.
+    val watchPartyLocalReady = viewModel.watchParty.localReady()
 
     LaunchedEffect(
         controlsShown,
@@ -748,6 +761,25 @@ fun PlayerControls(
             onOpenPanel = viewModel::showPanel,
             onDismissRequest = { viewModel.showSheet(Sheets.None) },
             dismissSheet = dismissSheet,
+
+            watchPartyState = watchPartyState,
+            watchPartySelfId = watchPartySelfId,
+            watchPartyLocalReady = watchPartyLocalReady,
+            onCreateWatchParty = {
+                activity.engageWatchParty()
+                viewModel.watchParty.createRoom()
+            },
+            onJoinWatchParty = { code ->
+                activity.engageWatchParty()
+                viewModel.watchParty.joinRoom(code)
+            },
+            onLeaveWatchParty = { viewModel.watchParty.leaveRoom() },
+            onWatchPartyReady = { viewModel.watchParty.requestReady() },
+            onWatchPartyNotReady = { viewModel.watchParty.requestNotReady() },
+            onWatchPartyCancelCountdown = { viewModel.watchParty.requestCancelCountdown() },
+            onWatchPartySyncNow = { viewModel.watchParty.requestSyncNow() },
+            onWatchPartySendChat = { text -> viewModel.watchParty.sendChatMessage(text) },
+            onWatchPartyReaction = { emoji -> viewModel.watchParty.sendReaction(emoji) },
         )
         val panel by viewModel.panelShown.collectAsState()
         key("player-panels") {
@@ -757,7 +789,6 @@ fun PlayerControls(
             )
         }
 
-        val activity = LocalContext.current as PlayerActivity
         val dialog by viewModel.dialogShown.collectAsState()
         val anime by viewModel.currentAnime.collectAsState()
         val playlist by viewModel.currentPlaylist.collectAsState()
@@ -776,6 +807,31 @@ fun PlayerControls(
             },
             onDismissRequest = { viewModel.showDialog(Dialogs.None) },
         )
+
+        // Watch Party overlays: only rendered while a room is open.
+        if (watchPartyState.active) {
+            LaunchedEffect(Unit) {
+                viewModel.watchParty.effects.collect { effect ->
+                    when (effect) {
+                        is WatchPartyEffect.ShowMessage -> viewModel.playerUpdate.update {
+                            PlayerUpdates.ShowText(effect.message)
+                        }
+                        WatchPartyEffect.PlaybackStarted -> Unit
+                    }
+                }
+            }
+            val watchPartyPrefs = remember { Injekt.get<WatchPartyPreferences>() }
+            if (watchPartyPrefs.floatingReactions().get() && watchPartyState.reactions.isNotEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(end = MaterialTheme.padding.large, top = MaterialTheme.padding.large),
+                    contentAlignment = Alignment.TopEnd,
+                ) {
+                    FloatingReactions(reactions = watchPartyState.reactions)
+                }
+            }
+        }
 
         BrightnessOverlay(
             brightness = currentBrightness,

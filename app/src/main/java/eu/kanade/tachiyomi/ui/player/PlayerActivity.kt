@@ -90,6 +90,8 @@ import eu.kanade.tachiyomi.ui.player.settings.AdvancedPlayerPreferences
 import eu.kanade.tachiyomi.ui.player.settings.AudioPreferences
 import eu.kanade.tachiyomi.ui.player.settings.GesturePreferences
 import eu.kanade.tachiyomi.ui.player.settings.PlayerPreferences
+import eu.kanade.tachiyomi.ui.player.watchparty.WatchPartyInvites
+import eu.kanade.tachiyomi.ui.player.watchparty.WatchPartyPreferences
 import eu.kanade.tachiyomi.ui.player.utils.ChapterUtils
 import eu.kanade.tachiyomi.ui.player.utils.ChapterUtils.Companion.getStringRes
 import eu.kanade.tachiyomi.util.system.powerManager
@@ -174,6 +176,16 @@ class PlayerActivity : BaseActivity() {
     }
 
     private var pipReceiver: BroadcastReceiver? = null
+
+    /**
+     * True once the user opened the Watch Party entry point in this player.
+     * Keeps every Watch Party code path off until the feature is used.
+     */
+    private var watchPartyEngaged = false
+
+    internal fun engageWatchParty() {
+        watchPartyEngaged = true
+    }
 
     val isTv by lazy {
         packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK)
@@ -368,6 +380,25 @@ class PlayerActivity : BaseActivity() {
         }
 
         onNewIntent(this.intent)
+        handleWatchPartyInvite()
+    }
+
+    /**
+     * Opens the Watch Party panel pre-filled when an invite link launched this
+     * player. The room is never joined automatically.
+     */
+    private fun handleWatchPartyInvite() {
+        // Claim only once we know the feature is on, so a disabled install
+        // leaves nothing armed. The singleton store avoids touching the
+        // controller (and therefore the network stack) from the activity.
+        if (!WatchPartyPreferences(Injekt.get()).enabled().get()) {
+            WatchPartyInvites.clear()
+            return
+        }
+        val code = WatchPartyInvites.take() ?: return
+        engageWatchParty()
+        viewModel.watchParty.rememberPendingInvite(code)
+        viewModel.showSheet(Sheets.WatchParty)
     }
 
     override fun onDestroy() {
@@ -818,6 +849,10 @@ class PlayerActivity : BaseActivity() {
                     viewModel.updatePlayBackPos(value.toFloat())
                     viewModel.setChapter(value.toFloat())
                 }
+                // Watch Party does nothing unless a room is open.
+                if (watchPartyEngaged) {
+                    runCatching { viewModel.watchParty.onPositionChanged(value) }
+                }
             }
             "demuxer-cache-time" -> viewModel.updateReadAhead(value = value)
             "volume" -> viewModel.setMPVVolume(value.toInt())
@@ -853,6 +888,13 @@ class PlayerActivity : BaseActivity() {
         when (property) {
             "interpolation" -> PlayerStats.isInterpolating.value = value
             "pause" -> {
+                if (watchPartyEngaged) {
+                    if (value) {
+                        runCatching { viewModel.watchParty.onPause() }
+                    } else {
+                        runCatching { viewModel.watchParty.onPlay() }
+                    }
+                }
                 if (value && player.paused == true) {
                     viewModel.pause()
                     runOnUiThread {
@@ -1319,6 +1361,9 @@ class PlayerActivity : BaseActivity() {
      * @param autoPlay whether the episode is switching due to auto play
      */
     internal fun changeEpisode(episodeId: Long?, autoPlay: Boolean = false) {
+        if (watchPartyEngaged) {
+            runCatching { viewModel.watchParty.onEpisodeChanged() }
+        }
         viewModel.sheetShown.update { _ -> Sheets.None }
         viewModel.panelShown.update { _ -> Panels.None }
         viewModel.pause()
@@ -1576,6 +1621,9 @@ class PlayerActivity : BaseActivity() {
     // at void is.xyz.mpv.MPVLib.event(int) (MPVLib.java:86)
     private fun fileLoaded() {
         if (player.isExiting) return
+        if (watchPartyEngaged) {
+            runCatching { viewModel.watchParty.onEpisodeReady() }
+        }
         // Apply after mpv has created the subtitle tracks as well as before
         // loadfile; per-file subtitle defaults can otherwise win at this point.
         player.applySubtitlePreferences()

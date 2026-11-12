@@ -19,6 +19,7 @@ import eu.kanade.tachiyomi.ui.player.settings.GesturePreferences
 import eu.kanade.tachiyomi.ui.player.settings.PlayerPreferences
 import eu.kanade.tachiyomi.ui.player.settings.SubtitlePreferences
 import eu.kanade.tachiyomi.ui.player.settings.TtsPreferences
+import eu.kanade.tachiyomi.ui.player.watchparty.WatchPartyPreferences
 import eu.kanade.tachiyomi.util.LocalHttpServerHolder
 import eu.kanade.tachiyomi.util.system.isDebugBuildType
 import mihon.feature.airingschedule.SchedulePreferences
@@ -79,6 +80,9 @@ class PreferenceModule(val app: Application) : InjektModule {
         }
         addSingletonFactory {
             AdvancedPlayerPreferences(get())
+        }
+        addSingletonFactory {
+            WatchPartyPreferences(get())
         }
         addSingletonFactory {
             TorrentServerPreferences(get())

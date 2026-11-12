@@ -301,6 +301,19 @@ fun RenderPlayerButton(
                 )
             }
         }
+        PlayerButton.WatchParty -> {
+            val activity = LocalContext.current as? PlayerActivity
+            ControlsButton(
+                icon = button.getIcon(),
+                onClick = {
+                    // Engaging here is what makes every other Watch Party code
+                    // path active; until now it costs nothing.
+                    activity?.engageWatchParty()
+                    viewModel.showSheet(Sheets.WatchParty)
+                },
+                horizontalSpacing = MaterialTheme.padding.mediumSmall,
+            )
+        }
         PlayerButton.CustomButton -> {
             if (skipIntroButton != null) {
                 if (!hasSkipIntroInLayout) {
