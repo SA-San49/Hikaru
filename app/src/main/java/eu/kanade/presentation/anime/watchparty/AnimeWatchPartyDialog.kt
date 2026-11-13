@@ -87,6 +87,7 @@ fun AnimeWatchPartyDialog(
                         isServerless = isServerless,
                         onCreateRoom = onCreateRoom,
                         onJoinRoom = onJoinRoom,
+                        onScan = onScan,
                     )
 
                     else -> Room(
@@ -116,8 +117,10 @@ private fun Lobby(
     isServerless: Boolean,
     onCreateRoom: () -> Unit,
     onJoinRoom: (String) -> Unit,
+    onScan: (title: String, apply: (String) -> Unit) -> Unit,
 ) {
     var code by remember { mutableStateOf("") }
+    var pasteMode by remember { mutableStateOf(false) }
 
     OutlinedButton(onClick = onCreateRoom, modifier = Modifier.fillMaxWidth()) {
         Text("Create a room")
@@ -125,26 +128,72 @@ private fun Lobby(
 
     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
 
-    Text(text = "or join a room", style = MaterialTheme.typography.labelLarge)
-    OutlinedTextField(
-        value = code,
-        onValueChange = { code = it.uppercase().take(12) },
-        label = { Text("Room code") },
-        singleLine = true,
-        // Room codes are uppercase alphanumerics; forcing capitals avoids the
-        // most common cause of a failed join.
-        keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Characters),
-        modifier = Modifier.fillMaxWidth(),
-    )
-    Button(
-        onClick = { onJoinRoom(code) },
-        enabled = code.length >= 4,
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Text("Join")
-    }
+    if (isServerless) {
+        // Serverless joining is not "type a room code": there is no server to ask
+        // who is in that room, and no offer to answer. A guest needs the host's
+        // invitation itself, which carries the ICE credentials, the fingerprint
+        // and the room id.
+        Text(text = "or join a room", style = MaterialTheme.typography.labelLarge)
 
-    if (!isServerless) {
+        Button(
+            onClick = { onScan("Scan the host's invitation") { onJoinRoom(it) } },
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text("Scan invitation")
+        }
+
+        TextButton(
+            onClick = { pasteMode = !pasteMode },
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text(if (pasteMode) "Hide paste box" else "Paste invitation instead")
+        }
+
+        if (pasteMode) {
+            OutlinedTextField(
+                value = code,
+                onValueChange = { code = it.trim() },
+                label = { Text("Invitation code") },
+                placeholder = { Text("HP1…") },
+                singleLine = false,
+                maxLines = 4,
+                // No capitalisation: the payload is base64url and case matters.
+                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None),
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Button(
+                onClick = { onJoinRoom(code) },
+                enabled = code.isNotBlank(),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("Join with this code")
+            }
+            Text(
+                text = "Ask the host to send you their invitation, or use Copy invitation " +
+                    "code on their device and paste it here.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    } else {
+        Text(text = "or join a room", style = MaterialTheme.typography.labelLarge)
+        OutlinedTextField(
+            value = code,
+            onValueChange = { code = it.uppercase().take(12) },
+            label = { Text("Room code") },
+            singleLine = true,
+            // Relay room codes are uppercase alphanumerics; forcing capitals
+            // avoids the most common cause of a failed join.
+            keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Characters),
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Button(
+            onClick = { onJoinRoom(code) },
+            enabled = code.length >= 4,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text("Join")
+        }
         Text(
             text = "This room uses the self-hosted relay configured in Settings.",
             style = MaterialTheme.typography.bodySmall,

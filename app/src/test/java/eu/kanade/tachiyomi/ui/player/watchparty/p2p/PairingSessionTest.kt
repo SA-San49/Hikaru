@@ -286,6 +286,32 @@ class PairingSessionTest {
     }
 
     @Test
+    fun `expiry only applies while an invitation is still waiting`() {
+        // The TTL governs how long the QR stays valid, not how long ICE and DTLS
+        // may take. A session that has accepted an answer is no longer "waiting",
+        // so its TTL must stop mattering.
+        val session = hostSession(clock = { 0L })
+        session.publishLocalOffer(expiresAtMs = 300_000L)
+        assertTrue(session.state == PairingState.WAITING_FOR_GUEST)
+
+        val result = session.acceptRemote(answer(), nowMs = 299_000L)
+        assertTrue("answer should be accepted, was $result", result is PairingSession.Result.Accepted)
+        assertEquals(PairingState.VALIDATING_ANSWER, session.state)
+
+        // Past the original expiry, the session has moved on; the host's ticker
+        // must not treat it as an expired invitation.
+        assertFalse(session.state == PairingState.WAITING_FOR_GUEST)
+    }
+
+    @Test
+    fun `an unanswered invitation does expire`() {
+        val session = hostSession(clock = { 0L })
+        session.publishLocalOffer(expiresAtMs = 300_000L)
+        assertTrue(session.state == PairingState.WAITING_FOR_GUEST)
+        assertTrue(session.isExpired(nowMs = 300_000L))
+    }
+
+    @Test
     fun `a failed session can be restarted without leaking the old invitation`() {
         val session = hostSession(clock = { 0L })
         session.publishLocalOffer(expiresAtMs = 300_000L)

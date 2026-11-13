@@ -287,14 +287,24 @@ class P2PHostCoordinator(
     /** Recomputes countdowns; called from the engine's ticker. */
     fun tick() {
         if (sessions.isEmpty()) return
-        val expired = sessions.values.filter { it.pairing.isExpired(clock()) }
+        // The five-minute TTL governs **how long the QR code is usable**, not how
+        // long the connection may take to come up. A guest who scans at 4:59 and
+        // whose answer arrives at 5:01 is mid-handshake, and tearing their
+        // session down would abort a connection that was about to succeed.
+        //
+        // So only invitations still waiting for a guest are expired here. Once an
+        // answer has been accepted the invitation has been spent; ICE and DTLS get
+        // their own time to finish.
+        val expired = sessions.values.filter {
+            it.pairing.state == PairingState.WAITING_FOR_GUEST &&
+                it.pairing.isExpired(clock())
+        }
         if (expired.isNotEmpty()) {
-            // An expired invitation is dead: close it so the QR on screen stops
-            // being scannable, and tell the host.
             expired.forEach { session ->
                 session.close()
                 sessions.remove(session.pairing.sessionId)
             }
+            logcat(LogPriority.INFO) { "WatchParty P2P: ${expired.size} invitation(s) expired" }
         }
         publish()
     }
