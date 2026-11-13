@@ -139,44 +139,58 @@ jobs:
       # The installed build is minified, and WebRTC resolves its JNI entry points
       # by name at runtime. If R8 renames a class that carries @CalledByNative
       # methods, the failure is a native SIGSEGV with no Java stack -- which is
-      # exactly the crash this branch exists to fix. Asserting the keep rules
-      # held is the only way to catch that before it reaches a phone.
+      # exactly the crash this branch exists to fix. A green build proves nothing
+      # about that, so assert the names directly.
+      #
+      # A dex file's string table stores type descriptors verbatim, so if a class
+      # survived R8 unrenamed its descriptor appears as literal text. This is
+      # cheaper and far less brittle than parsing dexdump output.
       - name: Verify WebRTC JNI symbols survived minification
         run: |
           set -euo pipefail
           APK=$(find dist -name '*.apk' | head -1)
           test -n "$APK"
-          DEXDUMP=$(find "$ANDROID_HOME/build-tools" -name dexdump -type f 2>/dev/null | sort -V | tail -1)
-          if [ -z "$DEXDUMP" ]; then
-            echo "::error::dexdump not found; cannot verify JNI keep rules"
+          rm -rf /tmp/dex && mkdir -p /tmp/dex
+          unzip -o -q "$APK" 'classes*.dex' -d /tmp/dex
+          test -n "$(ls -A /tmp/dex)"
+          echo "Extracted: $(ls /tmp/dex | tr '\n' ' ')"
+
+          # Self-check: if the extractor itself is broken every lookup would appear
+          # to fail, and a false alarm here would block every future build. This
+          # descriptor exists in every Android APK ever produced.
+          if ! grep -aqF 'Landroid/app/Activity;' /tmp/dex/*.dex; then
+            echo "::error::dex string check is not working; cannot verify JNI keep rules"
             exit 1
           fi
-          # Pull every class defined in the APK's dex files.
-          CLASSES=$(unzip -o -q "$APK" 'classes*.dex' -d /tmp/dex &&             for f in /tmp/dex/classes*.dex; do "$DEXDUMP" -f "$f"; done |             grep -oP "Class descriptor\s+: 'L\K[^;]+" | tr '/' '.')
-          echo "Total classes in APK: $(echo "$CLASSES" | wc -l)"
+
           FAILED=0
-          # These are the classes WebRTC's native layer looks up by exact name.
           for required in \
-            org.webrtc.PeerConnection \
-            org.webrtc.PeerConnectionFactory \
-            org.webrtc.PeerConnection\$Observer \
-            org.webrtc.SdpObserver \
-            org.webrtc.IceCandidate \
-            org.webrtc.SessionDescription \
-            org.webrtc.DataChannel \
-            org.webrtc.JniCommon \
-            org.webrtc.NativeLibrary \
-            org.webrtc.audio.JavaAudioDeviceModule \
+            'Lorg/webrtc/PeerConnection;' \
+            'Lorg/webrtc/PeerConnectionFactory;' \
+            'Lorg/webrtc/PeerConnection$Observer;' \
+            'Lorg/webrtc/SdpObserver;' \
+            'Lorg/webrtc/IceCandidate;' \
+            'Lorg/webrtc/SessionDescription;' \
+            'Lorg/webrtc/DataChannel;' \
+            'Lorg/webrtc/JniCommon;' \
+            'Lorg/webrtc/NativeLibrary;' \
+            'Lorg/webrtc/audio/JavaAudioDeviceModule;' \
           ; do
-            if echo "$CLASSES" | grep -qxF "$required"; then
+            if grep -aqF "$required" /tmp/dex/*.dex; then
               echo "  kept: $required"
             else
               echo "::error::JNI class missing or renamed by R8: $required"
               FAILED=1
             fi
           done
+
+          # grep exits non-zero when nothing matches, which under `set -e` would
+          # abort before printing the failure summary above.
+          TOTAL=$(grep -aoF 'Lorg/webrtc/' /tmp/dex/*.dex | wc -l || true)
+          echo "org.webrtc descriptors present: $TOTAL"
+
           if [ "$FAILED" -ne 0 ]; then
-            echo "R8 stripped JNI-visible WebRTC classes. The app will crash on first pairing."
+            echo "R8 stripped JNI-visible WebRTC classes. The app would crash on first pairing."
             exit 1
           fi
           echo "All required WebRTC JNI classes are present under their original names."
