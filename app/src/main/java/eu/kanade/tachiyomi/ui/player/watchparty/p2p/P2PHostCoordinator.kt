@@ -84,18 +84,73 @@ class P2PHostCoordinator(
     fun createInvitation(): String? {
         if (!PeerHub.canAcceptAnotherGuest(sessions.size)) {
             logcat(LogPriority.WARN) { "WatchParty P2P: refusing a guest, room is full" }
+            reportFailure("This room is full. Ask someone to leave before inviting another guest.")
             return null
         }
-        val pairing = PairingSession(
-            role = PairingPayload.Role.OFFER,
-            roomId = roomId,
-            clock = clock,
-        )
-        val session = P2PSession(pairing, factoryHolder, sessionEvents(pairing.sessionId))
-        sessions[pairing.sessionId] = session
-        publish()
-        session.createOffer()
-        return pairing.sessionId
+        return try {
+            val pairing = PairingSession(
+                role = PairingPayload.Role.OFFER,
+                roomId = roomId,
+                clock = clock,
+            )
+            val session = P2PSession(pairing, factoryHolder, sessionEvents(pairing.sessionId))
+            sessions[pairing.sessionId] = session
+            _failure.value = null
+            publish()
+            session.createOffer()
+            pairing.sessionId
+        } catch (e: Throwable) {
+            // An invitation is a user action on a phone whose WebRTC build,
+            // native libraries or permissions may be broken. None of that may
+            // reach the user as a crash: the room is still usable, the host can
+            // retry, and the reason is stated on screen.
+            logcat(LogPriority.ERROR, e) { "WatchParty P2P: could not create an invitation" }
+            reportFailure(describeFailure(e))
+            null
+        }
+    }
+
+    /**
+     * Turns a failure into something a person can act on.
+     *
+     * Deliberately specific where we can be: "the WebRTC engine is unavailable"
+     * tells someone to try a different device, while "is not ready yet" tells
+     * them to press the button again.
+     */
+    private fun describeFailure(e: Throwable): String {
+        val message = e.message.orEmpty()
+        return when {
+            e is UnsatisfiedLinkError || message.contains("jingle", ignoreCase = true) ->
+                "This build cannot load the WebRTC engine, so direct pairing is unavailable. " +
+                    "This is a fault in this APK, not your device."
+
+            e is OutOfMemoryError ->
+                "Not enough memory to prepare an invitation. Close some other apps and try again."
+
+            e is SecurityException ->
+                "Hikaru is missing a permission needed for local networking."
+
+            message.isNotBlank() ->
+                "Could not prepare an invitation: $message"
+
+            else ->
+                "Could not prepare an invitation. Try again."
+        }
+    }
+
+    /** Surfaces a failure to the UI without ending the session. */
+    private fun reportFailure(reason: String) {
+        _failure.value = reason
+        listener?.onInvitationsChanged(_invitations.value)
+    }
+
+    /** Last failure shown to the user, cleared when a new invitation starts. */
+    private val _failure = MutableStateFlow<String?>(null)
+    val failure: StateFlow<String?> = _failure.asStateFlow()
+
+    /** Clears a stale failure message. */
+    fun clearFailure() {
+        _failure.value = null
     }
 
     /**

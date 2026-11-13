@@ -141,16 +141,15 @@ class P2PWatchPartySession(
 
             override fun onInvitationsChanged(invitations: List<P2PHostCoordinator.Invitation>) {
                 val first = invitations.firstOrNull()
-                if (first != null) {
-                    _pairing.value = _pairing.value.copy(
-                        state = first.state,
-                        expiresAtMs = first.expiresAtMs,
-                        secondsRemaining = first.secondsRemaining,
-                        verificationCode = first.verificationCode,
-                        failureReason = first.failureReason,
-                        connectedGuests = hub?.size ?: 0,
-                    )
-                }
+                // A failure with no invitation attached is still worth showing:
+                // it is the reason the button appeared to do nothing.
+                _pairing.value = _pairing.value.copy(
+                    state = first?.state ?: _pairing.value.state,
+                    expiresAtMs = first?.expiresAtMs ?: _pairing.value.expiresAtMs,
+                    secondsRemaining = first?.secondsRemaining ?: _pairing.value.secondsRemaining,
+                    verificationCode = first?.verificationCode ?: _pairing.value.verificationCode,
+                    connectedGuests = hub?.size ?: 0,
+                )
             }
         }
         host?.messageSink = { peerId, text -> hub?.onFrameFrom(peerId, text) }
@@ -289,6 +288,21 @@ class P2PWatchPartySession(
             guestLink?.close()
             guestLink = null
         }
+    }
+
+    /**
+     * Folds a host-side failure into the pairing snapshot.
+     *
+     * Kept as an explicit call rather than a collected flow because this class has
+     * no coroutine scope of its own: the room scope owns the lifecycle and pushes
+     * failures in, which avoids a second scope that could outlive the room.
+     */
+    fun reportHostFailure(reason: String?) {
+        if (reason == null) return
+        _pairing.value = _pairing.value.copy(
+            state = PairingState.FAILED,
+            failureReason = reason,
+        )
     }
 
     /** Recomputes countdowns. Called from the engine ticker. */

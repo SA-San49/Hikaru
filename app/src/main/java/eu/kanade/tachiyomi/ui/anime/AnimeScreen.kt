@@ -342,7 +342,13 @@ class AnimeScreen(
                         watchPartyScope.leave()
                         showWatchPartyDialog = false
                     },
-                    onCreateInvitation = { watchPartyScope.createInvitation() },
+                    onCreateInvitation = {
+                        // Never let a pairing failure take the anime screen down
+                        // with it. The scope already turns failures into a state the
+                        // dialog renders, so anything escaping here is a bug worth
+                        // swallowing rather than crashing on.
+                        runCatching { watchPartyScope.createInvitation() }
+                    },
                     onAcceptAnswer = { watchPartyScope.acceptAnswer(it) },
                     onBeginPairing = { watchPartyScope.beginPairing(it) },
                     onScan = { title, apply ->

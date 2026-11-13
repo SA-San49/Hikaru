@@ -233,6 +233,13 @@ class WatchPartyRoomScope(
             }
             serverless = session
             ensureScope().launch { session.pairing.collect { _pairing.value = it } }
+            // Invitation failures are reported separately from room state, because
+            // a failure to *create* an invitation leaves the room itself fine.
+            session.host?.let { host ->
+                ensureScope().launch {
+                    host.failure.collect { reason -> session.reportHostFailure(reason) }
+                }
+            }
         }
 
         val sessionScope = ensureScope()

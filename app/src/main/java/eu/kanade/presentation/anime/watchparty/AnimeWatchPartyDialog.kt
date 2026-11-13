@@ -30,6 +30,7 @@ import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.unit.dp
 import eu.kanade.tachiyomi.ui.player.watchparty.PairingState
 import eu.kanade.tachiyomi.ui.player.watchparty.p2p.PairingFailure
+import eu.kanade.tachiyomi.ui.player.watchparty.p2p.QrCodec
 import eu.kanade.tachiyomi.ui.player.watchparty.p2p.PairingProgress
 import eu.kanade.tachiyomi.ui.player.watchparty.p2p.PairingQr
 import eu.kanade.tachiyomi.ui.player.watchparty.p2p.VerificationCodeBadge
@@ -206,15 +207,47 @@ private fun Room(
     }
 
     if (pairing.codes.isNotEmpty()) {
-        PairingQr(payload = pairing.codes.first())
+        val primary = pairing.codes.first()
+        // A QR that fails to render must not make pairing impossible: the same
+        // string can be sent through any chat app. The bitmap is nullable for
+        // exactly this case.
+        val rendered = remember(primary) { QrCodec.encode(primary, 720) }
+        if (rendered != null) {
+            PairingQr(payload = primary)
+        } else {
+            Text(
+                text = "Could not draw the code on this device. Copy it instead.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
         if (pairing.codes.size > 1) {
             Text(
-                text = "This invitation has ${pairing.codes.size} parts; scan each in turn.",
+                text = "This invitation has ${pairing.codes.size} parts; send each in turn.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
         pairing.verificationCode?.let { code -> VerificationCodeBadge(code) }
+
+        // The paste fallback, always available. This is the difference between a
+        // broken camera (or a broken QR renderer) being a dead end and being a
+        // minor inconvenience.
+        val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
+        TextButton(
+            onClick = {
+                clipboard.setText(androidx.compose.ui.text.AnnotatedString(primary))
+            },
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text("Copy invitation code")
+        }
+    } else if (pairing.state == PairingState.IDLE) {
+        Text(
+            text = "Tap \"Invite a guest\" to create an invitation code.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 
     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
