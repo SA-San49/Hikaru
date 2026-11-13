@@ -3,7 +3,7 @@
 This file records what is **built, verified, and still unproven** in the
 serverless Watch Party feature. It exists so nobody has to guess.
 
-Last updated at build `e91cdc9`.
+Last updated at build `f0fa6c4`.
 
 ## Verified by automated tests
 
@@ -44,6 +44,14 @@ CI no longer takes that on trust. The build asserts that the class descriptors
 verbatim in the packaged dex, and self-checks the extractor against
 `Landroid/app/Activity;` so a broken check cannot masquerade as a stripped
 class. The gate passes on the artifact this branch ships.
+
+## Build targets
+
+`debug-v8a.yml` takes both `variant` (`r8Debug` / `sideBySide`) and `abi`
+(`arm64-v8a` / `armeabi-v7a`). Artifacts are named
+`Hikaru-v<version>-<v8a|v7a>-<r8-debug|sideby>`. The 32-bit build depends on
+mpv, ffmpeg-kit and WebRTC all publishing `armeabi-v7a`, which they do; a CI step
+asserts the packaged `.so` files are the requested ABI before upload.
 
 ## Verified by CI compilation only
 

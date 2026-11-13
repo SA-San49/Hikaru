@@ -73,9 +73,12 @@ reported as a failure.
 | `org.webrtc:google-webrtc` | Unmaintained since 2021. |
 | `androidx.webrtc` (Jetpack) | Pre-alpha, camera1-era API. |
 
-CPU architectures: the release APK is ABI-split; `libwebrtc` ships per-ABI, and
-the V8a build already filters `abiList=arm64-v8a`, so the ~10 MB native library
-only affects that split.
+CPU architectures: the release APK is ABI-split and `libwebrtc` ships per-ABI.
+The `debug-v8a.yml` workflow takes the ABI as an input, so both `arm64-v8a` and
+`armeabi-v7a` are built on demand; each split carries only its own copy of the
+~10 MB native library. The workflow asserts that the packaged `.so` files match
+the requested ABI, because a split with a missing ABI directory installs and
+then dies with `UnsatisfiedLinkError` on first playback.
 
 ## 4. QR acquisition
 
