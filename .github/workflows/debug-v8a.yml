@@ -13,9 +13,22 @@ on:
           - r8Debug
           # Same app, distinct applicationId: installs BESIDE Hikaru.
           - sideBySide
+      abi:
+        description: 'Target ABI'
+        required: true
+        default: 'arm64-v8a'
+        type: choice
+        options:
+          # 64-bit ARM: every build released so far.
+          - arm64-v8a
+          # 32-bit ARM: older and low-end devices. mpv, ffmpeg-kit and WebRTC
+          # all publish an armeabi-v7a build.
+          - armeabi-v7a
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.variant || 'r8Debug' }}
+  # The ABI is part of the group, otherwise starting a v7a build would cancel an
+  # arm64 build that is still running -- and vice versa.
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.variant || 'r8Debug' }}-${{ inputs.abi || 'arm64-v8a' }}
   cancel-in-progress: true
 
 permissions:
@@ -23,7 +36,7 @@ permissions:
 
 jobs:
   build-debug-v8a:
-    name: Build arm64-v8a R8 Hikaru-signed APK
+    name: Build ${{ inputs.abi || 'arm64-v8a' }} R8 Hikaru-signed APK
     runs-on: ubuntu-latest
 
     env:
@@ -34,6 +47,9 @@ jobs:
       APK_DIR: ${{ (inputs.variant || 'r8Debug') == 'sideBySide' && 'sideBySide' || 'r8Debug' }}
       # Human-readable tag, so the two flavours never share an artifact name.
       VARIANT_TAG: ${{ (inputs.variant || 'r8Debug') == 'sideBySide' && 'sideby' || 'r8-debug' }}
+      ABI: ${{ inputs.abi || 'arm64-v8a' }}
+      # Short ABI tag for filenames and artifact names: v8a / v7a.
+      ABI_TAG: ${{ (inputs.abi || 'arm64-v8a') == 'armeabi-v7a' && 'v7a' || 'v8a' }}
 
     steps:
       - name: Clone repo
@@ -69,10 +85,10 @@ jobs:
           printf '%s' "$KEYSTORE_BASE64" | base64 --decode > app/hikaru.jks
           test -s app/hikaru.jks
 
-      - name: Build arm64-v8a maximum R8 Hikaru-signed APK
+      - name: Build ${{ inputs.abi || 'arm64-v8a' }} maximum R8 Hikaru-signed APK
         run: |
           set +e
-          ./gradlew "assemble${VARIANT^}" -PabiList=arm64-v8a -Pandroid.enableR8.fullMode=true -Pinclude-telemetry=false -Penable-updater=false --no-daemon --stacktrace 2>&1 | tee build.log
+          ./gradlew "assemble${VARIANT^}" -PabiList=${ABI} -Pandroid.enableR8.fullMode=true -Pinclude-telemetry=false -Penable-updater=false --no-daemon --stacktrace 2>&1 | tee build.log
           BUILD_STATUS=${PIPESTATUS[0]}
           if [ "$BUILD_STATUS" -ne 0 ]; then
             {
@@ -95,14 +111,16 @@ jobs:
         run: |
           VERSION="${{ env.VERSION }}"
           mkdir -p dist
-          APK="dist/Hikaru-v${VERSION}-v8a-${VARIANT_TAG}.apk"
+          APK="dist/Hikaru-v${VERSION}-${ABI_TAG}-${VARIANT_TAG}.apk"
           mapfile -t APKS < <(find "app/build/outputs/apk/${APK_DIR}" -type f -name "*.apk" | sort)
           test "${#APKS[@]}" -gt 0
           printf 'Generated APKs:\n'
           for candidate in "${APKS[@]}"; do
             printf '  %s (%s bytes)\n' "$candidate" "$(stat -c%s "$candidate")"
           done
-          SOURCE_APK=$(find "app/build/outputs/apk/${APK_DIR}" -type f -name "*arm64-v8a*.apk" | head -1)
+          # The splits plugin emits one APK per ABI plus a universal one. Picking
+          # by name is the only way to be sure we ship the ABI that was asked for.
+          SOURCE_APK=$(find "app/build/outputs/apk/${APK_DIR}" -type f -name "*${ABI}*.apk" | head -1)
           test -n "$SOURCE_APK"
           cp "$SOURCE_APK" "$APK"
           test -s "$APK"
@@ -195,10 +213,49 @@ jobs:
           fi
           echo "All required WebRTC JNI classes are present under their original names."
 
+      # An APK whose dex is fine but whose native libraries are missing the target
+      # ABI installs happily and then dies with UnsatisfiedLinkError the moment
+      # the player or WebRTC loads a library. That is the same silent-crash shape
+      # as the R8 bug above, so it gets the same treatment: assert the .so files.
+      - name: Verify native libraries match the target ABI
+        run: |
+          set -euo pipefail
+          APK=$(find dist -name '*.apk' | head -1)
+          test -n "$APK"
+          LIBS=$(unzip -l "$APK" | awk '{print $4}' | grep -E '^lib/[^/]+/.*\.so$' || true)
+          test -n "$LIBS"
+          echo "ABIs packaged:"
+          echo "$LIBS" | cut -d/ -f2 | sort -u | sed 's/^/  /'
+
+          # This APK must carry the requested ABI and nothing else. Another ABI
+          # present means we grabbed the universal APK rather than the split.
+          OTHERS=$(echo "$LIBS" | cut -d/ -f2 | sort -u | grep -vxF "$ABI" || true)
+          if [ -n "$OTHERS" ]; then
+            echo "::error::APK was expected to contain only ${ABI} but also carries: $OTHERS"
+            exit 1
+          fi
+
+          FAILED=0
+          # libmpv plays every video; libjingle_peerconnection_so is WebRTC's JNI
+          # library. Neither has a pure-Java fallback.
+          for required in libmpv.so libjingle_peerconnection_so.so; do
+            if echo "$LIBS" | grep -qxF "lib/${ABI}/${required}"; then
+              echo "  present: lib/${ABI}/${required}"
+            else
+              echo "::error::missing native library for ${ABI}: ${required}"
+              FAILED=1
+            fi
+          done
+          if [ "$FAILED" -ne 0 ]; then
+            echo "This APK would install and then crash with UnsatisfiedLinkError."
+            exit 1
+          fi
+          echo "Native libraries for ${ABI} are present."
+
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Hikaru-v${{ env.VERSION }}-v8a-${{ env.VARIANT_TAG }}
+          name: Hikaru-v${{ env.VERSION }}-${{ env.ABI_TAG }}-${{ env.VARIANT_TAG }}
           path: dist/*.apk
           if-no-files-found: error
           retention-days: 7
