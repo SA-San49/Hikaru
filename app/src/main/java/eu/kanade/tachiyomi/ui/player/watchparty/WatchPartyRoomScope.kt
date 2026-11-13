@@ -276,7 +276,39 @@ class WatchPartyRoomScope(
 
     // <editor-fold desc="Serverless pairing">
 
-    fun createInvitation(): Boolean = serverless?.createInvitation() == true
+    /**
+     * Host: generates an invitation QR.
+     *
+     * A `false` here used to be silent in both directions -- no QR appeared and
+     * nothing said why, which is the worst possible outcome for the one button
+     * the user pressed. Every path that can refuse now writes a reason into
+     * [pairing] so the dialog can show it.
+     */
+    fun createInvitation(): Boolean {
+        val session = serverless
+        if (session == null) {
+            // Reached when the room was started in relay mode. Saying so beats a
+            // button that does nothing.
+            _pairing.value = P2PWatchPartySession.PairingSnapshot(
+                state = PairingState.FAILED,
+                failureReason = "This room is using the relay server, so there is no " +
+                    "invitation code. Set Settings \u2192 Player \u2192 Watch Party " +
+                    "signalling to Serverless (QR code) to pair two devices directly.",
+            )
+            return false
+        }
+        val created = session.createInvitation()
+        if (!created) {
+            // The failure detail, if any, arrives through `session.host.failure`;
+            // this guarantees the user sees *something* either way.
+            val current = _pairing.value
+            _pairing.value = current.copy(
+                failureReason = current.failureReason
+                    ?: "The invitation could not be created on this device.",
+            )
+        }
+        return created
+    }
 
     fun acceptAnswer(raw: String): Boolean = serverless?.acceptAnswer(raw) == true
 

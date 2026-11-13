@@ -92,6 +92,7 @@ fun AnimeWatchPartyDialog(
 
                     else -> Room(
                         isHost = isHost,
+                        isServerless = isServerless,
                         roomCode = roomCode,
                         pairing = pairing,
                         onCreateInvitation = onCreateInvitation,
@@ -205,6 +206,7 @@ private fun Lobby(
 @Composable
 private fun Room(
     isHost: Boolean,
+    isServerless: Boolean,
     roomCode: String?,
     pairing: P2PWatchPartySession.PairingSnapshot,
     onCreateInvitation: () -> Unit,
@@ -301,7 +303,22 @@ private fun Room(
 
     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
 
-    if (isHost) {
+    if (!isServerless) {
+        // Relay rooms have no invitation code: the room code above *is* the
+        // invitation. Offering an "Invite a guest" button here would be a button
+        // that can only ever fail, which is exactly the dead end this feature
+        // must not have.
+        Text(
+            text = if (isHost) {
+                "Share the room code above. Guests who enter it join through the " +
+                    "self-hosted relay."
+            } else {
+                "You are in this room through the relay server."
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    } else if (isHost) {
         OutlinedButton(onClick = onCreateInvitation, modifier = Modifier.fillMaxWidth()) {
             Text(if (pairing.codes.isEmpty()) "Invite a guest" else "New invitation")
         }
