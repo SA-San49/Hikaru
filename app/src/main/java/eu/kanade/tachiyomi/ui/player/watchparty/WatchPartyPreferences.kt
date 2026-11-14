@@ -85,6 +85,6 @@ class WatchPartyPreferences(
          * relay any traffic. Two independent providers are listed so one outage
          * does not break pairing.
          */
-        const val DEFAULT_STUN_SERVERS = "stun:stun.l.google.com:19302,stun:stun1.l.google.com:19302,stun:stun.cloudflare.com:3478"
+        const val DEFAULT_STUN_SERVERS = "stun:stun.l.google.com:19302,stun:stun.cloudflare.com:3478"
     }
 }

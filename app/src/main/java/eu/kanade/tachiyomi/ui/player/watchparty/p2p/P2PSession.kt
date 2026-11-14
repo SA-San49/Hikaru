@@ -443,23 +443,32 @@ class P2PSession(
         override fun onIceCandidate(candidate: IceCandidate) {
             val compact = candidate.toPairingCandidate() ?: return
             val alreadyPublished: Boolean
+            var shouldFinalizeNow = false
             synchronized(lock) {
                 if (closed) return
                 alreadyPublished = localPublished.get()
                 if (!alreadyPublished) {
                     gatheredCandidates += compact
-                    if (awaitingGathering && graceTimeoutFuture == null) {
-                        val scheduler = ensureGatheringSchedulerLocked()
-                        graceTimeoutFuture = scheduler.schedule(
-                            { finalizeLocalDescription() },
-                            GATHERING_GRACE_AFTER_CANDIDATE_MS,
-                            TimeUnit.MILLISECONDS,
-                        )
+                    if (awaitingGathering) {
+                        val hasHost = gatheredCandidates.any { it.type == PairingPayload.IceCandidate.Type.HOST }
+                        val hasSrflx = gatheredCandidates.any { it.type == PairingPayload.IceCandidate.Type.SRFLX }
+                        if (hasHost && hasSrflx) {
+                            shouldFinalizeNow = true
+                        } else if (graceTimeoutFuture == null) {
+                            val scheduler = ensureGatheringSchedulerLocked()
+                            graceTimeoutFuture = scheduler.schedule(
+                                { finalizeLocalDescription() },
+                                GATHERING_GRACE_AFTER_CANDATE_MS,
+                                TimeUnit.MILLISECONDS,
+                            )
+                        }
                     }
                 }
             }
             pairing.onLocalCandidate(compact)
-            if (alreadyPublished) {
+            if (shouldFinalizeNow) {
+                finalizeLocalDescription()
+            } else if (alreadyPublished) {
                 onEvent.onLocalCandidate(this@P2PSession, compact)
             }
         }
@@ -621,8 +630,8 @@ class P2PSession(
     private companion object {
 
         const val CHANNEL_LABEL = "hikaru-watchparty"
-        const val GATHERING_GRACE_AFTER_CANDIDATE_MS = 1_500L
-        const val GATHERING_HARD_TIMEOUT_MS = 4_000L
+        const val GATHERING_GRACE_AFTER_CANDIDATE_MS = 600L
+        const val GATHERING_HARD_TIMEOUT_MS = 2_200L
 
         /**
          * Constraints for a DataChannel-only offer.

@@ -194,7 +194,7 @@ class WatchPartyRoomScope(
                     failureReason = null,
                     codes = emptyList(),
                 )
-                ensureScope().launch(Dispatchers.Default) {
+                ensureScope().launch(Dispatchers.IO) {
                     session.beginPairing(invitation!!)
                 }
             }
@@ -280,6 +280,7 @@ class WatchPartyRoomScope(
                     host.failure.collect { reason -> session.reportHostFailure(reason) }
                 }
             }
+            ensureScope().launch(Dispatchers.IO) { session.warmup() }
         }
 
         val sessionScope = ensureScope()
@@ -345,7 +346,7 @@ class WatchPartyRoomScope(
             secondsRemaining = 0L,
             failureReason = null,
         )
-        ensureScope().launch(Dispatchers.Default) {
+        ensureScope().launch(Dispatchers.IO) {
             val created = runCatching { session.createInvitation() }.getOrElse { error ->
                 logcat(LogPriority.ERROR, error) { "WatchParty P2P: invitation coroutine failed" }
                 false
@@ -384,7 +385,7 @@ class WatchPartyRoomScope(
             codes = emptyList(),
             failureReason = null,
         )
-        ensureScope().launch(Dispatchers.Default) {
+        ensureScope().launch(Dispatchers.IO) {
             session.beginPairing(payload)
         }
         return true

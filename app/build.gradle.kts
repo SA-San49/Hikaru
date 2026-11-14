@@ -39,7 +39,9 @@ android {
             keyAlias = props.getProperty("keyAlias") ?: System.getenv("SIGNING_KEY_ALIAS") ?: ""
             keyPassword = props.getProperty("keyPassword") ?: System.getenv("SIGNING_KEY_PASSWORD") ?: ""
 
-            enableV1Signing = true
+            // minSdk = 26 supports APK Signature Scheme v2/v3 natively; skipping
+            // v1 avoids per-entry JAR manifest digests and speeds up installation.
+            enableV1Signing = false
             enableV2Signing = true
             enableV3Signing = true
         }
@@ -94,6 +96,8 @@ android {
             initWith(debug)
             // Hikaru-signed, with debuggable mode off so R8 can optimize fully.
             isDebuggable = false
+            isPseudoLocalesEnabled = false
+            isCrunchPngs = true
             isMinifyEnabled = true
             isShrinkResources = true
             signingConfig = signingConfigs.getByName("release")
@@ -119,6 +123,8 @@ android {
             applicationIdSuffix = ".sideby"
             versionNameSuffix = "-${getCommitCount()}-sideby"
             isDebuggable = false
+            isPseudoLocalesEnabled = false
+            isCrunchPngs = true
             isMinifyEnabled = true
             isShrinkResources = true
             signingConfig = signingConfigs.getByName("release")
@@ -222,6 +228,9 @@ android {
                 "META-INF/NOTICE",
                 "META-INF/README.md",
                 "META-INF/versions/9/OSGI-INF/MANIFEST.MF",
+                "META-INF/native-image/**",
+                "META-INF/version-control-info.textproto",
+                "DebugProbesKt.bin",
             )
         }
     }

@@ -9,12 +9,6 @@ import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.camera.core.CameraSelector
-import androidx.camera.core.ImageAnalysis
-import androidx.camera.core.ImageProxy
-import androidx.camera.core.Preview
-import androidx.camera.lifecycle.ProcessCameraProvider
-import androidx.camera.view.PreviewView
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -41,25 +35,21 @@ import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
-import logcat.LogPriority
-import tachiyomi.core.common.util.system.logcat
-import java.util.concurrent.Executors
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import com.google.zxing.BarcodeFormat
+import com.google.zxing.ResultPoint
+import com.journeyapps.barcodescanner.BarcodeCallback
+import com.journeyapps.barcodescanner.BarcodeResult
+import com.journeyapps.barcodescanner.BarcodeView
+import com.journeyapps.barcodescanner.DefaultDecoderFactory
 
 /**
- * Camera QR scanner, with a gallery fallback.
+ * Camera QR scanner backed by ZXing Embedded, with a gallery fallback.
  *
- * Three constraints shaped this:
- *
- *  - **The camera must not keep running after the sheet closes.** CameraX is
- *    bound to the composable's lifecycle and unbound in [DisposableEffect].
- *    A scanner that keeps the sensor open drains the battery and, on some OEM
- *    builds, blocks the video player from starting.
- *  - **Analysis must not run on the main thread**, and must never queue frames:
- *    a slow device that falls behind should analyse *fewer* frames, not build a
- *    backlog that makes every subsequent frame stale.
- *  - **A gallery image is a first-class path**, not a workaround. Someone may be
- *    sent an invitation screenshot through a chat app, or be on a device whose
- *    camera cannot focus on another screen.
+ *  - **The camera is paused and released in [DisposableEffect]** when the sheet closes.
+ *  - **Only QR codes are decoded** via [DefaultDecoderFactory].
+ *  - **A gallery image is a first-class path** when a camera is unavailable.
  */
 @Composable
 fun QrScanner(
@@ -69,7 +59,6 @@ fun QrScanner(
 ) {
     val context = LocalContext.current
     val currentOnScanned by rememberUpdatedState(onScanned)
-
     var hasPermission by remember {
         mutableStateOf(
             ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
@@ -165,14 +154,9 @@ private fun CameraPreview(
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
-    val analysisExecutor = remember { Executors.newSingleThreadExecutor() }
     val currentPaused by rememberUpdatedState(paused)
     val currentOnFrame by rememberUpdatedState(onFrame)
-    val cameraProviderRef = remember { mutableStateOf<ProcessCameraProvider?>(null) }
 
-    // Cooldown state accessed only on analysisExecutor so repeated ~30fps
-    // detections of the exact same QR frame are throttled while different
-    // multi-part chunks are delivered immediately.
     val scanGate = remember {
         object {
             var lastText: String? = null
@@ -180,119 +164,67 @@ private fun CameraPreview(
         }
     }
 
-    DisposableEffect(Unit) {
+    val barcodeView = remember(context) {
+        BarcodeView(context).apply {
+            decoderFactory = DefaultDecoderFactory(listOf(BarcodeFormat.QR_CODE))
+            cameraSettings = cameraSettings.apply {
+                isAutoFocusEnabled = true
+                isContinuousFocusEnabled = true
+            }
+            isUseTextureView = true
+            decodeContinuous(
+                object : BarcodeCallback {
+                    override fun barcodeResult(result: BarcodeResult) {
+                        if (currentPaused) return
+                        val text = result.text?.takeIf { it.isNotBlank() } ?: return
+                        val now = System.currentTimeMillis()
+                        val isDuplicateWithinCooldown =
+                            text == scanGate.lastText &&
+                                now - scanGate.lastDeliveredAtMs < SAME_FRAME_COOLDOWN_MS
+                        if (!isDuplicateWithinCooldown) {
+                            scanGate.lastText = text
+                            scanGate.lastDeliveredAtMs = now
+                            currentOnFrame(text)
+                        }
+                    }
+
+                    override fun possibleResultPoints(resultPoints: List<ResultPoint>) = Unit
+                },
+            )
+        }
+    }
+
+    LaunchedEffect(paused, barcodeView) {
+        if (paused) {
+            barcodeView.pause()
+        } else {
+            barcodeView.resume()
+        }
+    }
+
+    DisposableEffect(lifecycleOwner, barcodeView) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_RESUME -> if (!currentPaused) barcodeView.resume()
+                Lifecycle.Event.ON_PAUSE -> barcodeView.pause()
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
         onDispose {
-            cameraProviderRef.value?.unbindAll()
-            cameraProviderRef.value = null
-            analysisExecutor.shutdown()
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            barcodeView.stopDecoding()
+            barcodeView.pause()
         }
     }
 
     AndroidView(
         modifier = modifier,
-        factory = { viewContext ->
-            val previewView = PreviewView(viewContext).apply {
-                scaleType = PreviewView.ScaleType.FILL_CENTER
-            }
-
-            val mainExecutor = ContextCompat.getMainExecutor(context)
-            val providerFuture = ProcessCameraProvider.getInstance(viewContext)
-            providerFuture.addListener(
-                {
-                    val provider = runCatching { providerFuture.get() }.getOrNull() ?: return@addListener
-                    cameraProviderRef.value = provider
-                    val preview = Preview.Builder().build().also {
-                        it.surfaceProvider = previewView.surfaceProvider
-                    }
-                    val analysis = ImageAnalysis.Builder()
-                        // Keep only the newest frame: stale frames are worse than
-                        // no frames when the user is moving the phone.
-                        .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                        .build()
-                        .also { analysisUseCase ->
-                            analysisUseCase.setAnalyzer(analysisExecutor) { imageProxy ->
-                                try {
-                                    if (!currentPaused) {
-                                        val text = imageProxy.decodeQr()
-                                        if (text != null) {
-                                            val now = System.currentTimeMillis()
-                                            val isDuplicateWithinCooldown =
-                                                text == scanGate.lastText &&
-                                                    now - scanGate.lastDeliveredAtMs < SAME_FRAME_COOLDOWN_MS
-                                            if (!isDuplicateWithinCooldown) {
-                                                scanGate.lastText = text
-                                                scanGate.lastDeliveredAtMs = now
-                                                mainExecutor.execute { currentOnFrame(text) }
-                                            }
-                                        }
-                                    }
-                                } catch (e: Throwable) {
-                                    QrLog.warn(e) { "WatchParty: frame analysis failed" }
-                                } finally {
-                                    // Must always close, or the pipeline stalls.
-                                    imageProxy.close()
-                                }
-                            }
-                        }
-
-                    val bind = runCatching {
-                        provider.unbindAll()
-                        provider.bindToLifecycle(
-                            lifecycleOwner,
-                            CameraSelector.DEFAULT_BACK_CAMERA,
-                            preview,
-                            analysis,
-                        )
-                    }
-                    if (bind.isFailure) {
-                        QrLog.error(bind.exceptionOrNull()) { "WatchParty: could not open the camera" }
-                    }
-                },
-                mainExecutor,
-            )
-
-            previewView
-        },
+        factory = { barcodeView },
     )
 }
 
 private const val SAME_FRAME_COOLDOWN_MS = 650L
-
-/**
- * Logging receiver for this file.
- *
- * `logcat` is an extension on `Any`, so it needs a receiver; the CameraX
- * callbacks below are plain lambdas with none. A one-line object is cheaper than
- * threading a receiver through three closures.
- */
-private object QrLog {
-    fun warn(throwable: Throwable?, message: () -> String) =
-        logcat(LogPriority.WARN, throwable, TAG, message)
-
-    fun error(throwable: Throwable?, message: () -> String) =
-        logcat(LogPriority.ERROR, throwable, TAG, message)
-
-    private const val TAG = "WatchPartyScanner"
-}
-
-/**
- * Decodes a QR from a `YUV_420_888` image using only its Y plane.
- *
- * The Y plane is a greyscale image, which is exactly what a QR decoder wants;
- * converting to RGB first would cost more than the decode itself.
- */
-private fun ImageProxy.decodeQr(): String? {
-    val plane = planes.firstOrNull() ?: return null
-    val buffer = plane.buffer
-    val data = ByteArray(buffer.remaining())
-    buffer.get(data)
-    return QrCodec.decodeFrame(
-        data = data,
-        width = width,
-        height = height,
-        rowStride = plane.rowStride,
-    )
-}
 
 /**
  * Reads a QR out of a picked image.
@@ -312,10 +244,12 @@ private fun decodeFromUri(context: Context, uri: Uri): String? = runCatching {
     ) {
         sampleSize *= 2
     }
+
     val options = BitmapFactory.Options().apply { inSampleSize = sampleSize }
     val bitmap: Bitmap = resolver.openInputStream(uri)?.use {
         BitmapFactory.decodeStream(it, null, options)
     } ?: return null
+
     QrCodec.decodeBitmap(bitmap)
 }.getOrNull()
 

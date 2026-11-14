@@ -260,6 +260,11 @@ class P2PWatchPartySession(
      * Host only: a guest knows the room id from the code it typed. Called once,
      * immediately after the engine creates the room, and never again.
      */
+    /** Pre-warms native WebRTC initialization off the UI path before pairing starts. */
+    fun warmup() {
+        factoryHolder.factory()
+    }
+
     fun bindRoom(roomId: String) {
         if (this.roomId == roomId) return
         this.roomId = roomId

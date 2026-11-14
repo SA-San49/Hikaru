@@ -358,14 +358,21 @@
 -keep class org.webrtc.audio.** { *; }
 -dontwarn org.webrtc.audio.**
 
+# WebRTC builds >= 120 route native->Java calls through org.jni_zero. Keep it
+# intact alongside org.webrtc as defense-in-depth.
+-keep class org.jni_zero.** { *; }
+-keep interface org.jni_zero.** { *; }
+-dontwarn org.jni_zero.**
+-keepclasseswithmembers,includedescriptorclasses class * {
+    @org.jni_zero.CalledByNative <methods>;
+}
+-keepclasseswithmembers,includedescriptorclasses class * {
+    @org.jni_zero.CalledByNativeUnchecked <methods>;
+}
+-keepclassmembers class * {
+    @org.jni_zero.AccessedByNative <fields>;
+}
+
 # ---------------------------------------------------------------------------
-# Watch Party: ZXing and CameraX.
-#
-# ZXing's decoder is reached through its factory classes and CameraX resolves a
-# few configurators by name, so the entry points are pinned even though neither
-# uses JNI.
--keep class com.google.zxing.** { *; }
+# Watch Party: ZXing.
 -dontwarn com.google.zxing.**
--keep class androidx.camera.camera2.** { *; }
--keep class androidx.camera.core.** { *; }
--dontwarn androidx.camera.**
