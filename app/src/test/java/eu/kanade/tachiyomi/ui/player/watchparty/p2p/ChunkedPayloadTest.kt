@@ -160,4 +160,46 @@ class ChunkedPayloadTest {
         val huge = "w".repeat(ChunkedPayload.MAX_CHUNKS * 100 + 1)
         assertTrue(ChunkedPayload.split(huge, "session-abcdef123456", maxChunkChars = 100).isEmpty())
     }
+
+    @Test
+    fun `encodeForDisplay emits a plain payload when one QR fits`() {
+        val encoded = realPayload()
+        val display = ChunkedPayload.encodeForDisplay(encoded, "session-abcdef123456")
+        assertEquals(listOf(encoded), display)
+        assertNotNull(ChunkedPayload.decodePayload(display.single()))
+    }
+
+    @Test
+    fun `encodeForDisplay splits large payloads into HP1C chunks that reassemble`() {
+        val original = PairingPayload.Payload(
+            role = PairingPayload.Role.OFFER,
+            sessionId = "session-abcdef123456",
+            roomId = "42:anime/solo-leveling",
+            ufrag = "ufragXyz",
+            pwd = "pwdLongEnoughValue123",
+            fingerprint = fingerprint,
+            candidates = (1..25).map { idx ->
+                PairingPayload.IceCandidate(PairingPayload.IceCandidate.Type.HOST, "192.168.1.$idx", 50000 + idx)
+            },
+            expiresAtMs = 1_000_000L,
+        )
+        val encoded = PairingPayload.encode(original)
+        val display = ChunkedPayload.encodeForDisplay(encoded, "session-abcdef123456", maxChunkChars = 200)
+        assertTrue(display.size > 1)
+        assertTrue(display.all { it.startsWith("${ChunkedPayload.MAGIC}.") })
+
+        val reassembled = ChunkedPayload.reassembleText(display.reversed().joinToString("\n"))
+        assertEquals(encoded, reassembled)
+        val decoded = ChunkedPayload.decodePayload(display.joinToString("\n"))
+        assertEquals(original, decoded)
+    }
+
+    @Test
+    fun `reassembleText rejects incomplete or foreign pasted chunks`() {
+        val encoded = realPayload() + "".padEnd(600, 'Z')
+        val display = ChunkedPayload.encodeForDisplay(encoded, "session-abcdef123456", maxChunkChars = 250)
+        assertTrue(display.size > 1)
+        assertNull(ChunkedPayload.reassembleText(display.first()))
+        assertNull(ChunkedPayload.reassembleText("https://example.com"))
+    }
 }

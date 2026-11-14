@@ -107,7 +107,7 @@ object SdpTemplate {
         if (sdp.isNullOrBlank()) return null
         val ufrag = sdp.firstValueAfter("a=ice-ufrag:") ?: return null
         val pwd = sdp.firstValueAfter("a=ice-pwd:") ?: return null
-        val fingerprint = sdp.firstValueAfter("a=fingerprint:sha-256 ") ?: return null
+        val fingerprint = sdp.firstValueAfter("a=fingerprint:sha-256 ", ignoreCase = true) ?: return null
         val candidates = sdp.linesWithPrefix("a=candidate:").mapNotNull(::parseCandidateLine)
         return Parsed(ufrag = ufrag, pwd = pwd, fingerprint = fingerprint, candidates = candidates)
     }
@@ -131,17 +131,23 @@ object SdpTemplate {
         // Foundation, component and priority are placeholders: the receiving
         // stack recomputes priority itself during the connectivity check, and
         // never reads the foundation back.
-        return "a=candidate:1 1 udp 2130706431 ${candidate.address} ${candidate.port} typ $type"
+        // Non-host candidates (srflx/prflx/relay) require `raddr ... rport ...`
+        // for Chromium's libwebrtc SDP parser to accept them.
+        val base = "a=candidate:1 1 udp 2130706431 ${candidate.address} ${candidate.port} typ $type"
+        if (candidate.type == PairingPayload.IceCandidate.Type.HOST) return base
+        val raddr = if (candidate.address.contains(':')) "::" else "0.0.0.0"
+        return "$base raddr $raddr rport 0"
     }
 
     private fun parseCandidateLine(line: String): PairingPayload.IceCandidate? {
         val parts = line.removePrefix("a=candidate:").trim().split(' ').filter { it.isNotEmpty() }
         if (parts.size < 8) return null
-        val address = parts[4]
+        if (!parts[2].equals("udp", ignoreCase = true)) return null
+        val address = parts[4].takeIf { it.isNotBlank() && it.length <= 64 } ?: return null
         val port = parts[5].toIntOrNull()?.takeIf { it in 1..65_535 } ?: return null
-        val typeIndex = parts.indexOf("typ")
+        val typeIndex = parts.indexOfFirst { it.equals("typ", ignoreCase = true) }
         if (typeIndex < 0 || typeIndex + 1 >= parts.size) return null
-        val type = when (parts[typeIndex + 1]) {
+        val type = when (parts[typeIndex + 1].lowercase()) {
             "host" -> PairingPayload.IceCandidate.Type.HOST
             "srflx" -> PairingPayload.IceCandidate.Type.SRFLX
             "prflx" -> PairingPayload.IceCandidate.Type.PRFLX
@@ -151,13 +157,11 @@ object SdpTemplate {
         return PairingPayload.IceCandidate(type, address, port)
     }
 
-    private fun String.firstValueAfter(prefix: String): String? =
-        lineSequence()
-            .firstOrNull { it.startsWith(prefix) }
-            ?.removePrefix(prefix)
-            ?.trim()
-            ?.takeIf { it.isNotEmpty() }
+    private fun String.firstValueAfter(prefix: String, ignoreCase: Boolean = false): String? {
+        val line = lineSequence().firstOrNull { it.startsWith(prefix, ignoreCase = ignoreCase) } ?: return null
+        return line.substring(prefix.length).trim().takeIf { it.isNotEmpty() }
+    }
 
     private fun String.linesWithPrefix(prefix: String): List<String> =
-        lineSequence().filter { it.startsWith(prefix) }.toList()
+        lineSequence().filter { it.startsWith(prefix, ignoreCase = true) }.toList()
 }

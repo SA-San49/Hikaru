@@ -353,9 +353,15 @@ class PlayerActivity : BaseActivity() {
         // place it can be done.
         lifecycleScope.launch {
             viewModel.watchParty.state.collect { state ->
-                applyVideoRegionHeight(
-                    if (state.active) computeWatchPartyVideoHeight() else null,
-                )
+                if (state.active) {
+                    if (!watchPartyEngaged) {
+                        engageWatchParty()
+                        viewModel.watchParty.attachIfActive()
+                    }
+                    applyVideoRegionHeight(computeWatchPartyVideoHeight())
+                } else {
+                    applyVideoRegionHeight(null)
+                }
             }
         }
         // Orientation changes alter the split (stacked vs side-by-side).

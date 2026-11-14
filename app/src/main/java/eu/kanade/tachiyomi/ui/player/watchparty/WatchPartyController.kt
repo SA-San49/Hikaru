@@ -3,18 +3,14 @@ package eu.kanade.tachiyomi.ui.player.watchparty
 import eu.kanade.tachiyomi.data.database.models.toDomainEpisode
 import eu.kanade.tachiyomi.data.track.TrackerManager
 import eu.kanade.tachiyomi.ui.player.PlayerViewModel
+import eu.kanade.tachiyomi.ui.player.watchparty.p2p.P2PWatchPartySession
 import `is`.xyz.mpv.MPVLib
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asSharedFlow
-import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import logcat.LogPriority
 import tachiyomi.core.common.util.system.logcat
@@ -23,33 +19,32 @@ import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
 
 /**
- * Player-facing wrapper around [WatchPartyEngine].
+ * Player-facing wrapper around [WatchPartyRoomScope].
  *
  * Owns the mpv bridge, derives episode metadata (including AniList/MAL ids from
- * the tracker database) and forwards player callbacks.
- *
- * The state and effect flows always exist so Compose can observe them
- * unconditionally, but the engine, its socket and its ticker are only created
- * when the user actually opens or joins a room.
+ * the tracker database) and forwards player callbacks to the process-wide anime
+ * Watch Party room so rooms created from the anime page survive opening/closing
+ * episodes and support serverless P2P pairing seamlessly.
  */
 class WatchPartyController(
     private val viewModel: PlayerViewModel,
     private val prefs: WatchPartyPreferences,
 ) {
     private val getTracks: GetTracks = Injekt.get()
+    private val roomScope: WatchPartyRoomScope = WatchPartyRoomScope.get()
 
-    private var engine: WatchPartyEngine? = null
     private var scope: CoroutineScope? = null
-    private var mirrorJob: Job? = null
     private var lastPositionMs: Long = -1
 
     @Volatile private var resolvedMediaKey: Pair<String, String>? = null
 
-    private val _state = MutableStateFlow(WatchPartyUiState())
-    val state: StateFlow<WatchPartyUiState> = _state.asStateFlow()
+    val state: StateFlow<WatchPartyUiState> get() = roomScope.state
 
-    private val _effects = MutableSharedFlow<WatchPartyEffect>(extraBufferCapacity = 16)
-    val effects: SharedFlow<WatchPartyEffect> = _effects.asSharedFlow()
+    val pairing: StateFlow<P2PWatchPartySession.PairingSnapshot> get() = roomScope.pairing
+
+    val effects: SharedFlow<WatchPartyEffect> get() = roomScope.effects
+
+    val roomCode: String? get() = roomScope.roomCode
 
     /** Stable identity for the local participant (created on first access). */
     val selfId: String by lazy { prefs.participantId() }
@@ -103,31 +98,17 @@ class WatchPartyController(
     private fun ensureScope(): CoroutineScope =
         scope ?: CoroutineScope(SupervisorJob() + Dispatchers.Default).also { scope = it }
 
-    private fun ensureEngine(): WatchPartyEngine {
-        engine?.let { return it }
-        val created = WatchPartyEngine(
-            player = bridge,
-            prefs = prefs,
-            transportFactory = { roomId, displayName ->
-                RelayRoomTransport(
-                    url = prefs.relayUrl().get(),
-                    roomId = roomId,
-                    participantId = prefs.participantId(),
-                    displayName = displayName,
-                    scope = ensureScope(),
-                    client = RelayRoomTransport.defaultClient(),
-                )
-            },
-        )
-        engine = created
-        val sessionScope = ensureScope()
-        mirrorJob = sessionScope.launch {
-            created.state.collect { _state.value = it }
-        }
-        sessionScope.launch {
-            created.effects.collect { _effects.emit(it) }
-        }
-        return created
+    private fun currentAnimeKey(): String {
+        val anime = viewModel.currentAnime.value ?: return roomScope.boundAnime()
+        val sourceId = viewModel.currentSource.value?.id ?: 0L
+        return WatchPartyRoomScope.animeKey(sourceId = sourceId, animeUrl = anime.url)
+    }
+
+    /** Attaches this player's mpv bridge when a room was already opened on the anime page. */
+    fun attachIfActive() {
+        if (!roomScope.isActive()) return
+        refreshMediaKey()
+        roomScope.attachBridge(bridge)
     }
 
     /**
@@ -149,34 +130,37 @@ class WatchPartyController(
 
     fun createRoom(): String {
         refreshMediaKey()
-        return ensureEngine().createRoom()
+        return roomScope.createRoom(currentAnimeKey(), bridge)
     }
 
     fun joinRoom(code: String): Boolean {
         refreshMediaKey()
-        return ensureEngine().joinRoom(code)
+        return roomScope.joinRoom(currentAnimeKey(), code, bridge)
     }
 
     fun leaveRoom() {
-        engine?.leaveRoom()
-        _state.value = WatchPartyUiState()
+        roomScope.leave()
     }
 
-    /** Releases everything. Safe to call when no room was ever created. */
+    /** Detaches this player's bridge without destroying the anime-level room. */
     fun release() {
-        mirrorJob?.cancel()
-        mirrorJob = null
-        engine?.leaveRoom()
-        engine = null
+        roomScope.detachBridge(bridge)
         scope?.cancel()
         scope = null
-        _state.value = WatchPartyUiState()
     }
 
-    fun isActive(): Boolean = _state.value.active
+    fun isActive(): Boolean = roomScope.isActive()
+
+    fun isServerless(): Boolean = roomScope.isServerless()
 
     /** The user preference; the feature is completely inert when this is false. */
     fun isEnabled(): Boolean = prefs.enabled().get()
+
+    fun createInvitation(): Boolean = roomScope.createInvitation()
+
+    fun acceptAnswer(raw: String): Boolean = roomScope.acceptAnswer(raw)
+
+    fun beginPairing(raw: String): Boolean = roomScope.beginPairing(raw)
 
     // </editor-fold>
 
@@ -201,41 +185,41 @@ class WatchPartyController(
 
     // <editor-fold desc="Player callbacks">
 
-    fun onPlay() = engine?.onLocalPlay()
+    fun onPlay() = roomScope.onPlay()
 
-    fun onPause() = engine?.onLocalPause()
+    fun onPause() = roomScope.onPause()
 
-    fun onSeek(positionMs: Long) = engine?.onLocalSeek(positionMs)
+    fun onSeek(positionMs: Long) = roomScope.onSeek(positionMs)
 
     fun onPositionChanged(positionMs: Long) {
         if (positionMs == lastPositionMs) return
         lastPositionMs = positionMs
-        engine?.onLocalPositionChanged(positionMs)
+        roomScope.onPositionChanged(positionMs)
     }
 
     fun onEpisodeReady() {
         refreshMediaKey()
-        engine?.onEpisodeReady(bridge.localEpisode())
+        roomScope.attachBridge(bridge)
     }
 
     fun onEpisodeChanged() {
         refreshMediaKey()
-        engine?.onLocalEpisodeChanged(bridge.localEpisode())
+        roomScope.onEpisodeChanged(bridge.localEpisode())
     }
 
     // </editor-fold>
 
-    fun requestReady() = engine?.requestReady()
+    fun requestReady() = roomScope.requestReady()
 
-    fun requestNotReady() = engine?.requestNotReady()
+    fun requestNotReady() = roomScope.requestNotReady()
 
-    fun requestCancelCountdown() = engine?.requestCancelCountdown()
+    fun requestCancelCountdown() = roomScope.requestCancelCountdown()
 
-    fun requestSyncNow() = engine?.requestSyncNow()
+    fun requestSyncNow() = roomScope.requestSyncNow()
 
-    fun sendChatMessage(text: String) = engine?.sendChatMessage(text)
+    fun sendChatMessage(text: String) = roomScope.sendChatMessage(text)
 
-    fun sendReaction(emoji: String) = engine?.sendReaction(emoji)
+    fun sendReaction(emoji: String) = roomScope.sendReaction(emoji)
 
-    fun localReady(): Boolean = engine?.isLocalReady() == true
+    fun localReady(): Boolean = roomScope.localReady()
 }

@@ -322,6 +322,7 @@ class AnimeScreen(
                     roomCode = watchPartyScope.roomCode,
                     pairing = watchPartyPairing,
                     isServerless = watchPartyScope.isServerless(),
+                    lobbyError = watchPartyState.error,
                     onCreateRoom = {
                         // A room needs a player bridge for position/pause state.
                         // Before any episode is open there is nothing playing, so

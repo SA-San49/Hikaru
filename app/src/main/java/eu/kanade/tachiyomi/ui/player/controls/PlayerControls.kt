@@ -176,6 +176,7 @@ fun PlayerControls(
     // playback session never allocates any of this.
     val activity = LocalContext.current as PlayerActivity
     val watchPartyState by viewModel.watchParty.state.collectAsState()
+    val watchPartyPairing by viewModel.watchParty.pairing.collectAsState()
     val watchPartySelfId = viewModel.watchParty.selfId
     // Recomputed on every state change: readiness derives from local playback too.
     val watchPartyLocalReady = viewModel.watchParty.localReady()
@@ -766,6 +767,8 @@ fun PlayerControls(
             watchPartyState = watchPartyState,
             watchPartySelfId = watchPartySelfId,
             watchPartyLocalReady = watchPartyLocalReady,
+            watchPartyIsServerless = viewModel.watchParty.isServerless(),
+            watchPartyPairing = watchPartyPairing,
             onCreateWatchParty = {
                 activity.engageWatchParty()
                 viewModel.watchParty.createRoom()
@@ -781,6 +784,9 @@ fun PlayerControls(
             onWatchPartySyncNow = { viewModel.watchParty.requestSyncNow() },
             onWatchPartySendChat = { text -> viewModel.watchParty.sendChatMessage(text) },
             onWatchPartyReaction = { emoji -> viewModel.watchParty.sendReaction(emoji) },
+            onWatchPartyCreateInvitation = { viewModel.watchParty.createInvitation() },
+            onWatchPartyAcceptAnswer = { answer -> viewModel.watchParty.acceptAnswer(answer) },
+            onWatchPartyBeginPairing = { invitation -> viewModel.watchParty.beginPairing(invitation) },
         )
         val panel by viewModel.panelShown.collectAsState()
         key("player-panels") {

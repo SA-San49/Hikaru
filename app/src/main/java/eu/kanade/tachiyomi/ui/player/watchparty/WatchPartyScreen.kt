@@ -22,7 +22,9 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -33,11 +35,13 @@ import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Group
 import androidx.compose.material.icons.outlined.Link
 import androidx.compose.material.icons.outlined.Sync
+import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -57,10 +61,21 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import eu.kanade.presentation.anime.watchparty.WatchPartyScannerDialog
 import eu.kanade.presentation.player.components.PlayerSheet
+import eu.kanade.tachiyomi.ui.player.watchparty.p2p.ChunkPager
+import eu.kanade.tachiyomi.ui.player.watchparty.p2p.InvitationCountdown
+import eu.kanade.tachiyomi.ui.player.watchparty.p2p.P2PWatchPartySession
+import eu.kanade.tachiyomi.ui.player.watchparty.p2p.PairingFailure
+import eu.kanade.tachiyomi.ui.player.watchparty.p2p.PairingPayload
+import eu.kanade.tachiyomi.ui.player.watchparty.p2p.PairingProgress
+import eu.kanade.tachiyomi.ui.player.watchparty.p2p.PairingQr
+import eu.kanade.tachiyomi.ui.player.watchparty.p2p.VerificationCodeBadge
+import eu.kanade.tachiyomi.ui.player.watchparty.p2p.explanation
 import tachiyomi.presentation.core.components.material.padding
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -89,12 +104,21 @@ fun WatchPartySheet(
     onSendChat: (String) -> Unit,
     onReaction: (String) -> Unit,
     initialJoinCode: String? = null,
+    isServerless: Boolean = false,
+    pairing: P2PWatchPartySession.PairingSnapshot = P2PWatchPartySession.PairingSnapshot(),
+    onCreateInvitation: () -> Unit = {},
+    onAcceptAnswer: (String) -> Unit = {},
+    onBeginPairing: (String) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
+    var scanTitle by remember { mutableStateOf<String?>(null) }
+    var scanHandler by remember { mutableStateOf<((String) -> Unit)?>(null) }
+
     PlayerSheet(onDismissRequest = onDismissRequest, modifier = modifier) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
                 .padding(MaterialTheme.padding.medium),
             verticalArrangement = Arrangement.spacedBy(MaterialTheme.padding.small),
         ) {
@@ -114,19 +138,39 @@ fun WatchPartySheet(
 
             if (!state.active) {
                 WatchPartyLobby(
+                    isServerless = isServerless,
                     error = state.error,
                     initialCode = initialJoinCode,
                     onCreateRoom = onCreateRoom,
                     onJoinRoom = onJoinRoom,
+                    onScan = { title, apply ->
+                        scanTitle = title
+                        scanHandler = apply
+                    },
                 )
                 return@Column
             }
 
             RoomHeader(
                 state = state,
+                isServerless = isServerless,
                 onLeaveRoom = onLeaveRoom,
                 onSyncNow = onSyncNow,
             )
+
+            if (isServerless) {
+                ServerlessPairingSection(
+                    isHost = state.isHost,
+                    pairing = pairing,
+                    onCreateInvitation = onCreateInvitation,
+                    onAcceptAnswer = onAcceptAnswer,
+                    onBeginPairing = onBeginPairing,
+                    onScan = { title, apply ->
+                        scanTitle = title
+                        scanHandler = apply
+                    },
+                )
+            }
 
             state.warning?.let { warning ->
                 InfoBanner(text = warning, container = MaterialTheme.colorScheme.errorContainer)
@@ -161,18 +205,37 @@ fun WatchPartySheet(
             )
         }
     }
+
+    val activeTitle = scanTitle
+    val activeHandler = scanHandler
+    if (activeTitle != null && activeHandler != null) {
+        WatchPartyScannerDialog(
+            title = activeTitle,
+            onResult = { scanned ->
+                activeHandler(scanned)
+                scanTitle = null
+                scanHandler = null
+            },
+            onDismissRequest = {
+                scanTitle = null
+                scanHandler = null
+            },
+        )
+    }
 }
 
 @Composable
 private fun WatchPartyLobby(
+    isServerless: Boolean,
     error: String?,
     initialCode: String?,
     onCreateRoom: () -> Unit,
     onJoinRoom: (String) -> Unit,
+    onScan: (title: String, apply: (String) -> Unit) -> Unit,
 ) {
     // A deep-linked invite pre-fills the field; the user still confirms the join.
     var code by rememberSaveable { mutableStateOf(initialCode.orEmpty()) }
-    var joining by remember { mutableStateOf(false) }
+    var pasteMode by remember { mutableStateOf(false) }
 
     Column(verticalArrangement = Arrangement.spacedBy(MaterialTheme.padding.small)) {
         Text(
@@ -209,38 +272,198 @@ private fun WatchPartyLobby(
         ) {
             Column(Modifier.padding(MaterialTheme.padding.medium)) {
                 Text("Join a room", style = MaterialTheme.typography.titleMedium)
-                OutlinedTextField(
-                    value = code,
-                    onValueChange = { input ->
-                        // Accept pasted invite links and formatted codes.
-                        code = input.uppercase().take(24)
-                    },
-                    label = { Text("Room code or invite link") },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                    keyboardActions = KeyboardActions(
-                        onDone = {
-                            val parsed = WatchPartyInviteParser.parseRoomCode(code)
-                            if (parsed != null) {
-                                joining = true
-                                onJoinRoom(parsed)
-                            }
+                if (isServerless) {
+                    Spacer(Modifier.height(MaterialTheme.padding.small))
+                    Button(
+                        onClick = { onScan("Scan the host's invitation") { onJoinRoom(it) } },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text("Scan invitation")
+                    }
+                    TextButton(
+                        onClick = { pasteMode = !pasteMode },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(if (pasteMode) "Hide paste box" else "Paste invitation instead")
+                    }
+                    if (pasteMode) {
+                        OutlinedTextField(
+                            value = code,
+                            onValueChange = { code = it.trim() },
+                            label = { Text("Invitation code") },
+                            placeholder = { Text("HP1…") },
+                            singleLine = false,
+                            maxLines = 4,
+                            keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None),
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        Spacer(Modifier.height(MaterialTheme.padding.small))
+                        Button(
+                            onClick = { onJoinRoom(code) },
+                            enabled = code.isNotBlank(),
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text("Join with this code")
+                        }
+                    }
+                } else {
+                    OutlinedTextField(
+                        value = code,
+                        onValueChange = { input ->
+                            // Accept pasted invite links and formatted codes.
+                            code = input.uppercase().take(24)
                         },
-                    ),
-                    modifier = Modifier.fillMaxWidth(),
+                        label = { Text("Room code or invite link") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                        keyboardActions = KeyboardActions(
+                            onDone = {
+                                val parsed = WatchPartyInviteParser.parseRoomCode(code)
+                                if (parsed != null) {
+                                    onJoinRoom(parsed)
+                                }
+                            },
+                        ),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Spacer(Modifier.height(MaterialTheme.padding.small))
+                    TextButton(
+                        enabled = WatchPartyInviteParser.parseRoomCode(code) != null,
+                        onClick = {
+                            val parsed = WatchPartyInviteParser.parseRoomCode(code) ?: return@TextButton
+                            onJoinRoom(parsed)
+                        },
+                    ) {
+                        Icon(Icons.Outlined.Link, contentDescription = null)
+                        Spacer(Modifier.width(MaterialTheme.padding.extraSmall))
+                        Text("Join")
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ServerlessPairingSection(
+    isHost: Boolean,
+    pairing: P2PWatchPartySession.PairingSnapshot,
+    onCreateInvitation: () -> Unit,
+    onAcceptAnswer: (String) -> Unit,
+    onBeginPairing: (String) -> Unit,
+    onScan: (title: String, apply: (String) -> Unit) -> Unit,
+) {
+    val clipboard = LocalClipboardManager.current
+    var copied by remember(pairing.codes) { mutableStateOf(false) }
+
+    LaunchedEffect(copied) {
+        if (copied) {
+            kotlinx.coroutines.delay(2_000L)
+            copied = false
+        }
+    }
+
+    val role = if (isHost) PairingPayload.Role.OFFER else PairingPayload.Role.ANSWER
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        shape = RoundedCornerShape(16.dp),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(
+            modifier = Modifier.padding(MaterialTheme.padding.medium),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            pairing.failureReason?.let { PairingFailure(it) }
+
+            when (pairing.state) {
+                PairingState.CREATING_INVITATION,
+                PairingState.CREATING_ANSWER,
+                PairingState.VALIDATING_ANSWER,
+                PairingState.ESTABLISHING,
+                -> PairingProgress(pairing.state.explanation(role = role))
+                else -> Unit
+            }
+
+            if (pairing.codes.isNotEmpty()) {
+                Text(
+                    text = pairing.state.explanation(role = role),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                Spacer(Modifier.height(MaterialTheme.padding.small))
+                if (pairing.codes.size == 1) {
+                    PairingQr(
+                        payload = pairing.codes.first(),
+                        modifier = Modifier
+                            .widthIn(max = 220.dp)
+                            .fillMaxWidth()
+                            .align(Alignment.CenterHorizontally),
+                    )
+                } else {
+                    ChunkPager(
+                        chunks = pairing.codes,
+                        modifier = Modifier
+                            .widthIn(max = 220.dp)
+                            .fillMaxWidth()
+                            .align(Alignment.CenterHorizontally),
+                    )
+                }
+                if (pairing.expiresAtMs > 0L && pairing.state != PairingState.CONNECTED) {
+                    InvitationCountdown(
+                        expiresAtMs = pairing.expiresAtMs,
+                        nowMs = { System.currentTimeMillis() },
+                        modifier = Modifier.align(Alignment.CenterHorizontally),
+                    )
+                }
+                val checkCode = pairing.remoteVerificationCode ?: pairing.verificationCode
+                checkCode?.let {
+                    VerificationCodeBadge(
+                        code = it,
+                        modifier = Modifier.align(Alignment.CenterHorizontally),
+                    )
+                }
                 TextButton(
-                    enabled = !joining && WatchPartyInviteParser.parseRoomCode(code) != null,
                     onClick = {
-                        val parsed = WatchPartyInviteParser.parseRoomCode(code) ?: return@TextButton
-                        joining = true
-                        onJoinRoom(parsed)
+                        clipboard.setText(AnnotatedString(pairing.codes.joinToString("\n")))
+                        copied = true
                     },
+                    modifier = Modifier.fillMaxWidth(),
                 ) {
-                    Icon(Icons.Outlined.Link, contentDescription = null)
-                    Spacer(Modifier.width(MaterialTheme.padding.extraSmall))
-                    Text("Join")
+                    Text(
+                        when {
+                            copied -> "Copied!"
+                            isHost -> "Copy invitation code"
+                            else -> "Copy answer code"
+                        },
+                    )
+                }
+            }
+
+            if (isHost) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    OutlinedButton(
+                        onClick = onCreateInvitation,
+                        enabled = pairing.state != PairingState.CREATING_INVITATION,
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text(if (pairing.codes.isEmpty()) "Invite guest" else "New invite")
+                    }
+                    Button(
+                        onClick = { onScan("Scan the guest's answer") { onAcceptAnswer(it) } },
+                        enabled = pairing.codes.isNotEmpty() || pairing.state == PairingState.WAITING_FOR_GUEST,
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text("Scan answer")
+                    }
+                }
+            } else if (pairing.state != PairingState.CONNECTED) {
+                TextButton(
+                    onClick = { onScan("Scan the host's invitation") { onBeginPairing(it) } },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(if (pairing.codes.isEmpty()) "Scan invitation" else "Scan another invitation")
                 }
             }
         }
@@ -270,6 +493,7 @@ private fun ConnectionPill(connection: ConnectionState) {
 @Composable
 private fun RoomHeader(
     state: WatchPartyUiState,
+    isServerless: Boolean,
     onLeaveRoom: () -> Unit,
     onSyncNow: () -> Unit,
 ) {
@@ -284,7 +508,7 @@ private fun RoomHeader(
         ) {
             Column {
                 Text(
-                    text = RoomCode.format(state.roomId),
+                    text = if (isServerless) "Direct Watch Party" else RoomCode.format(state.roomId),
                     style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.Bold,
                 )
@@ -294,16 +518,18 @@ private fun RoomHeader(
                 )
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
-                IconButton(
-                    onClick = {
-                        clipboard.setText(AnnotatedString(WatchPartyInviteParser.inviteText(state.roomId, state.episode)))
-                        copied = true
-                    },
-                ) {
-                    Icon(
-                        if (copied) Icons.Filled.Check else Icons.Outlined.ContentCopy,
-                        contentDescription = "Copy invite",
-                    )
+                if (!isServerless) {
+                    IconButton(
+                        onClick = {
+                            clipboard.setText(AnnotatedString(WatchPartyInviteParser.inviteText(state.roomId, state.episode)))
+                            copied = true
+                        },
+                    ) {
+                        Icon(
+                            if (copied) Icons.Filled.Check else Icons.Outlined.ContentCopy,
+                            contentDescription = "Copy invite",
+                        )
+                    }
                 }
                 IconButton(onClick = onLeaveRoom) {
                     Icon(Icons.Outlined.Close, contentDescription = "Leave room")

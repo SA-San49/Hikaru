@@ -116,6 +116,27 @@ class WatchPartyEngine(
         player = newPlayer
     }
 
+    /**
+     * Detaches [expected] when a player closes without disturbing the room.
+     */
+    fun detachPlayer(expected: WatchPartyPlayerBridge, fallback: WatchPartyPlayerBridge) {
+        if (player === expected) {
+            player = fallback
+        }
+    }
+
+    /**
+     * Called when a P2P peer joins so the host immediately re-broadcasts its
+     * presence, episode identity, and authoritative playback snapshot.
+     */
+    fun onPeerConnected() {
+        if (!isLive()) return
+        if (_state.value.isHost) {
+            announceJoin()
+            broadcastPlayback(force = true)
+        }
+    }
+
     val selfId: String = prefs.participantId()
     val selfName: () -> String = { prefs.effectiveDisplayName() }
 

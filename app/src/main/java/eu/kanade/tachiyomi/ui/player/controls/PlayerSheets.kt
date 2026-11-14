@@ -44,6 +44,7 @@ import eu.kanade.tachiyomi.ui.player.PlayerViewModel
 import eu.kanade.tachiyomi.ui.player.settings.PlayerPreferences
 import eu.kanade.tachiyomi.ui.player.watchparty.WatchPartySheet
 import eu.kanade.tachiyomi.ui.player.watchparty.WatchPartyUiState
+import eu.kanade.tachiyomi.ui.player.watchparty.p2p.P2PWatchPartySession
 import tachiyomi.domain.custombuttons.model.CustomButton
 import tachiyomi.presentation.core.util.collectAsState
 import uy.kohesive.injekt.Injekt
@@ -115,6 +116,8 @@ fun PlayerSheets(
     watchPartyState: WatchPartyUiState,
     watchPartySelfId: String,
     watchPartyLocalReady: Boolean,
+    watchPartyIsServerless: Boolean = false,
+    watchPartyPairing: P2PWatchPartySession.PairingSnapshot = P2PWatchPartySession.PairingSnapshot(),
     onCreateWatchParty: () -> Unit,
     onJoinWatchParty: (String) -> Unit,
     onLeaveWatchParty: () -> Unit,
@@ -124,6 +127,9 @@ fun PlayerSheets(
     onWatchPartySyncNow: () -> Unit,
     onWatchPartySendChat: (String) -> Unit,
     onWatchPartyReaction: (String) -> Unit,
+    onWatchPartyCreateInvitation: () -> Unit = {},
+    onWatchPartyAcceptAnswer: (String) -> Unit = {},
+    onWatchPartyBeginPairing: (String) -> Unit = {},
 ) {
     when (sheetShown) {
         Sheets.None -> {}
@@ -260,6 +266,11 @@ fun PlayerSheets(
                 onSendChat = onWatchPartySendChat,
                 onReaction = onWatchPartyReaction,
                 initialJoinCode = viewModel.watchParty.consumePendingInvite(),
+                isServerless = watchPartyIsServerless,
+                pairing = watchPartyPairing,
+                onCreateInvitation = onWatchPartyCreateInvitation,
+                onAcceptAnswer = onWatchPartyAcceptAnswer,
+                onBeginPairing = onWatchPartyBeginPairing,
             )
         }
 

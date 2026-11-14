@@ -185,4 +185,59 @@ object ChunkedPayload {
             return Progress.Complete(assembled)
         }
     }
+
+    /**
+     * Formats a complete pairing payload for display and copy/paste.
+     *
+     * Fits inside one raw `HP1.` code whenever short enough; splits into
+     * `HP1C.` chunks only when it exceeds [maxChunkChars].
+     */
+    fun encodeForDisplay(
+        payload: String,
+        sessionId: String,
+        maxChunkChars: Int = MAX_CHUNK_CHARS,
+    ): List<String> {
+        val chunks = split(payload, sessionId, maxChunkChars)
+        if (chunks.isEmpty()) return emptyList()
+        if (chunks.size == 1) return listOf(chunks.single().body)
+        return chunks.map { it.render() }
+    }
+
+    /**
+     * Extracts a complete raw payload from pasted text.
+     *
+     * Supports:
+     *  - a plain `HP1...` code
+     *  - a single-part chunk (`HP1C.<id>.0/1.<body>`)
+     *  - multiple `HP1C.` lines pasted together in any order
+     */
+    fun reassembleText(raw: String?): String? {
+        if (raw.isNullOrBlank()) return null
+        val trimmed = raw.trim()
+        if (trimmed.startsWith("${PairingPayload.MAGIC}.")) return trimmed
+
+        val lines = trimmed.lineSequence()
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .toList()
+        if (lines.isEmpty()) return null
+        if (lines.size == 1 && lines.single().startsWith("${PairingPayload.MAGIC}.")) {
+            return lines.single()
+        }
+
+        val assembler = Assembler()
+        for (line in lines) {
+            val chunk = parse(line) ?: return null
+            when (val result = assembler.accept(chunk)) {
+                is Progress.Complete -> return result.payload
+                is Progress.Rejected -> return null
+                is Progress.Partial -> Unit
+            }
+        }
+        return null
+    }
+
+    /** Decodes either a plain `HP1.` code or a complete chunked `HP1C.` paste. */
+    fun decodePayload(raw: String?): PairingPayload.Payload? =
+        PairingPayload.decode(reassembleText(raw))
 }

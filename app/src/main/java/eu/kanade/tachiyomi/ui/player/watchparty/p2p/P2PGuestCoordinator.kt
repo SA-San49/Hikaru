@@ -52,6 +52,7 @@ class P2PGuestCoordinator(
     private val _state = MutableStateFlow(GuestState())
     val state: StateFlow<GuestState> = _state.asStateFlow()
 
+    private val lock = Any()
     private var session: P2PSession? = null
 
     /** Where inbound frames go; set by the room layer. */
@@ -66,13 +67,29 @@ class P2PGuestCoordinator(
      * vaguer than saying "that code expired" immediately.
      */
     fun beginPairing(payload: PairingPayload.Payload): Boolean {
-        if (session != null) {
-            logcat(LogPriority.WARN) { "WatchParty P2P: already pairing" }
-            return false
+        val previousToClose: P2PSession?
+        synchronized(lock) {
+            val existing = session
+            if (existing != null) {
+                val currentState = _state.value.state
+                if (currentState != PairingState.FAILED &&
+                    currentState != PairingState.INVITATION_EXPIRED &&
+                    currentState != PairingState.IDLE
+                ) {
+                    logcat(LogPriority.WARN) { "WatchParty P2P: already pairing ($currentState)" }
+                    return false
+                }
+                previousToClose = existing
+                session = null
+            } else {
+                previousToClose = null
+            }
         }
+        previousToClose?.close()
+
         val pairing = PairingSession(
             role = PairingPayload.Role.ANSWER,
-            roomId = roomId,
+            roomId = payload.roomId.ifBlank { roomId },
             clock = clock,
         )
         when (val result = pairing.acceptInvitation(payload, clock())) {
@@ -88,7 +105,9 @@ class P2PGuestCoordinator(
         }
 
         val created = P2PSession(pairing, factoryHolder, events())
-        session = created
+        synchronized(lock) {
+            session = created
+        }
         _state.value = GuestState(
             state = pairing.state,
             hostVerificationCode = payload.verificationCode,
@@ -101,11 +120,12 @@ class P2PGuestCoordinator(
 
     private fun events() = object : P2PSession.Event {
         override fun onLocalDescription(session: P2PSession, parsed: SdpTemplate.Parsed) {
+            if (!isCurrentSession(session)) return
             val pairing = session.pairing
             val answer = PairingPayload.withFreshExpiry(
                 role = PairingPayload.Role.ANSWER,
                 sessionId = pairing.sessionId,
-                roomId = roomId,
+                roomId = pairing.roomId,
                 ufrag = parsed.ufrag,
                 pwd = parsed.pwd,
                 fingerprint = parsed.fingerprint,
@@ -113,16 +133,18 @@ class P2PGuestCoordinator(
                 nowMs = clock(),
             )
             pairing.onAnswerPublished(answer)
-            val chunks = ChunkedPayload.split(
+            val chunks = ChunkedPayload.encodeForDisplay(
                 payload = PairingPayload.encode(answer),
                 sessionId = PairingSession.shortId(answer.sessionId),
-            ).map { it.render() }
+            )
 
             _state.value = _state.value.copy(
                 state = pairing.state,
                 answerPayload = answer,
                 answerChunks = chunks,
                 localVerificationCode = answer.verificationCode,
+                failureReason = null,
+                invitationSecondsRemaining = secondsUntil(answer.expiresAtMs),
             )
             listener?.onAnswerReady(answer)
         }
@@ -136,12 +158,27 @@ class P2PGuestCoordinator(
         }
 
         override fun onConnected(session: P2PSession) {
-            _state.value = _state.value.copy(state = PairingState.CONNECTED, connected = true)
+            if (!isCurrentSession(session)) return
+            _state.value = _state.value.copy(
+                state = PairingState.CONNECTED,
+                connected = true,
+                failureReason = null,
+            )
             val link = P2PSessionLink(session, peerId = "host") { session.dataChannel() }
             listener?.onConnected(link)
         }
 
         override fun onDisconnected(session: P2PSession, reason: String) {
+            val isCurrent = synchronized(lock) {
+                if (this@P2PGuestCoordinator.session === session) {
+                    this@P2PGuestCoordinator.session = null
+                    true
+                } else {
+                    false
+                }
+            }
+            if (!isCurrent) return
+            runCatching { session.close() }
             _state.value = _state.value.copy(
                 state = PairingState.FAILED,
                 connected = false,
@@ -151,9 +188,13 @@ class P2PGuestCoordinator(
         }
 
         override fun onMessage(session: P2PSession, text: String) {
+            if (!isCurrentSession(session)) return
             messageSink?.invoke(text)
         }
     }
+
+    private fun isCurrentSession(target: P2PSession): Boolean =
+        synchronized(lock) { session === target }
 
     /**
      * Applies the host's trickled candidates.
@@ -163,8 +204,8 @@ class P2PGuestCoordinator(
      * a future transport that can carry them early needs no changes here.
      */
     fun addRemoteCandidates(candidates: List<PairingPayload.IceCandidate>) {
-        val session = session ?: return
-        candidates.forEach(session::addRemoteCandidate)
+        val current = synchronized(lock) { session } ?: return
+        candidates.forEach(current::addRemoteCandidate)
     }
 
     /** Recomputes the invitation countdown; called from the room ticker. */
@@ -178,8 +219,10 @@ class P2PGuestCoordinator(
 
     /** Tears down the pairing attempt. */
     fun cancel() {
-        session?.close()
-        session = null
+        val existing = synchronized(lock) {
+            session.also { session = null }
+        }
+        existing?.close()
         _state.value = GuestState()
     }
 

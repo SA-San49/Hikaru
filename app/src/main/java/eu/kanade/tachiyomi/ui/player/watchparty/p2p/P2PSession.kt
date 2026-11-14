@@ -6,6 +6,11 @@ import org.webrtc.IceCandidate
 import org.webrtc.MediaConstraints
 import org.webrtc.PeerConnection
 import org.webrtc.SessionDescription
+import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledExecutorService
+import java.util.concurrent.ScheduledFuture
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * One direct WebRTC connection to one peer.
@@ -60,11 +65,27 @@ class P2PSession(
     /** Labels the single data channel; also its identity in `onDataChannel`. */
     val channelLabel: String = CHANNEL_LABEL
 
+    private val lock = Any()
+
     private var peerConnection: PeerConnection? = null
     private var dataChannel: DataChannel? = null
 
     /** Remote description applied? Guards against double `setRemoteDescription`. */
     private var remoteApplied = false
+
+    @Volatile
+    private var closed = false
+
+    private val localPublished = AtomicBoolean(false)
+    private val connectedNotified = AtomicBoolean(false)
+    private val disconnectedNotified = AtomicBoolean(false)
+
+    private var awaitingGathering = false
+    private var pendingLocalSdp: String? = null
+    private val gatheredCandidates = LinkedHashSet<PairingPayload.IceCandidate>()
+    private var gatheringScheduler: ScheduledExecutorService? = null
+    private var hardTimeoutFuture: ScheduledFuture<*>? = null
+    private var graceTimeoutFuture: ScheduledFuture<*>? = null
 
     val isConnected: Boolean get() = pairing.state == PairingState.CONNECTED
 
@@ -91,10 +112,12 @@ class P2PSession(
         pc.createOffer(
             object : SdpObserverAdapter() {
                 override fun onCreateSuccess(description: SessionDescription) {
+                    if (closed) return
                     pc.setLocalDescription(
                         object : SdpObserverAdapter() {
                             override fun onSetSuccess() {
-                                publishLocalDescription(description.description)
+                                if (closed) return
+                                onLocalDescriptionSet(pc, description.description)
                             }
 
                             override fun onSetFailure(error: String) {
@@ -132,9 +155,11 @@ class P2PSession(
         pc.setRemoteDescription(
             object : SdpObserverAdapter() {
                 override fun onSetSuccess() {
-                    remoteApplied = true
-                    // Later candidates can now be applied instead of buffered.
-                    drainPendingRemoteCandidates()
+                    if (closed) return
+                    synchronized(lock) {
+                        remoteApplied = true
+                        drainPendingRemoteCandidatesLocked()
+                    }
                     pairing.onRemoteApplied()
                 }
 
@@ -166,8 +191,11 @@ class P2PSession(
         pc.setRemoteDescription(
             object : SdpObserverAdapter() {
                 override fun onSetSuccess() {
-                    remoteApplied = true
-                    drainPendingRemoteCandidates()
+                    if (closed) return
+                    synchronized(lock) {
+                        remoteApplied = true
+                        drainPendingRemoteCandidatesLocked()
+                    }
                     createAnswer(pc)
                 }
 
@@ -186,10 +214,12 @@ class P2PSession(
         pc.createAnswer(
             object : SdpObserverAdapter() {
                 override fun onCreateSuccess(description: SessionDescription) {
+                    if (closed) return
                     pc.setLocalDescription(
                         object : SdpObserverAdapter() {
                             override fun onSetSuccess() {
-                                publishLocalDescription(description.description)
+                                if (closed) return
+                                onLocalDescriptionSet(pc, description.description)
                             }
 
                             override fun onSetFailure(error: String) {
@@ -212,6 +242,70 @@ class P2PSession(
 
     // <editor-fold desc="Shared">
 
+    private fun onLocalDescriptionSet(pc: PeerConnection, fallbackSdp: String) {
+        val currentSdp = runCatching { pc.localDescription?.description }.getOrNull() ?: fallbackSdp
+        val alreadyComplete: Boolean
+        synchronized(lock) {
+            if (closed || localPublished.get()) return
+            pendingLocalSdp = currentSdp
+            awaitingGathering = true
+            alreadyComplete = runCatching {
+                pc.iceGatheringState() == PeerConnection.IceGatheringState.COMPLETE
+            }.getOrDefault(false)
+            if (!alreadyComplete) {
+                val scheduler = ensureGatheringSchedulerLocked()
+                hardTimeoutFuture?.cancel(false)
+                hardTimeoutFuture = scheduler.schedule(
+                    { finalizeLocalDescription() },
+                    GATHERING_HARD_TIMEOUT_MS,
+                    TimeUnit.MILLISECONDS,
+                )
+                if (gatheredCandidates.isNotEmpty() && graceTimeoutFuture == null) {
+                    graceTimeoutFuture = scheduler.schedule(
+                        { finalizeLocalDescription() },
+                        GATHERING_GRACE_AFTER_CANDIDATE_MS,
+                        TimeUnit.MILLISECONDS,
+                    )
+                }
+            }
+        }
+        if (alreadyComplete) {
+            finalizeLocalDescription()
+        }
+    }
+
+    private fun finalizeLocalDescription() {
+        val sdpText: String
+        val extraCandidates: List<PairingPayload.IceCandidate>
+        synchronized(lock) {
+            if (closed) return
+            val candidateSdp = runCatching { peerConnection?.localDescription?.description }.getOrNull()
+                ?: pendingLocalSdp
+                ?: return
+            if (!localPublished.compareAndSet(false, true)) return
+            awaitingGathering = false
+            cancelGatheringTimersLocked()
+            sdpText = candidateSdp
+            extraCandidates = gatheredCandidates.toList()
+        }
+        publishLocalDescription(sdpText, extraCandidates)
+    }
+
+    private fun ensureGatheringSchedulerLocked(): ScheduledExecutorService {
+        return gatheringScheduler ?: Executors.newSingleThreadScheduledExecutor { runnable ->
+            Thread(runnable, "hikaru-p2p-ice-gather").apply { isDaemon = true }
+        }.also { gatheringScheduler = it }
+    }
+
+    private fun cancelGatheringTimersLocked() {
+        hardTimeoutFuture?.cancel(false)
+        hardTimeoutFuture = null
+        graceTimeoutFuture?.cancel(false)
+        graceTimeoutFuture = null
+        gatheringScheduler?.shutdownNow()
+        gatheringScheduler = null
+    }
+
     /**
      * Publishes our own description as a compact payload.
      *
@@ -220,13 +314,28 @@ class P2PSession(
      * the peer will fail to rebuild. That failure mode is reported, never papered
      * over with a raw-SDP code too large to scan.
      */
-    private fun publishLocalDescription(sdp: String) {
+    private fun publishLocalDescription(
+        sdp: String,
+        extraCandidates: List<PairingPayload.IceCandidate> = emptyList(),
+    ) {
+        if (closed) return
         val parsed = SdpTemplate.parse(sdp)
         if (parsed == null) {
             failHard("This device produced an unsupported connection description.")
             return
         }
-        onEvent.onLocalDescription(this, parsed)
+        val mergedCandidates = LinkedHashSet<PairingPayload.IceCandidate>().apply {
+            addAll(parsed.candidates)
+            addAll(extraCandidates)
+        }.toList()
+        if (mergedCandidates.isEmpty()) {
+            failHard(
+                "Could not find a network address for direct pairing. " +
+                    "Connect to Wi-Fi or mobile data and try again.",
+            )
+            return
+        }
+        onEvent.onLocalDescription(this, parsed.copy(candidates = mergedCandidates))
     }
 
     /**
@@ -248,16 +357,30 @@ class P2PSession(
      * handles is not something to leave to chance.
      */
     fun close() {
-        runCatching { dataChannel?.unregisterObserver() }
-        runCatching { dataChannel?.close() }
-        dataChannel = null
-        runCatching { peerConnection?.close() }
-        runCatching { peerConnection?.dispose() }
-        peerConnection = null
-        remoteApplied = false
-        pendingRemoteCandidates.clear()
-        if (retained) {
+        val channel: DataChannel?
+        val pc: PeerConnection?
+        val shouldReleaseFactory: Boolean
+        synchronized(lock) {
+            if (closed) return
+            closed = true
+            awaitingGathering = false
+            pendingLocalSdp = null
+            cancelGatheringTimersLocked()
+            channel = dataChannel
+            dataChannel = null
+            pc = peerConnection
+            peerConnection = null
+            remoteApplied = false
+            pendingRemoteCandidates.clear()
+            gatheredCandidates.clear()
+            shouldReleaseFactory = retained
             retained = false
+        }
+        runCatching { channel?.unregisterObserver() }
+        runCatching { channel?.close() }
+        runCatching { pc?.close() }
+        runCatching { pc?.dispose() }
+        if (shouldReleaseFactory) {
             factoryHolder.release()
         }
     }
@@ -267,22 +390,31 @@ class P2PSession(
     // <editor-fold desc="Peer connection plumbing">
 
     private fun createPeerConnection(): PeerConnection? {
-        if (peerConnection != null) return peerConnection
+        synchronized(lock) {
+            if (closed) return null
+            peerConnection?.let { return it }
+        }
         val native = factoryHolder.factory()
         if (native == null) {
-            failHard("The WebRTC engine is unavailable on this device.")
+            failHard(factoryHolder.lastError ?: "The WebRTC engine is unavailable on this device.")
             return null
         }
         // Balanced in close(); the holder disposes the factory when the last
         // session lets go.
         factoryHolder.retain()
-        retained = true
+        synchronized(lock) {
+            if (closed) {
+                factoryHolder.release()
+                return null
+            }
+            retained = true
+        }
         val config = PeerConnection.RTCConfiguration(factoryHolder.iceServers()).apply {
             sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
             bundlePolicy = PeerConnection.BundlePolicy.MAXBUNDLE
             // No TURN. If a direct path cannot be found the call fails honestly.
             iceTransportsType = PeerConnection.IceTransportsType.ALL
-            continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
+            continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_ONCE
         }
 
         val pc = try {
@@ -294,18 +426,40 @@ class P2PSession(
             failHard("Could not start a connection on this device.")
             null
         }
-        peerConnection = pc
+        if (pc != null) {
+            synchronized(lock) {
+                if (closed) {
+                    runCatching { pc.close() }
+                    runCatching { pc.dispose() }
+                    return null
+                }
+                peerConnection = pc
+            }
+        }
         return pc
     }
 
     private fun observer() = object : PeerConnection.Observer {
         override fun onIceCandidate(candidate: IceCandidate) {
             val compact = candidate.toPairingCandidate() ?: return
-            if (pairing.payload == null) {
-                // Not published yet: keep it for the payload being built.
-                pairing.onLocalCandidate(compact)
-            } else {
-                pairing.onLocalCandidate(compact)
+            val alreadyPublished: Boolean
+            synchronized(lock) {
+                if (closed) return
+                alreadyPublished = localPublished.get()
+                if (!alreadyPublished) {
+                    gatheredCandidates += compact
+                    if (awaitingGathering && graceTimeoutFuture == null) {
+                        val scheduler = ensureGatheringSchedulerLocked()
+                        graceTimeoutFuture = scheduler.schedule(
+                            { finalizeLocalDescription() },
+                            GATHERING_GRACE_AFTER_CANDIDATE_MS,
+                            TimeUnit.MILLISECONDS,
+                        )
+                    }
+                }
+            }
+            pairing.onLocalCandidate(compact)
+            if (alreadyPublished) {
                 onEvent.onLocalCandidate(this@P2PSession, compact)
             }
         }
@@ -315,6 +469,7 @@ class P2PSession(
         override fun onSignalingChange(state: PeerConnection.SignalingState) = Unit
 
         override fun onIceConnectionChange(state: PeerConnection.IceConnectionState) {
+            if (closed) return
             when (state) {
                 PeerConnection.IceConnectionState.CONNECTED,
                 PeerConnection.IceConnectionState.COMPLETED,
@@ -323,20 +478,30 @@ class P2PSession(
                     failHard(connectivityAdvice())
                 }
                 PeerConnection.IceConnectionState.DISCONNECTED -> {
-                    onEvent.onDisconnected(this@P2PSession, "The connection to this participant was lost.")
+                    notifyDisconnected("The connection to this participant was lost.")
                 }
                 else -> Unit
             }
         }
 
         override fun onIceConnectionReceivingChange(receiving: Boolean) = Unit
-        override fun onIceGatheringChange(state: PeerConnection.IceGatheringState) = Unit
+
+        override fun onIceGatheringChange(state: PeerConnection.IceGatheringState) {
+            if (closed) return
+            if (state == PeerConnection.IceGatheringState.COMPLETE) {
+                finalizeLocalDescription()
+            }
+        }
 
         override fun onAddStream(stream: org.webrtc.MediaStream) = Unit
 
         override fun onRemoveStream(stream: org.webrtc.MediaStream) = Unit
 
         override fun onDataChannel(channel: DataChannel) {
+            if (closed) {
+                runCatching { channel.close() }
+                return
+            }
             // Only guests receive one, and only the host's channel is legitimate.
             if (channel.label() != CHANNEL_LABEL) {
                 runCatching { channel.close() }
@@ -348,11 +513,16 @@ class P2PSession(
         override fun onRenegotiationNeeded() = Unit
 
         override fun onConnectionChange(newState: PeerConnection.PeerConnectionState) {
+            if (closed) return
             when (newState) {
-                PeerConnection.PeerConnectionState.CONNECTED -> onEvent.onConnected(this@P2PSession)
+                PeerConnection.PeerConnectionState.CONNECTED -> {
+                    if (dataChannel?.state() == DataChannel.State.OPEN) {
+                        notifyConnected()
+                    }
+                }
                 PeerConnection.PeerConnectionState.FAILED -> failHard(connectivityAdvice())
                 PeerConnection.PeerConnectionState.CLOSED ->
-                    onEvent.onDisconnected(this@P2PSession, "The connection was closed.")
+                    notifyDisconnected("The connection was closed.")
                 else -> Unit
             }
         }
@@ -364,23 +534,41 @@ class P2PSession(
                 override fun onBufferedAmountChange(previousAmount: Long) = Unit
 
                 override fun onStateChange() {
+                    if (closed) return
                     when (channel.state()) {
-                        DataChannel.State.OPEN -> {
-                            pairing.onConnected()
-                            onEvent.onConnected(this@P2PSession)
-                        }
-                        DataChannel.State.CLOSED ->
-                            onEvent.onDisconnected(this@P2PSession, "The connection was closed.")
+                        DataChannel.State.OPEN -> notifyConnected()
+                        DataChannel.State.CLOSED -> notifyDisconnected("The connection was closed.")
                         else -> Unit
                     }
                 }
 
                 override fun onMessage(buffer: DataChannel.Buffer) {
+                    if (closed) return
                     val text = buffer.tryReadText() ?: return
                     onEvent.onMessage(this@P2PSession, text)
                 }
             },
         )
+        // On a receiving peer, org.webrtc may hand over a DataChannel whose state
+        // is already OPEN by the time registerObserver runs.
+        if (channel.state() == DataChannel.State.OPEN) {
+            notifyConnected()
+        }
+    }
+
+    private fun notifyConnected() {
+        if (closed) return
+        if (connectedNotified.compareAndSet(false, true)) {
+            pairing.onConnected()
+            onEvent.onConnected(this)
+        }
+    }
+
+    private fun notifyDisconnected(reason: String) {
+        if (closed) return
+        if (disconnectedNotified.compareAndSet(false, true)) {
+            onEvent.onDisconnected(this, reason)
+        }
     }
 
     /** Remote candidates that arrived before the remote description. */
@@ -389,25 +577,33 @@ class P2PSession(
     /** Applies a candidate from the peer. */
     fun addRemoteCandidate(compact: PairingPayload.IceCandidate) {
         val candidate = compact.toWebRtcCandidate()
-        val pc = peerConnection ?: return
-        if (!remoteApplied) {
-            // Adding candidates before the description is an error in WebRTC,
-            // and the ordering is not something the peer controls.
-            pendingRemoteCandidates += candidate
-            return
+        val pc = synchronized(lock) {
+            if (closed) return
+            val currentPc = peerConnection ?: return
+            if (!remoteApplied) {
+                // Adding candidates before the description is an error in WebRTC,
+                // and the ordering is not something the peer controls.
+                pendingRemoteCandidates += candidate
+                return
+            }
+            currentPc
         }
         runCatching { pc.addIceCandidate(candidate) }
     }
 
-    private fun drainPendingRemoteCandidates() {
+    private fun drainPendingRemoteCandidatesLocked() {
         val pc = peerConnection ?: return
         pendingRemoteCandidates.forEach { runCatching { pc.addIceCandidate(it) } }
         pendingRemoteCandidates.clear()
     }
 
     private fun failHard(reason: String) {
+        if (closed) return
+        synchronized(lock) {
+            cancelGatheringTimersLocked()
+        }
         pairing.fail(PairingSession.Reason.INVALID, reason)
-        onEvent.onDisconnected(this, reason)
+        notifyDisconnected(reason)
     }
 
     /**
@@ -425,6 +621,8 @@ class P2PSession(
     private companion object {
 
         const val CHANNEL_LABEL = "hikaru-watchparty"
+        const val GATHERING_GRACE_AFTER_CANDIDATE_MS = 1_500L
+        const val GATHERING_HARD_TIMEOUT_MS = 4_000L
 
         /**
          * Constraints for a DataChannel-only offer.
@@ -451,9 +649,10 @@ class P2PSession(
 internal fun IceCandidate.toPairingCandidate(): PairingPayload.IceCandidate? {
     val fields = candidateLineFields()
     if (fields.size < 8) return null
+    if (!fields[2].equals("udp", ignoreCase = true)) return null
     val host = fields[4].takeIf { it.isNotBlank() && it.length <= 64 } ?: return null
     val port = fields[5].toIntOrNull()?.takeIf { it in 1..65_535 } ?: return null
-    val type = when (fields[7]) {
+    val type = when (fields[7].lowercase()) {
         "host" -> PairingPayload.IceCandidate.Type.HOST
         "srflx" -> PairingPayload.IceCandidate.Type.SRFLX
         "prflx" -> PairingPayload.IceCandidate.Type.PRFLX
@@ -483,10 +682,16 @@ internal fun PairingPayload.IceCandidate.toWebRtcCandidate(): IceCandidate {
         PairingPayload.IceCandidate.Type.PRFLX -> "prflx"
         PairingPayload.IceCandidate.Type.RELAY -> "relay"
     }
+    val related = if (type == PairingPayload.IceCandidate.Type.HOST) {
+        ""
+    } else {
+        val relatedAddr = if (address.contains(':')) "::" else "0.0.0.0"
+        " raddr $relatedAddr rport 0"
+    }
     return IceCandidate(
         /* sdpMid = */ "0",
         /* sdpMLineIndex = */ 0,
-        /* sdp = */ "candidate:1 1 udp 2130706431 $address $port typ $typeName",
+        /* sdp = */ "candidate:1 1 udp 2130706431 $address $port typ $typeName$related",
     )
 }
 

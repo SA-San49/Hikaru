@@ -5,11 +5,13 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -20,6 +22,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.unit.dp
+import eu.kanade.tachiyomi.ui.player.watchparty.p2p.ChunkedPayload
+import eu.kanade.tachiyomi.ui.player.watchparty.p2p.PairingPayload
 import eu.kanade.tachiyomi.ui.player.watchparty.p2p.QrScanner
 
 /**
@@ -41,9 +45,61 @@ fun WatchPartyScannerDialog(
     // focus on a phone screen held close.
     var pasted by remember { mutableStateOf("") }
     var showPaste by remember { mutableStateOf(false) }
+    var progress by remember { mutableStateOf<ChunkedPayload.Progress.Partial?>(null) }
+    var error by remember { mutableStateOf<String?>(null) }
+    val assembler = remember { ChunkedPayload.Assembler() }
+
+    fun handleInput(raw: String, fromPaste: Boolean) {
+        val trimmed = raw.trim()
+        if (trimmed.isEmpty()) return
+
+        // Direct single payload or complete multi-line pasted chunk set.
+        val reassembled = ChunkedPayload.reassembleText(trimmed)
+        if (reassembled != null && PairingPayload.decode(reassembled) != null) {
+            assembler.reset()
+            progress = null
+            error = null
+            onResult(reassembled)
+            return
+        }
+
+        // Single fragment scanned from QR or pasted one part at a time.
+        val chunk = ChunkedPayload.parse(trimmed)
+        if (chunk != null) {
+            when (val result = assembler.accept(chunk)) {
+                is ChunkedPayload.Progress.Partial -> {
+                    progress = result
+                    error = null
+                }
+                is ChunkedPayload.Progress.Complete -> {
+                    assembler.reset()
+                    progress = null
+                    if (PairingPayload.decode(result.payload) != null) {
+                        error = null
+                        onResult(result.payload)
+                    } else {
+                        error = "Those parts did not form a valid Hikaru pairing code."
+                    }
+                }
+                is ChunkedPayload.Progress.Rejected -> {
+                    error = result.reason
+                }
+            }
+            return
+        }
+
+        error = if (fromPaste) {
+            "That does not look like a complete Hikaru Watch Party code."
+        } else {
+            "That QR code is not a Hikaru Watch Party pairing code."
+        }
+    }
 
     AlertDialog(
-        onDismissRequest = onDismissRequest,
+        onDismissRequest = {
+            assembler.reset()
+            onDismissRequest()
+        },
         title = { Text(title) },
         text = {
             Column(
@@ -51,22 +107,50 @@ fun WatchPartyScannerDialog(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 QrScanner(
-                    onScanned = onResult,
+                    onScanned = { scanned -> handleInput(scanned, fromPaste = false) },
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(360.dp),
+                        .height(340.dp),
                 )
+
+                progress?.let { part ->
+                    Surface(
+                        color = MaterialTheme.colorScheme.secondaryContainer,
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(
+                            text = "Scanned ${part.have} of ${part.total} parts — show the next code.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSecondaryContainer,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                        )
+                    }
+                }
+
+                error?.let { message ->
+                    Text(
+                        text = message,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
 
                 if (showPaste) {
                     OutlinedTextField(
                         value = pasted,
-                        onValueChange = { pasted = it.trim() },
+                        onValueChange = {
+                            pasted = it.trim()
+                            error = null
+                        },
                         label = { Text("Paste the code instead") },
+                        singleLine = false,
+                        maxLines = 4,
                         keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None),
                         modifier = Modifier.fillMaxWidth(),
                     )
                     Button(
-                        onClick = { onResult(pasted) },
+                        onClick = { handleInput(pasted, fromPaste = true) },
                         enabled = pasted.isNotBlank(),
                         modifier = Modifier.fillMaxWidth(),
                     ) {
@@ -87,7 +171,14 @@ fun WatchPartyScannerDialog(
             }
         },
         confirmButton = {
-            TextButton(onClick = onDismissRequest) { Text("Cancel") }
+            TextButton(
+                onClick = {
+                    assembler.reset()
+                    onDismissRequest()
+                },
+            ) {
+                Text("Cancel")
+            }
         },
     )
 }

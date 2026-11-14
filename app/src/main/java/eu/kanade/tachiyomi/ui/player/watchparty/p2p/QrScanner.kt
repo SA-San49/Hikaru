@@ -44,7 +44,6 @@ import androidx.core.content.ContextCompat
 import logcat.LogPriority
 import tachiyomi.core.common.util.system.logcat
 import java.util.concurrent.Executors
-import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Camera QR scanner, with a gallery fallback.
@@ -66,9 +65,9 @@ import java.util.concurrent.atomic.AtomicBoolean
 fun QrScanner(
     onScanned: (String) -> Unit,
     modifier: Modifier = Modifier,
+    paused: Boolean = false,
 ) {
     val context = LocalContext.current
-    val lifecycleOwner = LocalLifecycleOwner.current
     val currentOnScanned by rememberUpdatedState(onScanned)
 
     var hasPermission by remember {
@@ -111,7 +110,11 @@ fun QrScanner(
         ) {
             if (hasPermission) {
                 CameraPreview(
-                    onFrame = { text -> currentOnScanned(text) },
+                    paused = paused,
+                    onFrame = { text ->
+                        galleryError = null
+                        currentOnScanned(text)
+                    },
                     modifier = Modifier.fillMaxSize(),
                 )
             } else {
@@ -156,18 +159,33 @@ fun QrScanner(
 
 @Composable
 private fun CameraPreview(
+    paused: Boolean,
     onFrame: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val analysisExecutor = remember { Executors.newSingleThreadExecutor() }
-    // One delivery per scan: the analyser sees the same code ~30 times a second.
-    val delivered = remember { AtomicBoolean(false) }
+    val currentPaused by rememberUpdatedState(paused)
     val currentOnFrame by rememberUpdatedState(onFrame)
+    val cameraProviderRef = remember { mutableStateOf<ProcessCameraProvider?>(null) }
+
+    // Cooldown state accessed only on analysisExecutor so repeated ~30fps
+    // detections of the exact same QR frame are throttled while different
+    // multi-part chunks are delivered immediately.
+    val scanGate = remember {
+        object {
+            var lastText: String? = null
+            var lastDeliveredAtMs: Long = 0L
+        }
+    }
 
     DisposableEffect(Unit) {
-        onDispose { analysisExecutor.shutdown() }
+        onDispose {
+            cameraProviderRef.value?.unbindAll()
+            cameraProviderRef.value = null
+            analysisExecutor.shutdown()
+        }
     }
 
     AndroidView(
@@ -177,10 +195,12 @@ private fun CameraPreview(
                 scaleType = PreviewView.ScaleType.FILL_CENTER
             }
 
+            val mainExecutor = ContextCompat.getMainExecutor(context)
             val providerFuture = ProcessCameraProvider.getInstance(viewContext)
             providerFuture.addListener(
                 {
                     val provider = runCatching { providerFuture.get() }.getOrNull() ?: return@addListener
+                    cameraProviderRef.value = provider
                     val preview = Preview.Builder().build().also {
                         it.surfaceProvider = previewView.surfaceProvider
                     }
@@ -192,10 +212,18 @@ private fun CameraPreview(
                         .also { analysisUseCase ->
                             analysisUseCase.setAnalyzer(analysisExecutor) { imageProxy ->
                                 try {
-                                    if (!delivered.get()) {
+                                    if (!currentPaused) {
                                         val text = imageProxy.decodeQr()
-                                        if (text != null && delivered.compareAndSet(false, true)) {
-                                            currentOnFrame(text)
+                                        if (text != null) {
+                                            val now = System.currentTimeMillis()
+                                            val isDuplicateWithinCooldown =
+                                                text == scanGate.lastText &&
+                                                    now - scanGate.lastDeliveredAtMs < SAME_FRAME_COOLDOWN_MS
+                                            if (!isDuplicateWithinCooldown) {
+                                                scanGate.lastText = text
+                                                scanGate.lastDeliveredAtMs = now
+                                                mainExecutor.execute { currentOnFrame(text) }
+                                            }
                                         }
                                     }
                                 } catch (e: Throwable) {
@@ -220,13 +248,15 @@ private fun CameraPreview(
                         QrLog.error(bind.exceptionOrNull()) { "WatchParty: could not open the camera" }
                     }
                 },
-                ContextCompat.getMainExecutor(context),
+                mainExecutor,
             )
 
             previewView
         },
     )
 }
+
+private const val SAME_FRAME_COOLDOWN_MS = 650L
 
 /**
  * Logging receiver for this file.

@@ -104,7 +104,11 @@ class P2PWatchPartySession(
      * Held as the concrete type because the guest needs the RoomTransport adapter,
      * which only makes sense for the single connection a guest ever has.
      */
+    @Volatile
     private var guestLink: P2PSessionLink? = null
+
+    @Volatile
+    private var activeGuestTransport: GuestTransport? = null
 
     /** Frames arriving from peers, already routed by the hub. */
     var onLocalFrame: ((text: String) -> Unit)? = null
@@ -115,7 +119,19 @@ class P2PWatchPartySession(
     init {
         host?.listener = object : P2PHostCoordinator.Listener {
             override fun onInvitationReady(session: P2PSession, payload: PairingPayload.Payload) {
-                publishCodes(ChunkedPayload.split(PairingPayload.encode(payload), PairingSession.shortId(payload.sessionId)))
+                val codes = ChunkedPayload.encodeForDisplay(
+                    payload = PairingPayload.encode(payload),
+                    sessionId = PairingSession.shortId(payload.sessionId),
+                )
+                _pairing.value = _pairing.value.copy(
+                    state = session.pairing.state,
+                    codes = codes,
+                    expiresAtMs = payload.expiresAtMs,
+                    secondsRemaining = session.pairing.secondsRemaining(clock()),
+                    verificationCode = payload.verificationCode,
+                    failureReason = null,
+                    connectedGuests = hub?.size ?: _pairing.value.connectedGuests,
+                )
             }
 
             override fun onInvitationCandidate(session: P2PSession, candidate: PairingPayload.IceCandidate) {
@@ -126,29 +142,69 @@ class P2PWatchPartySession(
 
             override fun onGuestConnected(session: P2PSession, link: PeerLink) {
                 hub?.attach(link)
+                val connectedCount = hub?.size ?: 0
                 _pairing.value = _pairing.value.copy(
                     state = PairingState.CONNECTED,
-                    connectedGuests = hub?.size ?: 0,
+                    codes = emptyList(),
+                    expiresAtMs = 0L,
+                    secondsRemaining = 0L,
+                    failureReason = null,
+                    connectedGuests = connectedCount,
                 )
                 onParticipantsChanged?.invoke()
             }
 
             override fun onGuestLost(session: P2PSession, reason: String) {
+                val wasInHub = hub?.size ?: 0
                 hub?.onLinkClosed(session.pairing.sessionId)
-                _pairing.value = _pairing.value.copy(connectedGuests = hub?.size ?: 0)
-                onParticipantsChanged?.invoke()
+                val nowInHub = hub?.size ?: 0
+                if (wasInHub > nowInHub) {
+                    onParticipantsChanged?.invoke()
+                }
+                if (!session.isConnected) {
+                    _pairing.value = _pairing.value.copy(
+                        state = PairingState.FAILED,
+                        codes = emptyList(),
+                        expiresAtMs = 0L,
+                        secondsRemaining = 0L,
+                        failureReason = reason,
+                        connectedGuests = nowInHub,
+                    )
+                } else if (wasInHub != nowInHub) {
+                    _pairing.value = _pairing.value.copy(connectedGuests = nowInHub)
+                }
             }
 
             override fun onInvitationsChanged(invitations: List<P2PHostCoordinator.Invitation>) {
-                val first = invitations.firstOrNull()
-                // A failure with no invitation attached is still worth showing:
-                // it is the reason the button appeared to do nothing.
+                // Prefer the most recent invitation that is still in-flight (so
+                // inviting a second guest shows the second guest's QR rather than
+                // staying stuck on guest #1's CONNECTED state).
+                val current = invitations.lastOrNull { it.state != PairingState.CONNECTED }
+                    ?: invitations.lastOrNull()
+                val connectedCount = hub?.size ?: invitations.count { it.state == PairingState.CONNECTED }
+                val failure = current?.failureReason ?: host?.failure?.value
+                val codes = if (current?.state == PairingState.WAITING_FOR_GUEST && current.payload != null) {
+                    ChunkedPayload.encodeForDisplay(
+                        payload = PairingPayload.encode(current.payload),
+                        sessionId = PairingSession.shortId(current.payload.sessionId),
+                    )
+                } else {
+                    emptyList()
+                }
+                val resolvedState = when {
+                    current != null -> current.state
+                    failure != null -> PairingState.FAILED
+                    connectedCount > 0 -> PairingState.CONNECTED
+                    else -> PairingState.IDLE
+                }
                 _pairing.value = _pairing.value.copy(
-                    state = first?.state ?: _pairing.value.state,
-                    expiresAtMs = first?.expiresAtMs ?: _pairing.value.expiresAtMs,
-                    secondsRemaining = first?.secondsRemaining ?: _pairing.value.secondsRemaining,
-                    verificationCode = first?.verificationCode ?: _pairing.value.verificationCode,
-                    connectedGuests = hub?.size ?: 0,
+                    state = resolvedState,
+                    codes = codes,
+                    expiresAtMs = current?.expiresAtMs ?: 0L,
+                    secondsRemaining = current?.secondsRemaining ?: 0L,
+                    verificationCode = current?.verificationCode,
+                    failureReason = failure,
+                    connectedGuests = connectedCount,
                 )
             }
         }
@@ -164,6 +220,7 @@ class P2PWatchPartySession(
                     secondsRemaining = snapshot.invitationSecondsRemaining,
                     verificationCode = snapshot.localVerificationCode,
                     remoteVerificationCode = snapshot.hostVerificationCode,
+                    failureReason = null,
                 )
             }
 
@@ -171,16 +228,27 @@ class P2PWatchPartySession(
                 guestLink = link as? P2PSessionLink
                 _pairing.value = _pairing.value.copy(
                     state = PairingState.CONNECTED,
+                    codes = emptyList(),
+                    expiresAtMs = 0L,
+                    secondsRemaining = 0L,
+                    failureReason = null,
                     connectedGuests = 1,
                 )
+                activeGuestTransport?.notifyConnected()
                 onParticipantsChanged?.invoke()
             }
 
             override fun onFailed(reason: String) {
+                guestLink = null
                 _pairing.value = _pairing.value.copy(
                     state = PairingState.FAILED,
+                    codes = emptyList(),
+                    expiresAtMs = 0L,
+                    secondsRemaining = 0L,
                     failureReason = reason,
+                    connectedGuests = 0,
                 )
+                activeGuestTransport?.notifyFailed(reason)
             }
         }
         guest?.messageSink = { text -> onLocalFrame?.invoke(text) }
@@ -208,13 +276,18 @@ class P2PWatchPartySession(
 
     /** Host: applies an answer the guest scanned back. */
     fun acceptAnswer(raw: String): Boolean {
-        val payload = PairingPayload.decode(raw) ?: return false
+        val payload = ChunkedPayload.decodePayload(raw) ?: run {
+            _pairing.value = _pairing.value.copy(
+                failureReason = "That is not a Hikaru Watch Party answer code.",
+            )
+            return false
+        }
         return host?.acceptAnswerForOnlyWaitingInvitation(payload) ?: false
     }
 
     /** Guest: begins pairing from a scanned or pasted invitation. */
     fun beginPairing(raw: String): Boolean {
-        val payload = PairingPayload.decode(raw) ?: run {
+        val payload = ChunkedPayload.decodePayload(raw) ?: run {
             _pairing.value = _pairing.value.copy(
                 state = PairingState.FAILED,
                 failureReason = "That is not a Hikaru Watch Party code.",
@@ -231,7 +304,21 @@ class P2PWatchPartySession(
      * once to learn the room id, and decoding twice would be wasteful and could
      * disagree if the string were re-interpreted.
      */
-    fun beginPairing(payload: PairingPayload.Payload): Boolean = guest?.beginPairing(payload) ?: false
+    fun beginPairing(payload: PairingPayload.Payload): Boolean {
+        val ok = guest?.beginPairing(payload) ?: false
+        val guestSnapshot = guest?.state?.value
+        if (guestSnapshot != null) {
+            _pairing.value = _pairing.value.copy(
+                state = guestSnapshot.state,
+                codes = guestSnapshot.answerChunks,
+                verificationCode = guestSnapshot.localVerificationCode,
+                remoteVerificationCode = guestSnapshot.hostVerificationCode,
+                failureReason = guestSnapshot.failureReason,
+                secondsRemaining = guestSnapshot.invitationSecondsRemaining,
+            )
+        }
+        return ok
+    }
 
     // </editor-fold>
 
@@ -251,7 +338,7 @@ class P2PWatchPartySession(
         // dead object for the rest of the room's life. This delegates every call
         // to the current link instead, so it starts working the moment the
         // channel opens.
-        return GuestTransport()
+        return GuestTransport().also { activeGuestTransport = it }
     }
 
     /**
@@ -269,14 +356,16 @@ class P2PWatchPartySession(
             )
         }
 
+        fun notifyConnected() {
+            listener?.onStateChanged(RoomTransport.State.Connected)
+        }
+
+        fun notifyFailed(reason: String) {
+            listener?.onStateChanged(RoomTransport.State.Failed(reason))
+        }
+
         override fun send(text: String) {
-            val link = guestLink
-            if (link == null) {
-                // Nothing to send to yet: pairing has not finished. Reporting a
-                // failure here would be wrong, and dropping silently would hide a
-                // genuine regression, so it is logged once per occurrence.
-                return
-            }
+            val link = guestLink ?: return
             if (!link.send(text)) {
                 listener?.onStateChanged(
                     RoomTransport.State.Failed("The connection to the host was lost."),
@@ -285,6 +374,10 @@ class P2PWatchPartySession(
         }
 
         override fun close() {
+            if (activeGuestTransport === this) {
+                activeGuestTransport = null
+            }
+            listener = null
             guestLink?.close()
             guestLink = null
         }
@@ -299,8 +392,16 @@ class P2PWatchPartySession(
      */
     fun reportHostFailure(reason: String?) {
         if (reason == null) return
-        _pairing.value = _pairing.value.copy(
-            state = PairingState.FAILED,
+        val current = _pairing.value
+        // Preserve WAITING_FOR_GUEST QR if an invalid answer was rejected on screen;
+        // only move to FAILED when there is no active invitation QR.
+        val nextState = if (current.state == PairingState.WAITING_FOR_GUEST && current.codes.isNotEmpty()) {
+            PairingState.WAITING_FOR_GUEST
+        } else {
+            PairingState.FAILED
+        }
+        _pairing.value = current.copy(
+            state = nextState,
             failureReason = reason,
         )
     }
@@ -320,15 +421,12 @@ class P2PWatchPartySession(
     fun close() {
         onLocalFrame = null
         onParticipantsChanged = null
+        activeGuestTransport = null
         host?.closeAll()
         guest?.cancel()
         hub?.closeAll()
         guestLink = null
         _pairing.value = PairingSnapshot()
-    }
-
-    private fun publishCodes(chunks: List<ChunkedPayload.Chunk>) {
-        _pairing.value = _pairing.value.copy(codes = chunks.map { it.render() })
     }
 
     // </editor-fold>

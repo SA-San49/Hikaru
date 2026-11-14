@@ -13,7 +13,9 @@ import androidx.compose.ui.platform.LocalContext
 import eu.kanade.presentation.more.settings.Preference
 import eu.kanade.presentation.more.settings.screen.SearchableSettings
 import eu.kanade.tachiyomi.ui.player.settings.AdvancedPlayerPreferences
+import eu.kanade.tachiyomi.ui.player.watchparty.SignallingMode
 import eu.kanade.tachiyomi.ui.player.watchparty.WatchPartyPreferences
+import kotlinx.collections.immutable.toImmutableMap
 import tachiyomi.i18n.MR
 import tachiyomi.presentation.core.i18n.stringResource
 import uy.kohesive.injekt.Injekt
@@ -82,6 +84,19 @@ object PlayerSettingsAdvancedScreen : SearchableSettings {
                 pref = watchPartyPreferences.floatingReactions(),
                 title = stringResource(MR.strings.pref_watch_party_floating_reactions),
                 subtitle = stringResource(MR.strings.pref_watch_party_floating_reactions_summary),
+            ),
+            Preference.PreferenceItem.ListPreference(
+                pref = watchPartyPreferences.signallingMode(),
+                title = "Watch Party connection mode",
+                entries = mapOf(
+                    SignallingMode.SERVERLESS_QR to "Serverless (QR code)",
+                    SignallingMode.RELAY to "Self-hosted relay",
+                ).toImmutableMap(),
+            ),
+            Preference.PreferenceItem.SwitchPreference(
+                pref = watchPartyPreferences.lanOnly(),
+                title = "Watch Party local network only",
+                subtitle = "Exchange local Wi-Fi addresses only during QR pairing instead of querying STUN servers",
             ),
             Preference.PreferenceItem.EditTextPreference(
                 pref = watchPartyPreferences.relayUrl(),

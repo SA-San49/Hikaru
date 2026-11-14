@@ -146,4 +146,34 @@ class SdpTemplateTest {
         val parsed = SdpTemplate.parse(SdpTemplate.build(p))!!
         assertEquals("fe80::1c2d:3e4f:5a6b:7c8d", parsed.candidates.single().address)
     }
+
+    @Test
+    fun `srflx and relay candidates emit raddr and rport while host does not`() {
+        val p = payload(PairingPayload.Role.OFFER).copy(
+            candidates = listOf(
+                PairingPayload.IceCandidate(PairingPayload.IceCandidate.Type.HOST, "192.168.1.5", 54321),
+                PairingPayload.IceCandidate(PairingPayload.IceCandidate.Type.SRFLX, "203.0.113.9", 51234),
+                PairingPayload.IceCandidate(PairingPayload.IceCandidate.Type.RELAY, "2001:db8::1", 3478),
+            ),
+        )
+        val sdpLines = SdpTemplate.build(p).lines()
+        assertTrue(sdpLines.any { it.endsWith("192.168.1.5 54321 typ host") })
+        assertTrue(sdpLines.any { it.endsWith("203.0.113.9 51234 typ srflx raddr 0.0.0.0 rport 0") })
+        assertTrue(sdpLines.any { it.endsWith("2001:db8::1 3478 typ relay raddr :: rport 0") })
+    }
+
+    @Test
+    fun `parse ignores non-udp candidates and handles uppercase SHA-256 fingerprint`() {
+        val sdp = """
+            a=ice-ufrag:u
+            a=ice-pwd:p
+            a=fingerprint:SHA-256 $fingerprint
+            a=candidate:1 1 tcp 1518280447 192.168.1.5 9 typ host tcptype active
+            a=candidate:2 1 udp 2122260223 192.168.1.5 54321 typ host
+        """.trimIndent()
+        val parsed = SdpTemplate.parse(sdp)!!
+        assertEquals(fingerprint, parsed.fingerprint)
+        assertEquals(1, parsed.candidates.size)
+        assertEquals(54321, parsed.candidates.single().port)
+    }
 }

@@ -1,6 +1,7 @@
 package eu.kanade.tachiyomi.ui.player.watchparty
 
 import android.content.Context
+import eu.kanade.tachiyomi.ui.player.watchparty.p2p.ChunkedPayload
 import eu.kanade.tachiyomi.ui.player.watchparty.p2p.P2PWatchPartySession
 import eu.kanade.tachiyomi.ui.player.watchparty.p2p.PairingPayload
 import kotlinx.coroutines.CoroutineScope
@@ -9,8 +10,11 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -62,6 +66,9 @@ class WatchPartyRoomScope(
     private val _pairing = MutableStateFlow(P2PWatchPartySession.PairingSnapshot())
     val pairing: StateFlow<P2PWatchPartySession.PairingSnapshot> = _pairing.asStateFlow()
 
+    private val _effects = MutableSharedFlow<WatchPartyEffect>(extraBufferCapacity = 16)
+    val effects: SharedFlow<WatchPartyEffect> = _effects.asSharedFlow()
+
     /**
      * The anime this room belongs to.
      *
@@ -88,7 +95,8 @@ class WatchPartyRoomScope(
 
     fun isEnabled(): Boolean = prefs.enabled().get()
 
-    fun isServerless(): Boolean = serverlessUsesPairing
+    fun isServerless(): Boolean =
+        if (isActive()) serverlessUsesPairing else P2PWatchPartySession.usesServerlessPairing(prefs)
 
     private fun ensureScope(): CoroutineScope =
         scope ?: CoroutineScope(SupervisorJob() + Dispatchers.Default).also { scope = it }
@@ -128,18 +136,35 @@ class WatchPartyRoomScope(
         this.animeKey = animeKey
         val serverlessMode = P2PWatchPartySession.usesServerlessPairing(prefs)
 
-        // In serverless mode `code` is a scanned/pasted invitation payload.
-        val invitation = if (serverlessMode) PairingPayload.decode(code) else null
+        // In serverless mode `code` is a scanned/pasted invitation payload (single or chunked).
+        val invitation = if (serverlessMode) ChunkedPayload.decodePayload(code) else null
         if (serverlessMode && invitation == null) {
             _state.value = WatchPartyUiState(
                 error = "That is not a Hikaru Watch Party invitation.",
             )
             return false
         }
+        if (serverlessMode && invitation != null) {
+            if (invitation.role != PairingPayload.Role.OFFER) {
+                _state.value = WatchPartyUiState(
+                    error = "That code is an answer, not an invitation.",
+                )
+                return false
+            }
+            when (val validation = PairingPayload.validate(invitation, System.currentTimeMillis())) {
+                is PairingPayload.Validation.Invalid -> {
+                    _state.value = WatchPartyUiState(error = validation.reason)
+                    return false
+                }
+                is PairingPayload.Validation.Valid -> Unit
+            }
+        }
 
-        val normalized = RoomCode.normalize(code) ?: if (serverlessMode) null else run {
-            _state.value = WatchPartyUiState(error = "That room code is not valid.")
-            return false
+        val normalized = if (serverlessMode) null else {
+            RoomCode.normalize(code) ?: run {
+                _state.value = WatchPartyUiState(error = "That room code is not valid.")
+                return false
+            }
         }
 
         val roomId = invitation?.roomId ?: normalized!!
@@ -159,16 +184,25 @@ class WatchPartyRoomScope(
         }
 
         if (serverlessMode) {
-            if (!beginPairing(invitation!!)) {
-                // Pairing failed; the session already holds the reason.
-                stop()
-                return false
+            roomCode = null
+            serverless?.bindRoom(roomId)
+            startTicker()
+            val session = serverless
+            if (session != null) {
+                _pairing.value = _pairing.value.copy(
+                    state = PairingState.CREATING_ANSWER,
+                    failureReason = null,
+                    codes = emptyList(),
+                )
+                ensureScope().launch(Dispatchers.Default) {
+                    session.beginPairing(invitation!!)
+                }
             }
         } else {
             roomCode = roomId
+            serverless?.bindRoom(roomId)
+            startTicker()
         }
-        serverless?.bindRoom(roomId)
-        startTicker()
         return true
     }
 
@@ -187,6 +221,11 @@ class WatchPartyRoomScope(
         current.onEpisodeReady(bridge.localEpisode())
     }
 
+    /** Detaches [bridge] when the player closes without ending the room. */
+    fun detachBridge(bridge: WatchPartyPlayerBridge) {
+        engine?.detachPlayer(bridge, IdlePlayerBridge)
+    }
+
     fun leave() {
         stop()
         _state.value = WatchPartyUiState()
@@ -200,6 +239,7 @@ class WatchPartyRoomScope(
         roomIdHint: String? = null,
     ) {
         stop()
+        serverlessUsesPairing = P2PWatchPartySession.usesServerlessPairing(prefs)
         val created = WatchPartyEngine(
             player = bridge,
             prefs = prefs,
@@ -210,7 +250,7 @@ class WatchPartyRoomScope(
                 } else {
                     RelayRoomTransport(
                         url = prefs.relayUrl().get(),
-                        roomId = animeKey,
+                        roomId = roomId,
                         participantId = prefs.participantId(),
                         displayName = { prefs.effectiveDisplayName() },
                         scope = ensureScope(),
@@ -221,7 +261,6 @@ class WatchPartyRoomScope(
         )
         engine = created
 
-        serverlessUsesPairing = P2PWatchPartySession.usesServerlessPairing(prefs)
         if (serverlessUsesPairing) {
             val session = P2PWatchPartySession(
                 context = appContext,
@@ -230,6 +269,7 @@ class WatchPartyRoomScope(
                 isHost = isHost,
             ).also { p2p ->
                 p2p.onLocalFrame = { text -> created.onMessage(text) }
+                p2p.onParticipantsChanged = { created.onPeerConnected() }
             }
             serverless = session
             ensureScope().launch { session.pairing.collect { _pairing.value = it } }
@@ -244,6 +284,7 @@ class WatchPartyRoomScope(
 
         val sessionScope = ensureScope()
         sessionScope.launch { created.state.collect { _state.value = it } }
+        sessionScope.launch { created.effects.collect { _effects.emit(it) } }
     }
 
     private fun engine(): WatchPartyEngine = engine ?: error("room not prepared")
@@ -297,23 +338,57 @@ class WatchPartyRoomScope(
             )
             return false
         }
-        val created = session.createInvitation()
-        if (!created) {
-            // The failure detail, if any, arrives through `session.host.failure`;
-            // this guarantees the user sees *something* either way.
-            val current = _pairing.value
-            _pairing.value = current.copy(
-                failureReason = current.failureReason
-                    ?: "The invitation could not be created on this device.",
-            )
+        _pairing.value = _pairing.value.copy(
+            state = PairingState.CREATING_INVITATION,
+            codes = emptyList(),
+            expiresAtMs = 0L,
+            secondsRemaining = 0L,
+            failureReason = null,
+        )
+        ensureScope().launch(Dispatchers.Default) {
+            val created = runCatching { session.createInvitation() }.getOrElse { error ->
+                logcat(LogPriority.ERROR, error) { "WatchParty P2P: invitation coroutine failed" }
+                false
+            }
+            if (!created) {
+                val current = _pairing.value
+                if (current.failureReason == null) {
+                    _pairing.value = current.copy(
+                        state = PairingState.FAILED,
+                        failureReason = "The invitation could not be created on this device.",
+                    )
+                }
+            }
         }
-        return created
+        return true
     }
 
-    fun acceptAnswer(raw: String): Boolean = serverless?.acceptAnswer(raw) == true
+    fun acceptAnswer(raw: String): Boolean {
+        val session = serverless ?: return false
+        return session.acceptAnswer(raw)
+    }
 
     /** Guest: begins pairing from a scanned or pasted code. */
-    fun beginPairing(raw: String): Boolean = serverless?.beginPairing(raw) == true
+    fun beginPairing(raw: String): Boolean {
+        val session = serverless ?: return false
+        val payload = ChunkedPayload.decodePayload(raw)
+        if (payload == null) {
+            _pairing.value = _pairing.value.copy(
+                state = PairingState.FAILED,
+                failureReason = "That is not a Hikaru Watch Party code.",
+            )
+            return false
+        }
+        _pairing.value = _pairing.value.copy(
+            state = PairingState.CREATING_ANSWER,
+            codes = emptyList(),
+            failureReason = null,
+        )
+        ensureScope().launch(Dispatchers.Default) {
+            session.beginPairing(payload)
+        }
+        return true
+    }
 
     /**
      * Guest: begins pairing from an invitation already decoded by [joinRoom].

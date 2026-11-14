@@ -35,6 +35,12 @@ class PeerConnectionFactoryHolder(
 
     private var factory: PeerConnectionFactory? = null
     private var activeSessions = 0
+    private var nativeInitialised = false
+
+    /** Last error message captured when factory initialisation failed. */
+    @Volatile
+    var lastError: String? = null
+        private set
 
     /** True once any session has ever been opened; used by tests and diagnostics. */
     var everInitialised = false
@@ -51,14 +57,16 @@ class PeerConnectionFactoryHolder(
     fun factory(): PeerConnectionFactory? {
         factory?.let { return it }
         return try {
-            if (!everInitialised) {
+            val appContext = context.applicationContext ?: context
+            if (!nativeInitialised) {
                 PeerConnectionFactory.initialize(
-                    PeerConnectionFactory.InitializationOptions.builder(context)
+                    PeerConnectionFactory.InitializationOptions.builder(appContext)
                         // No audio device module and no video encoder factory:
                         // the room carries neither, so neither is initialised.
                         .setEnableInternalTracer(false)
                         .createInitializationOptions(),
                 )
+                nativeInitialised = true
             }
             PeerConnectionFactory.builder()
                 .setOptions(PeerConnectionFactory.Options())
@@ -66,10 +74,23 @@ class PeerConnectionFactoryHolder(
                 ?.also {
                     factory = it
                     everInitialised = true
+                    lastError = null
                     logcat(LogPriority.INFO) { "WatchParty P2P: WebRTC initialised" }
+                }
+                ?: run {
+                    lastError = "This device could not start the WebRTC engine."
+                    null
                 }
         } catch (e: Throwable) {
             logcat(LogPriority.ERROR, e) { "WatchParty P2P: WebRTC initialisation failed" }
+            lastError = when {
+                e is UnsatisfiedLinkError || e.message.orEmpty().contains("jingle", ignoreCase = true) ->
+                    "This build is missing the WebRTC native library for your device's CPU, so direct pairing is unavailable."
+                !e.message.isNullOrBlank() ->
+                    "Could not start the WebRTC engine: ${e.message}"
+                else ->
+                    "The WebRTC engine failed to start on this device (${e::class.java.simpleName})."
+            }
             null
         }
     }
