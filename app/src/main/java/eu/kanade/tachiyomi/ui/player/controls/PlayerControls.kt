@@ -31,6 +31,7 @@ import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
@@ -53,6 +54,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.constraintlayout.compose.ConstraintLayout
 import androidx.constraintlayout.compose.Dimension
@@ -78,6 +80,10 @@ import eu.kanade.tachiyomi.ui.player.controls.components.TextPlayerUpdate
 import eu.kanade.tachiyomi.ui.player.controls.components.VolumeSlider
 import eu.kanade.tachiyomi.ui.player.controls.components.sheets.toFixed
 import eu.kanade.tachiyomi.ui.player.settings.AdvancedPlayerPreferences
+import eu.kanade.tachiyomi.ui.player.watchparty.FloatingReactions
+import eu.kanade.tachiyomi.ui.player.watchparty.WatchPartyEffect
+import eu.kanade.tachiyomi.ui.player.watchparty.WatchPartyPreferences
+import eu.kanade.tachiyomi.ui.player.watchparty.WatchPartyUiState
 import eu.kanade.tachiyomi.ui.player.settings.AudioPreferences
 import eu.kanade.tachiyomi.ui.player.settings.GesturePreferences
 import eu.kanade.tachiyomi.ui.player.settings.PlayerPreferences
@@ -165,6 +171,15 @@ fun PlayerControls(
 
     val customButtons by viewModel.customButtons.collectAsState()
     val customButton by viewModel.primaryButton.collectAsState()
+
+    // Watch Party: only collected once the feature has been engaged, so a normal
+    // playback session never allocates any of this.
+    val activity = LocalContext.current as PlayerActivity
+    val watchPartyState by viewModel.watchParty.state.collectAsState()
+    val watchPartyPairing by viewModel.watchParty.pairing.collectAsState()
+    val watchPartySelfId = viewModel.watchParty.selfId
+    // Recomputed on every state change: readiness derives from local playback too.
+    val watchPartyLocalReady = viewModel.watchParty.localReady()
 
     LaunchedEffect(
         controlsShown,
@@ -748,6 +763,30 @@ fun PlayerControls(
             onOpenPanel = viewModel::showPanel,
             onDismissRequest = { viewModel.showSheet(Sheets.None) },
             dismissSheet = dismissSheet,
+
+            watchPartyState = watchPartyState,
+            watchPartySelfId = watchPartySelfId,
+            watchPartyLocalReady = watchPartyLocalReady,
+            watchPartyIsServerless = viewModel.watchParty.isServerless(),
+            watchPartyPairing = watchPartyPairing,
+            onCreateWatchParty = {
+                activity.engageWatchParty()
+                viewModel.watchParty.createRoom()
+            },
+            onJoinWatchParty = { code ->
+                activity.engageWatchParty()
+                viewModel.watchParty.joinRoom(code)
+            },
+            onLeaveWatchParty = { viewModel.watchParty.leaveRoom() },
+            onWatchPartyReady = { viewModel.watchParty.requestReady() },
+            onWatchPartyNotReady = { viewModel.watchParty.requestNotReady() },
+            onWatchPartyCancelCountdown = { viewModel.watchParty.requestCancelCountdown() },
+            onWatchPartySyncNow = { viewModel.watchParty.requestSyncNow() },
+            onWatchPartySendChat = { text -> viewModel.watchParty.sendChatMessage(text) },
+            onWatchPartyReaction = { emoji -> viewModel.watchParty.sendReaction(emoji) },
+            onWatchPartyCreateInvitation = { viewModel.watchParty.createInvitation() },
+            onWatchPartyAcceptAnswer = { answer -> viewModel.watchParty.acceptAnswer(answer) },
+            onWatchPartyBeginPairing = { invitation -> viewModel.watchParty.beginPairing(invitation) },
         )
         val panel by viewModel.panelShown.collectAsState()
         key("player-panels") {
@@ -757,7 +796,6 @@ fun PlayerControls(
             )
         }
 
-        val activity = LocalContext.current as PlayerActivity
         val dialog by viewModel.dialogShown.collectAsState()
         val anime by viewModel.currentAnime.collectAsState()
         val playlist by viewModel.currentPlaylist.collectAsState()
@@ -776,6 +814,56 @@ fun PlayerControls(
             },
             onDismissRequest = { viewModel.showDialog(Dialogs.None) },
         )
+
+        // Watch Party's chat occupies the space the video does not need: the
+        // activity shrinks the mpv surface to the picture's own height, and this
+        // panel fills the band beneath it. It is a sibling of the controls rather
+        // than a sheet so it stays visible while watching.
+        if (watchPartyState.active) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(top = watchPartyPanelTopPadding(viewModel)),
+                contentAlignment = Alignment.BottomCenter,
+            ) {
+                eu.kanade.tachiyomi.ui.player.watchparty.WatchPartyPanel(
+                    state = watchPartyState,
+                    selfId = watchPartySelfId,
+                    localReady = watchPartyLocalReady,
+                    onSendChat = { text -> viewModel.watchParty.sendChatMessage(text) },
+                    onReaction = { emoji -> viewModel.watchParty.sendReaction(emoji) },
+                    onReady = { viewModel.watchParty.requestReady() },
+                    onNotReady = { viewModel.watchParty.requestNotReady() },
+                    onCancelCountdown = { viewModel.watchParty.requestCancelCountdown() },
+                    onSyncNow = { viewModel.watchParty.requestSyncNow() },
+                )
+            }
+        }
+
+        // Watch Party overlays: only rendered while a room is open.
+        if (watchPartyState.active) {
+            LaunchedEffect(Unit) {
+                viewModel.watchParty.effects.collect { effect ->
+                    when (effect) {
+                        is WatchPartyEffect.ShowMessage -> viewModel.playerUpdate.update {
+                            PlayerUpdates.ShowText(effect.message)
+                        }
+                        WatchPartyEffect.PlaybackStarted -> Unit
+                    }
+                }
+            }
+            val watchPartyPrefs = remember { Injekt.get<WatchPartyPreferences>() }
+            if (watchPartyPrefs.floatingReactions().get() && watchPartyState.reactions.isNotEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(end = MaterialTheme.padding.large, top = MaterialTheme.padding.large),
+                    contentAlignment = Alignment.TopEnd,
+                ) {
+                    FloatingReactions(reactions = watchPartyState.reactions)
+                }
+            }
+        }
 
         BrightnessOverlay(
             brightness = currentBrightness,
@@ -796,6 +884,25 @@ fun PlayerControls(
         )
     }
 }
+
+/**
+ * Top padding that makes the panel begin exactly where the picture ends.
+ *
+ * The activity constrains the mpv surface to that height, so the panel fills the
+ * band underneath instead of overlapping the picture.
+ */
+@Composable
+private fun watchPartyPanelTopPadding(viewModel: PlayerViewModel): androidx.compose.ui.unit.Dp {
+    val heightPx by viewModel.watchPartyVideoHeight.collectAsState()
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    val configuration = androidx.compose.ui.platform.LocalConfiguration.current
+    // The activity publishes the video height as soon as a room is active. Until
+    // that value lands, fall back to half the screen so the panel is never drawn
+    // over the whole picture.
+    val px = heightPx ?: (with(density) { configuration.screenHeightDp.dp.roundToPx() } / 2)
+    return with(density) { px.toDp() }
+}
+
 
 fun <T> playerControlsExitAnimationSpec(): FiniteAnimationSpec<T> = tween(
     durationMillis = 300,

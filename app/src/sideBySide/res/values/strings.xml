@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      Side-by-side build: the launcher label must differ from the normal install,
+      otherwise two identical "Hikaru" icons are impossible to tell apart.
+    -->
+    <string name="app_name" translatable="false">Hikaru Watch Party</string>
+</resources>

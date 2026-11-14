@@ -10,4 +10,7 @@ val migrations: List<Migration>
         // KMK -->
         SetupAppUpdateMigration(),
         // KMK <--
+
+        // Adds the Watch Party button to player layouts saved before it existed.
+        SetupWatchPartyButtonMigration(),
     )

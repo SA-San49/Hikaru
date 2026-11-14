@@ -90,6 +90,8 @@ import eu.kanade.tachiyomi.ui.player.settings.AdvancedPlayerPreferences
 import eu.kanade.tachiyomi.ui.player.settings.AudioPreferences
 import eu.kanade.tachiyomi.ui.player.settings.GesturePreferences
 import eu.kanade.tachiyomi.ui.player.settings.PlayerPreferences
+import eu.kanade.tachiyomi.ui.player.watchparty.WatchPartyInvites
+import eu.kanade.tachiyomi.ui.player.watchparty.WatchPartyPreferences
 import eu.kanade.tachiyomi.ui.player.utils.ChapterUtils
 import eu.kanade.tachiyomi.ui.player.utils.ChapterUtils.Companion.getStringRes
 import eu.kanade.tachiyomi.util.system.powerManager
@@ -174,6 +176,16 @@ class PlayerActivity : BaseActivity() {
     }
 
     private var pipReceiver: BroadcastReceiver? = null
+
+    /**
+     * True once the user opened the Watch Party entry point in this player.
+     * Keeps every Watch Party code path off until the feature is used.
+     */
+    private var watchPartyEngaged = false
+
+    internal fun engageWatchParty() {
+        watchPartyEngaged = true
+    }
 
     val isTv by lazy {
         packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK)
@@ -336,6 +348,45 @@ class PlayerActivity : BaseActivity() {
         castManager
         // <-- Cast
 
+        // Watch Party reclaims the letterbox band for chat by constraining the
+        // mpv surface. It is a real view, not a Compose node, so this is the only
+        // place it can be done.
+        lifecycleScope.launch {
+            viewModel.watchParty.state.collect { state ->
+                if (state.active) {
+                    if (!watchPartyEngaged) {
+                        engageWatchParty()
+                        viewModel.watchParty.attachIfActive()
+                    }
+                    applyVideoRegionHeight(computeWatchPartyVideoHeight())
+                } else {
+                    applyVideoRegionHeight(null)
+                }
+            }
+        }
+        // Orientation changes alter the split (stacked vs side-by-side).
+        // View.OnLayoutChangeListener takes nine arguments: the view plus eight
+        // bounds. Naming the receiver keeps the arity obvious.
+        binding.root.addOnLayoutChangeListener(
+            object : android.view.View.OnLayoutChangeListener {
+                override fun onLayoutChange(
+                    v: android.view.View?,
+                    left: Int,
+                    top: Int,
+                    right: Int,
+                    bottom: Int,
+                    oldLeft: Int,
+                    oldTop: Int,
+                    oldRight: Int,
+                    oldBottom: Int,
+                ) {
+                    if (viewModel.watchParty.state.value.active) {
+                        applyVideoRegionHeight(computeWatchPartyVideoHeight())
+                    }
+                }
+            },
+        )
+
  binding.controls.setContent {
             val uiPreferences = remember { Injekt.get<UiPreferences>() }
             val dynamicPlayerTheme by uiPreferences.dynamicPlayerTheme().collectAsStatePref()
@@ -368,6 +419,25 @@ class PlayerActivity : BaseActivity() {
         }
 
         onNewIntent(this.intent)
+        handleWatchPartyInvite()
+    }
+
+    /**
+     * Opens the Watch Party panel pre-filled when an invite link launched this
+     * player. The room is never joined automatically.
+     */
+    private fun handleWatchPartyInvite() {
+        // Claim only once we know the feature is on, so a disabled install
+        // leaves nothing armed. The singleton store avoids touching the
+        // controller (and therefore the network stack) from the activity.
+        if (!WatchPartyPreferences(Injekt.get()).enabled().get()) {
+            WatchPartyInvites.clear()
+            return
+        }
+        val code = WatchPartyInvites.take() ?: return
+        engageWatchParty()
+        viewModel.watchParty.rememberPendingInvite(code)
+        viewModel.showSheet(Sheets.WatchParty)
     }
 
     override fun onDestroy() {
@@ -818,6 +888,10 @@ class PlayerActivity : BaseActivity() {
                     viewModel.updatePlayBackPos(value.toFloat())
                     viewModel.setChapter(value.toFloat())
                 }
+                // Watch Party does nothing unless a room is open.
+                if (watchPartyEngaged) {
+                    runCatching { viewModel.watchParty.onPositionChanged(value) }
+                }
             }
             "demuxer-cache-time" -> viewModel.updateReadAhead(value = value)
             "volume" -> viewModel.setMPVVolume(value.toInt())
@@ -853,6 +927,13 @@ class PlayerActivity : BaseActivity() {
         when (property) {
             "interpolation" -> PlayerStats.isInterpolating.value = value
             "pause" -> {
+                if (watchPartyEngaged) {
+                    if (value) {
+                        runCatching { viewModel.watchParty.onPause() }
+                    } else {
+                        runCatching { viewModel.watchParty.onPlay() }
+                    }
+                }
                 if (value && player.paused == true) {
                     viewModel.pause()
                     runOnUiThread {
@@ -1319,6 +1400,9 @@ class PlayerActivity : BaseActivity() {
      * @param autoPlay whether the episode is switching due to auto play
      */
     internal fun changeEpisode(episodeId: Long?, autoPlay: Boolean = false) {
+        if (watchPartyEngaged) {
+            runCatching { viewModel.watchParty.onEpisodeChanged() }
+        }
         viewModel.sheetShown.update { _ -> Sheets.None }
         viewModel.panelShown.update { _ -> Panels.None }
         viewModel.pause()
@@ -1576,6 +1660,9 @@ class PlayerActivity : BaseActivity() {
     // at void is.xyz.mpv.MPVLib.event(int) (MPVLib.java:86)
     private fun fileLoaded() {
         if (player.isExiting) return
+        if (watchPartyEngaged) {
+            runCatching { viewModel.watchParty.onEpisodeReady() }
+        }
         // Apply after mpv has created the subtitle tracks as well as before
         // loadfile; per-file subtitle defaults can otherwise win at this point.
         player.applySubtitlePreferences()
@@ -1735,4 +1822,79 @@ class PlayerActivity : BaseActivity() {
             }
         }
     }
+    /**
+     * Constrains the mpv surface to [heightPx], or restores full screen for `null`.
+     *
+     * The surface is matched to the video region rather than the whole window so
+     * that mpv has no space left to letterbox into above and below the picture.
+     * That dead band is precisely what the Watch Party layout reclaims for chat.
+     *
+     * Only the height is changed: the width stays full, and mpv keeps its own
+     * accurate aspect handling inside the smaller region.
+     */
+    /**
+     * The video region for the current window, in pixels.
+     *
+     * Uses the same arithmetic the chat panel uses, so the two always agree —
+     * they are two views of one split, not two independent guesses.
+     */
+    private fun computeWatchPartyVideoHeight(): Int {
+        val metrics = resources.displayMetrics
+        val heightPx = binding.root.height.takeIf { it > 0 } ?: metrics.heightPixels
+        val widthPx = binding.root.width.takeIf { it > 0 } ?: metrics.widthPixels
+        val mode = eu.kanade.tachiyomi.ui.player.watchparty.WatchPartyLayout.modeFor(widthPx, heightPx)
+
+        // In landscape the video owns the full height beside the chat column, so
+        // there is nothing to reclaim; only the portrait split needs a constraint.
+        if (mode == eu.kanade.tachiyomi.ui.player.watchparty.WatchPartyLayout.Mode.SIDE_BY_SIDE) {
+            return heightPx
+        }
+
+        val insets = androidx.core.view.ViewCompat.getRootWindowInsets(binding.root)
+            ?: return heightPx
+        val statusBar = insets.getInsets(
+            androidx.core.view.WindowInsetsCompat.Type.statusBars() or
+                androidx.core.view.WindowInsetsCompat.Type.displayCutout(),
+        ).top
+        val ime = insets.getInsets(androidx.core.view.WindowInsetsCompat.Type.ime()).bottom
+
+        val geometry = eu.kanade.tachiyomi.ui.player.watchparty.WatchPartyLayout.compute(
+            eu.kanade.tachiyomi.ui.player.watchparty.WatchPartyLayout.Request(
+                widthPx = widthPx,
+                heightPx = heightPx,
+                statusBarPx = statusBar,
+                imePx = ime,
+                inputRowPx = (64 * resources.displayMetrics.density).toInt(),
+                videoAspect = currentVideoAspect(),
+                sideChatWidthPx = (320 * resources.displayMetrics.density).toInt(),
+                mode = mode,
+            ),
+        )
+        return geometry.video.bottom
+    }
+
+    /**
+     * The playing video's aspect ratio, from mpv.
+     *
+     * Falls back to 16:9 when nothing is loaded rather than collapsing the region
+     * to zero, which would make the screen flash black while switching episodes.
+     */
+    private fun currentVideoAspect(): Double {
+        // The view already resolves this correctly, including rotated video, where
+        // a raw width/height ratio would be wrong by 90 degrees.
+        return runCatching { binding.player.getVideoOutAspect() }
+            .getOrNull()
+            ?.takeIf { it > 0.01 }
+            ?: (16.0 / 9.0)
+    }
+
+    private fun applyVideoRegionHeight(heightPx: Int?) {
+        val view = binding.player
+        val params = view.layoutParams ?: return
+        val target = heightPx ?: android.view.ViewGroup.LayoutParams.MATCH_PARENT
+        if (params.height == target) return
+        params.height = target
+        view.layoutParams = params
+    }
+
 }

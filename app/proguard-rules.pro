@@ -318,3 +318,61 @@
 -dontwarn org.ietf.jgss.GSSManager
 -dontwarn org.ietf.jgss.GSSName
 -dontwarn org.ietf.jgss.Oid
+# ---------------------------------------------------------------------------
+# Watch Party: WebRTC.
+#
+# The WebRTC Android SDK binds Java to C++ through JNI. The native side looks
+# Java classes and methods up *by name* at runtime, so almost nothing in
+# `org.webrtc` is safe to rename, and methods annotated @CalledByNative are
+# invoked from native code that R8 cannot see.
+#
+# Without these rules the app does not fail cleanly: obfuscated names reach JNI,
+# the lookup fails, and the process dies with a native crash such as
+# "JNI ERROR (app bug): accessed stale Local reference" or a SIGSEGV in
+# libjingle — with no Java stack trace and nothing to catch. Symptoms are exactly
+# "I tapped the button and the app closed".
+#
+# The SDK ships no consumer rules of its own, so they must live here.
+-keep class org.webrtc.** { *; }
+-keep interface org.webrtc.** { *; }
+-dontwarn org.webrtc.**
+
+# Native entry points and the classes/methods JNI calls back into.
+-keepclasseswithmembernames,includedescriptorclasses class * {
+    native <methods>;
+}
+-keepclassmembers class * {
+    @org.webrtc.CalledByNative <methods>;
+}
+-keepclassmembers class * {
+    @org.webrtc.CalledByNativeUnchecked <methods>;
+}
+-keep class org.webrtc.CalledByNative
+-keep class org.webrtc.CalledByNativeUnchecked
+-keep class org.webrtc.JniCommon { *; }
+-keep class org.webrtc.NativeLibrary { *; }
+-keep class org.webrtc.NativeLibrary$DefaultLoader { *; }
+
+# HardenedAudioDeviceModule and the audio helpers are resolved reflectively on
+# some devices; the SDK's own build keeps them.
+-keep class org.webrtc.audio.** { *; }
+-dontwarn org.webrtc.audio.**
+
+# WebRTC builds >= 120 route native->Java calls through org.jni_zero. Keep it
+# intact alongside org.webrtc as defense-in-depth.
+-keep class org.jni_zero.** { *; }
+-keep interface org.jni_zero.** { *; }
+-dontwarn org.jni_zero.**
+-keepclasseswithmembers,includedescriptorclasses class * {
+    @org.jni_zero.CalledByNative <methods>;
+}
+-keepclasseswithmembers,includedescriptorclasses class * {
+    @org.jni_zero.CalledByNativeUnchecked <methods>;
+}
+-keepclassmembers class * {
+    @org.jni_zero.AccessedByNative <fields>;
+}
+
+# ---------------------------------------------------------------------------
+# Watch Party: ZXing.
+-dontwarn com.google.zxing.**

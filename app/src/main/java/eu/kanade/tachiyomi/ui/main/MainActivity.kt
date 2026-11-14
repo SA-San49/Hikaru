@@ -124,6 +124,8 @@ import tachiyomi.core.common.i18n.stringResource
 import tachiyomi.core.common.util.lang.withUIContext
 import tachiyomi.core.common.util.system.logcat
 import tachiyomi.domain.release.interactor.GetApplicationRelease
+import eu.kanade.tachiyomi.ui.player.watchparty.WatchPartyInviteParser
+import eu.kanade.tachiyomi.ui.player.watchparty.WatchPartyInvites
 import tachiyomi.i18n.MR
 import tachiyomi.presentation.core.components.material.Scaffold
 import tachiyomi.presentation.core.screens.LoadingScreen
@@ -495,6 +497,24 @@ class MainActivity : BaseActivity() {
         }
     }
 
+    /**
+     * True for `hikaru://watchparty/<CODE>` and `https://hikaru.app/watchparty/<CODE>`.
+     * The legacy schemes are accepted because the manifest matches them too.
+     */
+    private fun isWatchPartyInvite(intent: Intent): Boolean {
+        val uri = intent.data ?: return false
+        val scheme = uri.scheme ?: return false
+        val hosts = arrayOf("hikaru", "aniyomi", "mihon", "tachiyomi")
+        return when {
+            scheme in hosts -> uri.host == "watchparty"
+            scheme == "https" || scheme == "http" -> {
+                (uri.host == "hikaru.app" || uri.host == "www.hikaru.app") &&
+                    uri.path.orEmpty().startsWith("/watchparty/")
+            }
+            else -> false
+        }
+    }
+
     private fun handleIntentAction(intent: Intent, navigator: Navigator): Boolean {
         val notificationId = intent.getIntExtra("notificationId", -1)
         if (notificationId > -1) {
@@ -559,6 +579,17 @@ class MainActivity : BaseActivity() {
                 if (intent.data.toString().endsWith(".tachibk")) {
                     navigator.popUntilRoot()
                     navigator.push(RestoreBackupScreen(intent.data.toString()))
+                }
+                // Watch Party invite: hikaru://watchparty/<CODE> or
+                // https://hikaru.app/watchparty/<CODE>. The code is parked until
+                // the player opens; joining is never automatic.
+                else if (isWatchPartyInvite(intent)) {
+                    val code = WatchPartyInviteParser.parseRoomCode(intent.dataString)
+                    if (code != null) {
+                        WatchPartyInvites.post(code)
+                        navigator.popUntilRoot()
+                        toast(MR.strings.player_button_watch_party)
+                    }
                 }
                 // Deep link to add anime extension repo
                 else if ((intent.scheme == "hikaru" || intent.scheme == "aniyomi" || intent.scheme == "mihon" || intent.scheme == "tachiyomi") && intent.data?.host == "add-repo") {

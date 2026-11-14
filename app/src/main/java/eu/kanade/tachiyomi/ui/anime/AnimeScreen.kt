@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -134,6 +135,27 @@ class AnimeScreen(
         val isHttpSource = remember { successState.source is HttpSource }
         val isConfigurableSource = remember { successState.source is ConfigurableAnimeSource }
 
+        // Watch Party is anime-level: the room belongs to this series, not to an
+        // episode, so it is created here and survives opening/closing episodes.
+        val watchPartyScope = remember { eu.kanade.tachiyomi.ui.player.watchparty.WatchPartyRoomScope.get() }
+        val watchPartyState by watchPartyScope.state.collectAsState()
+        val watchPartyPairing by watchPartyScope.pairing.collectAsState()
+        var showWatchPartyDialog by rememberSaveable { mutableStateOf(false) }
+        var scanningTitle by remember { mutableStateOf<String?>(null) }
+        var scanApply by remember { mutableStateOf<((String) -> Unit)?>(null) }
+        val watchPartyEnabled = remember { watchPartyScope.isEnabled() }
+
+        // A watched anime can be closed and reopened; bind the room to whichever
+        // series is on screen so a room from another anime is never reused.
+        val animeKey = remember(successState.anime.id, successState.anime.url, successState.source?.id) {
+            successState.anime.url?.let { url ->
+                eu.kanade.tachiyomi.ui.player.watchparty.WatchPartyRoomScope.animeKey(
+                    sourceId = successState.source?.id ?: 0L,
+                    animeUrl = url,
+                )
+            }.orEmpty()
+        }
+
         LaunchedEffect(successState.isRefreshingData) {
             if (successState.isRefreshingData) {
                 screenModel.fetchAllFromSource(manualFetch = false)
@@ -198,6 +220,11 @@ class AnimeScreen(
                 onAddToLibraryClicked = {
                     screenModel.toggleFavorite()
                 },
+                // Watch Party replaces the WebView button; WebView is kept as its
+                // long-press so nothing is lost.
+                onWatchPartyClicked = {
+                    showWatchPartyDialog = true
+                }.takeIf { watchPartyEnabled },
                 onWebViewClicked = {
                     openAnimeInWebView(
                         navigator,
@@ -283,6 +310,70 @@ class AnimeScreen(
                     excludedScanlators = successState.excludedScanlators.toSet(),
                     onDismissRequest = { showScanlatorsDialog = false },
                     onConfirm = screenModel::setExcludedScanlators,
+                )
+            }
+
+            if (showWatchPartyDialog) {
+                eu.kanade.presentation.anime.watchparty.AnimeWatchPartyDialog(
+                    animeTitle = successState.anime.title,
+                    isEnabled = watchPartyEnabled,
+                    isActive = watchPartyState.active,
+                    isHost = watchPartyState.isHost,
+                    roomCode = watchPartyScope.roomCode,
+                    pairing = watchPartyPairing,
+                    isServerless = watchPartyScope.isServerless(),
+                    lobbyError = watchPartyState.error,
+                    onCreateRoom = {
+                        // A room needs a player bridge for position/pause state.
+                        // Before any episode is open there is nothing playing, so
+                        // the room starts paused at zero — which is the truth.
+                        watchPartyScope.createRoom(
+                            animeKey,
+                            eu.kanade.tachiyomi.ui.player.watchparty.IdlePlayerBridge,
+                        )
+                    },
+                    onJoinRoom = { code ->
+                        watchPartyScope.joinRoom(
+                            animeKey,
+                            code,
+                            eu.kanade.tachiyomi.ui.player.watchparty.IdlePlayerBridge,
+                        )
+                    },
+                    onLeaveRoom = {
+                        watchPartyScope.leave()
+                        showWatchPartyDialog = false
+                    },
+                    onCreateInvitation = {
+                        // Never let a pairing failure take the anime screen down
+                        // with it. The scope already turns failures into a state the
+                        // dialog renders, so anything escaping here is a bug worth
+                        // swallowing rather than crashing on.
+                        runCatching { watchPartyScope.createInvitation() }
+                    },
+                    onAcceptAnswer = { watchPartyScope.acceptAnswer(it) },
+                    onBeginPairing = { watchPartyScope.beginPairing(it) },
+                    onScan = { title, apply ->
+                        scanningTitle = title
+                        scanApply = apply
+                    },
+                    onDismissRequest = { showWatchPartyDialog = false },
+                )
+            }
+
+            val scannerTitle = scanningTitle
+            val scannerApply = scanApply
+            if (scannerTitle != null && scannerApply != null) {
+                eu.kanade.presentation.anime.watchparty.WatchPartyScannerDialog(
+                    title = scannerTitle,
+                    onResult = { scanned ->
+                        scannerApply(scanned)
+                        scanningTitle = null
+                        scanApply = null
+                    },
+                    onDismissRequest = {
+                        scanningTitle = null
+                        scanApply = null
+                    },
                 )
             }
 

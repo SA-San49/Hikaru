@@ -46,6 +46,7 @@ import androidx.compose.material.icons.outlined.AttachMoney
 import androidx.compose.material.icons.outlined.Block
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Done
+import androidx.compose.material.icons.outlined.Groups
 import androidx.compose.material.icons.outlined.DoneAll
 import androidx.compose.material.icons.outlined.FavoriteBorder
 import androidx.compose.material.icons.outlined.Pause
@@ -233,6 +234,7 @@ fun AnimeActionRow(
     fetchInterval: Int,
     status: Long,
     onAddToLibraryClicked: () -> Unit,
+    onWatchPartyClicked: (() -> Unit)?,
     onWebViewClicked: (() -> Unit)?,
     onWebViewLongClicked: (() -> Unit)?,
     onTrackingClicked: () -> Unit,
@@ -340,7 +342,19 @@ fun AnimeActionRow(
                     color = if (trackingCount == 0) defaultActionButtonColor else MaterialTheme.colorScheme.primary,
                     onClick = onTrackingClicked,
                 )
-                if (onWebViewClicked != null) {
+                // Watch Party sits where WebView used to be: it is the action
+                // people look for on the detail page, and it is what this row is
+                // for now. WebView is still reachable by long-pressing it, so no
+                // functionality was removed.
+                if (onWatchPartyClicked != null) {
+                    AnimeActionButton(
+                        title = stringResource(MR.strings.watch_party),
+                        icon = Icons.Outlined.Groups,
+                        color = MaterialTheme.colorScheme.primary,
+                        onClick = onWatchPartyClicked,
+                        onLongClick = onWebViewClicked,
+                    )
+                } else if (onWebViewClicked != null) {
                     AnimeActionButton(
                         title = stringResource(MR.strings.action_web_view),
                         icon = Icons.Outlined.Public,
