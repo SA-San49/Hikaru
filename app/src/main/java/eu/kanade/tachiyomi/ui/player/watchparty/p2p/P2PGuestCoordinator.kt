@@ -71,12 +71,8 @@ class P2PGuestCoordinator(
         synchronized(lock) {
             val existing = session
             if (existing != null) {
-                val currentState = _state.value.state
-                if (currentState != PairingState.FAILED &&
-                    currentState != PairingState.INVITATION_EXPIRED &&
-                    currentState != PairingState.IDLE
-                ) {
-                    logcat(LogPriority.WARN) { "WatchParty P2P: already pairing ($currentState)" }
+                if (existing.isConnected || _state.value.state == PairingState.CONNECTED) {
+                    logcat(LogPriority.WARN) { "WatchParty P2P: already connected to host" }
                     return false
                 }
                 previousToClose = existing
@@ -114,8 +110,33 @@ class P2PGuestCoordinator(
             invitationSecondsRemaining = secondsUntil(payload.expiresAtMs),
         )
         // The invitation that was just accepted; `acceptInvitation` stored it.
-        created.createAnswerFor(pairing.remotePayload ?: payload)
-        return true
+        return try {
+            created.createAnswerFor(pairing.remotePayload ?: payload)
+            true
+        } catch (e: Throwable) {
+            logcat(LogPriority.ERROR, e) { "WatchParty P2P: failed to create guest answer" }
+            synchronized(lock) {
+                if (session === created) session = null
+            }
+            runCatching { created.close() }
+            val reason = when {
+                e is UnsatisfiedLinkError || e.message.orEmpty().contains("jingle", ignoreCase = true) ->
+                    "This build cannot load the WebRTC engine, so direct pairing is unavailable."
+                !e.message.isNullOrBlank() ->
+                    "Could not read the invitation: ${e.message}"
+                else ->
+                    "Could not read the invitation. Ask the host for a new one."
+            }
+            _state.value = _state.value.copy(
+                state = PairingState.FAILED,
+                answerPayload = null,
+                answerChunks = emptyList(),
+                connected = false,
+                failureReason = reason,
+            )
+            listener?.onFailed(reason)
+            false
+        }
     }
 
     private fun events() = object : P2PSession.Event {

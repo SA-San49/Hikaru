@@ -339,6 +339,51 @@ class PairingSessionTest {
     }
 
     @Test
+    fun `a guest can start creating its answer right after accepting an invitation`() {
+        val session = guestSession()
+        val result = session.acceptInvitation(
+            answer(role = PairingPayload.Role.OFFER, expiresAtMs = 300_000L),
+            nowMs = 1_000L,
+        )
+        assertTrue(result is PairingSession.Result.Accepted)
+        assertEquals(PairingState.CREATING_ANSWER, session.state)
+
+        // Regression test for crash: P2PSession.createAnswerFor calls beginLocalDescription()
+        // right after P2PGuestCoordinator.beginPairing called acceptInvitation().
+        session.beginLocalDescription()
+        assertEquals(PairingState.CREATING_ANSWER, session.state)
+        assertTrue(session.remotePayload != null)
+
+        val guestAnswer = PairingPayload.Payload(
+            role = PairingPayload.Role.ANSWER,
+            sessionId = session.sessionId,
+            roomId = roomId,
+            ufrag = "u",
+            pwd = "p",
+            fingerprint = fingerprint,
+            candidates = listOf(PairingPayload.IceCandidate(PairingPayload.IceCandidate.Type.HOST, "10.0.0.3", 2222)),
+            expiresAtMs = 300_000L,
+        )
+        session.onAnswerPublished(guestAnswer)
+        assertEquals(PairingState.WAITING_FOR_ANSWER, session.state)
+    }
+
+    @Test
+    fun `a connected guest session still cannot be restarted in place`() {
+        val session = guestSession()
+        session.acceptInvitation(answer(role = PairingPayload.Role.OFFER, expiresAtMs = 300_000L), nowMs = 1_000L)
+        session.beginLocalDescription()
+        session.onConnected()
+        var threw = false
+        try {
+            session.beginLocalDescription()
+        } catch (e: IllegalStateException) {
+            threw = true
+        }
+        assertTrue(threw)
+    }
+
+    @Test
     fun `each session gets a distinct id so offers are never shared`() {
         val ids = (1..50).map { hostSession(generatedId = true).sessionId }
         assertEquals(50, ids.toSet().size, "session ids were reused")

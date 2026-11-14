@@ -8,6 +8,7 @@ import eu.kanade.tachiyomi.ui.player.watchparty.WatchPartyPreferences
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import logcat.LogPriority
 import tachiyomi.core.common.util.system.logcat
 
@@ -91,7 +92,7 @@ class P2PWatchPartySession(
             deliverLocal = { text -> onLocalFrame?.invoke(text) },
             onPeerLost = { peerId ->
                 host?.removeSession(peerId)
-                _pairing.value = _pairing.value.copy(connectedGuests = hub?.size ?: 0)
+                _pairing.update { it.copy(connectedGuests = hub?.size ?: 0) }
             },
         )
     } else {
@@ -123,15 +124,17 @@ class P2PWatchPartySession(
                     payload = PairingPayload.encode(payload),
                     sessionId = PairingSession.shortId(payload.sessionId),
                 )
-                _pairing.value = _pairing.value.copy(
-                    state = session.pairing.state,
-                    codes = codes,
-                    expiresAtMs = payload.expiresAtMs,
-                    secondsRemaining = session.pairing.secondsRemaining(clock()),
-                    verificationCode = payload.verificationCode,
-                    failureReason = null,
-                    connectedGuests = hub?.size ?: _pairing.value.connectedGuests,
-                )
+                _pairing.update { current ->
+                    current.copy(
+                        state = session.pairing.state,
+                        codes = codes,
+                        expiresAtMs = payload.expiresAtMs,
+                        secondsRemaining = session.pairing.secondsRemaining(clock()),
+                        verificationCode = payload.verificationCode,
+                        failureReason = null,
+                        connectedGuests = hub?.size ?: current.connectedGuests,
+                    )
+                }
             }
 
             override fun onInvitationCandidate(session: P2PSession, candidate: PairingPayload.IceCandidate) {
@@ -143,14 +146,16 @@ class P2PWatchPartySession(
             override fun onGuestConnected(session: P2PSession, link: PeerLink) {
                 hub?.attach(link)
                 val connectedCount = hub?.size ?: 0
-                _pairing.value = _pairing.value.copy(
-                    state = PairingState.CONNECTED,
-                    codes = emptyList(),
-                    expiresAtMs = 0L,
-                    secondsRemaining = 0L,
-                    failureReason = null,
-                    connectedGuests = connectedCount,
-                )
+                _pairing.update {
+                    it.copy(
+                        state = PairingState.CONNECTED,
+                        codes = emptyList(),
+                        expiresAtMs = 0L,
+                        secondsRemaining = 0L,
+                        failureReason = null,
+                        connectedGuests = connectedCount,
+                    )
+                }
                 onParticipantsChanged?.invoke()
             }
 
@@ -162,16 +167,18 @@ class P2PWatchPartySession(
                     onParticipantsChanged?.invoke()
                 }
                 if (!session.isConnected) {
-                    _pairing.value = _pairing.value.copy(
-                        state = PairingState.FAILED,
-                        codes = emptyList(),
-                        expiresAtMs = 0L,
-                        secondsRemaining = 0L,
-                        failureReason = reason,
-                        connectedGuests = nowInHub,
-                    )
+                    _pairing.update {
+                        it.copy(
+                            state = if (nowInHub > 0) PairingState.CONNECTED else PairingState.FAILED,
+                            codes = emptyList(),
+                            expiresAtMs = 0L,
+                            secondsRemaining = 0L,
+                            failureReason = reason,
+                            connectedGuests = nowInHub,
+                        )
+                    }
                 } else if (wasInHub != nowInHub) {
-                    _pairing.value = _pairing.value.copy(connectedGuests = nowInHub)
+                    _pairing.update { it.copy(connectedGuests = nowInHub) }
                 }
             }
 
@@ -197,15 +204,17 @@ class P2PWatchPartySession(
                     connectedCount > 0 -> PairingState.CONNECTED
                     else -> PairingState.IDLE
                 }
-                _pairing.value = _pairing.value.copy(
-                    state = resolvedState,
-                    codes = codes,
-                    expiresAtMs = current?.expiresAtMs ?: 0L,
-                    secondsRemaining = current?.secondsRemaining ?: 0L,
-                    verificationCode = current?.verificationCode,
-                    failureReason = failure,
-                    connectedGuests = connectedCount,
-                )
+                _pairing.update {
+                    it.copy(
+                        state = resolvedState,
+                        codes = codes,
+                        expiresAtMs = current?.expiresAtMs ?: 0L,
+                        secondsRemaining = current?.secondsRemaining ?: 0L,
+                        verificationCode = current?.verificationCode,
+                        failureReason = failure,
+                        connectedGuests = connectedCount,
+                    )
+                }
             }
         }
         host?.messageSink = { peerId, text -> hub?.onFrameFrom(peerId, text) }
@@ -213,41 +222,47 @@ class P2PWatchPartySession(
         guest?.listener = object : P2PGuestCoordinator.Listener {
             override fun onAnswerReady(payload: PairingPayload.Payload) {
                 val snapshot = guest.state.value
-                _pairing.value = _pairing.value.copy(
-                    state = snapshot.state,
-                    codes = snapshot.answerChunks,
-                    expiresAtMs = payload.expiresAtMs,
-                    secondsRemaining = snapshot.invitationSecondsRemaining,
-                    verificationCode = snapshot.localVerificationCode,
-                    remoteVerificationCode = snapshot.hostVerificationCode,
-                    failureReason = null,
-                )
+                _pairing.update {
+                    it.copy(
+                        state = snapshot.state,
+                        codes = snapshot.answerChunks,
+                        expiresAtMs = payload.expiresAtMs,
+                        secondsRemaining = snapshot.invitationSecondsRemaining,
+                        verificationCode = snapshot.localVerificationCode,
+                        remoteVerificationCode = snapshot.hostVerificationCode,
+                        failureReason = null,
+                    )
+                }
             }
 
             override fun onConnected(link: PeerLink) {
                 guestLink = link as? P2PSessionLink
-                _pairing.value = _pairing.value.copy(
-                    state = PairingState.CONNECTED,
-                    codes = emptyList(),
-                    expiresAtMs = 0L,
-                    secondsRemaining = 0L,
-                    failureReason = null,
-                    connectedGuests = 1,
-                )
+                _pairing.update {
+                    it.copy(
+                        state = PairingState.CONNECTED,
+                        codes = emptyList(),
+                        expiresAtMs = 0L,
+                        secondsRemaining = 0L,
+                        failureReason = null,
+                        connectedGuests = 1,
+                    )
+                }
                 activeGuestTransport?.notifyConnected()
                 onParticipantsChanged?.invoke()
             }
 
             override fun onFailed(reason: String) {
                 guestLink = null
-                _pairing.value = _pairing.value.copy(
-                    state = PairingState.FAILED,
-                    codes = emptyList(),
-                    expiresAtMs = 0L,
-                    secondsRemaining = 0L,
-                    failureReason = reason,
-                    connectedGuests = 0,
-                )
+                _pairing.update {
+                    it.copy(
+                        state = PairingState.FAILED,
+                        codes = emptyList(),
+                        expiresAtMs = 0L,
+                        secondsRemaining = 0L,
+                        failureReason = reason,
+                        connectedGuests = 0,
+                    )
+                }
                 activeGuestTransport?.notifyFailed(reason)
             }
         }
@@ -415,10 +430,13 @@ class P2PWatchPartySession(
     fun tick() {
         host?.tick()
         guest?.tick()
-        val current = _pairing.value
-        if (current.expiresAtMs > 0L) {
-            val remaining = (current.expiresAtMs - clock()).coerceAtLeast(0L)
-            _pairing.value = current.copy(secondsRemaining = (remaining + 999L) / 1_000L)
+        _pairing.update { current ->
+            if (current.expiresAtMs > 0L) {
+                val remaining = (current.expiresAtMs - clock()).coerceAtLeast(0L)
+                current.copy(secondsRemaining = (remaining + 999L) / 1_000L)
+            } else {
+                current
+            }
         }
     }
 

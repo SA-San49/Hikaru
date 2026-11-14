@@ -196,25 +196,25 @@ private fun CameraPreview(
 
     LaunchedEffect(paused, barcodeView) {
         if (paused) {
-            barcodeView.pause()
+            runCatching { barcodeView.pause() }
         } else {
-            barcodeView.resume()
+            runCatching { barcodeView.resume() }
         }
     }
 
     DisposableEffect(lifecycleOwner, barcodeView) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
-                Lifecycle.Event.ON_RESUME -> if (!currentPaused) barcodeView.resume()
-                Lifecycle.Event.ON_PAUSE -> barcodeView.pause()
+                Lifecycle.Event.ON_RESUME -> if (!currentPaused) runCatching { barcodeView.resume() }
+                Lifecycle.Event.ON_PAUSE -> runCatching { barcodeView.pause() }
                 else -> Unit
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
-            barcodeView.stopDecoding()
-            barcodeView.pause()
+            runCatching { barcodeView.stopDecoding() }
+            runCatching { barcodeView.pause() }
         }
     }
 
@@ -250,7 +250,11 @@ private fun decodeFromUri(context: Context, uri: Uri): String? = runCatching {
         BitmapFactory.decodeStream(it, null, options)
     } ?: return null
 
-    QrCodec.decodeBitmap(bitmap)
+    try {
+        QrCodec.decodeBitmap(bitmap)
+    } finally {
+        bitmap.recycle()
+    }
 }.getOrNull()
 
 /** Longest edge kept when decoding a picked photo. */

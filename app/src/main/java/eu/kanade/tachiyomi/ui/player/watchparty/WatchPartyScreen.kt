@@ -363,6 +363,9 @@ private fun ServerlessPairingSection(
         }
     }
 
+    if (!isHost && pairing.state == PairingState.CONNECTED && pairing.failureReason == null && pairing.codes.isEmpty()) {
+        return
+    }
     val role = if (isHost) PairingPayload.Role.OFFER else PairingPayload.Role.ANSWER
     Surface(
         color = MaterialTheme.colorScheme.surfaceVariant,

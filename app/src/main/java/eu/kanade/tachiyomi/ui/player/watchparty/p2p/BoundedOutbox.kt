@@ -80,6 +80,9 @@ class BoundedOutbox(val capacity: Int = DEFAULT_CAPACITY) {
         return if (discarded == 0) Result.Queued else Result.QueuedAfterDropping(discarded)
     }
 
+    /** Next frame to write without removing it, or `null` when empty. */
+    fun peek(): String? = queue.firstOrNull()
+
     /** Next frame to write, or `null` when drained. */
     fun poll(): String? = queue.removeFirstOrNull()
 

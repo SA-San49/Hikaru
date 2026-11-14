@@ -26,6 +26,7 @@ class P2PSessionLink(
     private val dataChannelProvider: () -> DataChannel?,
 ) : PeerLink {
 
+    private val sendLock = Any()
     private val outbox = BoundedOutbox()
 
     override var peerName: String = ""
@@ -43,31 +44,32 @@ class P2PSessionLink(
         val channel = dataChannelProvider()
         if (channel == null || channel.state() != DataChannel.State.OPEN) return false
 
-        // Try the wire first: if the buffer has room this is a single write and
-        // the queue never grows.
-        if (outbox.isEmpty && write(channel, text)) return true
+        synchronized(sendLock) {
+            // Try the wire first: if the buffer has room this is a single write and
+            // the queue never grows.
+            if (outbox.isEmpty && write(channel, text)) return true
 
-        when (val queued = outbox.offer(text)) {
-            is BoundedOutbox.Result.Rejected -> {
-                logcat(LogPriority.WARN) { "WatchParty P2P: refusing an oversized frame" }
-                return false
+            when (outbox.offer(text)) {
+                is BoundedOutbox.Result.Rejected -> {
+                    logcat(LogPriority.WARN) { "WatchParty P2P: refusing an oversized frame" }
+                    return false
+                }
+                is BoundedOutbox.Result.QueuedAfterDropping -> Unit
+                BoundedOutbox.Result.Queued -> Unit
             }
-            is BoundedOutbox.Result.QueuedAfterDropping -> Unit
-            BoundedOutbox.Result.Queued -> Unit
+            flushLocked(channel)
+            return true
         }
-        flush(channel)
-        return true
     }
 
     /** Writes as much of the backlog as the channel will take. */
-    private fun flush(channel: DataChannel) {
+    private fun flushLocked(channel: DataChannel) {
         while (true) {
-            val frame = outbox.poll() ?: return
+            val frame = outbox.peek() ?: return
             if (!write(channel, frame)) {
-                // Put it back at the front of the backlog so ordering holds.
-                outbox.offer(frame)
                 return
             }
+            outbox.poll()
         }
     }
 
@@ -76,7 +78,9 @@ class P2PSessionLink(
     }.getOrDefault(false)
 
     override fun close() {
-        outbox.clear()
+        synchronized(sendLock) {
+            outbox.clear()
+        }
         session.close()
     }
 

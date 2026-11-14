@@ -47,6 +47,7 @@ class PeerHub(
     private val onPeerLost: (peerId: String) -> Unit = {},
 ) {
 
+    private val lock = Any()
     private val links = LinkedHashMap<String, PeerLink>()
 
     /**
@@ -62,9 +63,9 @@ class PeerHub(
     private val consecutiveFailures = HashMap<String, Int>()
 
     /** Ids currently connected, in join order. */
-    val peerIds: List<String> get() = links.keys.toList()
+    val peerIds: List<String> get() = synchronized(lock) { links.keys.toList() }
 
-    val size: Int get() = links.size
+    val size: Int get() = synchronized(lock) { links.size }
 
     /**
      * Registers a connection.
@@ -74,17 +75,21 @@ class PeerHub(
      * double every frame they send.
      */
     fun attach(link: PeerLink) {
-        links.remove(link.peerId)?.let { previous ->
-            runCatching { previous.close() }
+        val previous = synchronized(lock) {
+            val old = links.remove(link.peerId)
+            links[link.peerId] = link
+            consecutiveFailures.remove(link.peerId)
+            old
         }
-        links[link.peerId] = link
-        consecutiveFailures.remove(link.peerId)
+        previous?.let { runCatching { it.close() } }
     }
 
     /** Removes a connection without notifying anyone (e.g. on teardown). */
     fun detach(peerId: String) {
-        links.remove(peerId)
-        consecutiveFailures.remove(peerId)
+        synchronized(lock) {
+            links.remove(peerId)
+            consecutiveFailures.remove(peerId)
+        }
     }
 
     /**
@@ -95,8 +100,11 @@ class PeerHub(
      * finds nothing to remove.
      */
     fun onLinkClosed(peerId: String) {
-        consecutiveFailures.remove(peerId)
-        if (links.remove(peerId) != null) {
+        val removed = synchronized(lock) {
+            consecutiveFailures.remove(peerId)
+            links.remove(peerId) != null
+        }
+        if (removed) {
             onPeerLost(peerId)
         }
     }
@@ -110,7 +118,8 @@ class PeerHub(
     fun broadcastFromSelf(text: String) {
         if (!isHost) {
             // A guest has exactly one link — the host.
-            links.values.firstOrNull()?.send(text)
+            val link = synchronized(lock) { links.values.firstOrNull() }
+            link?.send(text)
             return
         }
         sendToAll(text, except = null)
@@ -125,7 +134,8 @@ class PeerHub(
      * work with only unicast links.
      */
     fun onFrameFrom(fromPeerId: String, text: String) {
-        if (links[fromPeerId] == null) return // already gone; nothing to route
+        val known = synchronized(lock) { links[fromPeerId] != null }
+        if (!known) return // already gone; nothing to route
         deliverLocal(text)
         if (isHost) {
             sendToAll(text, except = fromPeerId)
@@ -139,7 +149,7 @@ class PeerHub(
      * link, which mutates [links] mid-iteration.
      */
     private fun sendToAll(text: String, except: String?) {
-        val snapshot = links.values.toList()
+        val snapshot = synchronized(lock) { links.values.toList() }
         snapshot.forEach { link ->
             if (link.peerId == except) return@forEach
             if (!link.isOpen) {
@@ -149,12 +159,23 @@ class PeerHub(
             }
             val sent = runCatching { link.send(text) }.getOrDefault(false)
             if (sent) {
-                consecutiveFailures.remove(link.peerId)
+                synchronized(lock) {
+                    if (links[link.peerId] === link) {
+                        consecutiveFailures.remove(link.peerId)
+                    }
+                }
                 return@forEach
             }
-            val failures = (consecutiveFailures[link.peerId] ?: 0) + 1
-            consecutiveFailures[link.peerId] = failures
-            if (failures >= MAX_CONSECUTIVE_FAILURES) {
+            val shouldClose = synchronized(lock) {
+                if (links[link.peerId] !== link) {
+                    false
+                } else {
+                    val failures = (consecutiveFailures[link.peerId] ?: 0) + 1
+                    consecutiveFailures[link.peerId] = failures
+                    failures >= MAX_CONSECUTIVE_FAILURES
+                }
+            }
+            if (shouldClose) {
                 // Sustained refusal: the peer is not merely a tick behind.
                 onLinkClosed(link.peerId)
             }
@@ -163,8 +184,12 @@ class PeerHub(
 
     /** Closes every link. Used when the room is left or the screen is destroyed. */
     fun closeAll() {
-        val snapshot = links.values.toList()
-        links.clear()
+        val snapshot = synchronized(lock) {
+            links.values.toList().also {
+                links.clear()
+                consecutiveFailures.clear()
+            }
+        }
         snapshot.forEach { runCatching { it.close() } }
     }
 

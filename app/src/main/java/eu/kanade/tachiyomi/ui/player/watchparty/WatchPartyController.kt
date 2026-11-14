@@ -65,8 +65,11 @@ class WatchPartyController(
             // The player holds the legacy DB episode (SEpisode: `episode_number`);
             // convert once here so the rest of the feature sees the domain model.
             val episode = viewModel.currentEpisode.value?.toDomainEpisode() ?: return null
+            val media = resolvedMediaKey
             return EpisodeIdentity(
                 animeTitle = viewModel.currentAnime.value?.title ?: "",
+                mediaKey = media?.second,
+                mediaKeySource = media?.first,
                 episodeNumber = episode.episodeNumber,
                 episodeTitle = episode.name,
                 durationMs = durationMs(),

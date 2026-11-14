@@ -18,6 +18,7 @@ import kotlinx.coroutines.launch
 import logcat.LogPriority
 import tachiyomi.core.common.util.system.logcat
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Everything the player has to provide to the Watch Party layer.
@@ -151,9 +152,11 @@ class WatchPartyEngine(
     private var sessionScope: CoroutineScope? = null
     private var tickerJob: Job? = null
     private var speedResetJob: Job? = null
-    private var sequence: Long = 0L
+    private val sequence = AtomicLong(0L)
+    private val stateLock = Any()
 
     /** True while a remote command is being applied; local callbacks must not echo it. */
+    @Volatile
     var isApplyingRemote: Boolean = false
         private set
 
@@ -167,12 +170,17 @@ class WatchPartyEngine(
     private val manualReady = HashMap<String, Boolean>()
     private val seenReactionIds = HashSet<String>()
 
+    @Volatile
     private var lastReactionQueuedAt = 0L
+    @Volatile
     private var lastPositionSentAt = 0L
+    @Volatile
     private var lastPresenceSentAt = 0L
+    @Volatile
     private var countdownSuppressedUntil = 0L
 
     /** Last authoritative snapshot received from the host (guests only). */
+    @Volatile
     private var authoritativeSnapshot: PlaybackSnapshot? = null
 
     private fun now(): Long = clock()
@@ -213,32 +221,35 @@ class WatchPartyEngine(
 
     private fun startSession(newRoomId: String, isHost: Boolean) {
         teardownSession()
-        router.reset()
-        syncEngine.reset()
-        readyCheck.reset()
-        syncNow.reset()
-        reactions.drain()
-        participants.clear()
-        manualReady.clear()
-        seenReactionIds.clear()
-        sequence = 0
-        lastPositionSentAt = 0
-        lastPresenceSentAt = 0
-        countdownSuppressedUntil = 0
-        authoritativeSnapshot = null
         roomId = newRoomId
+        val initialParticipants = synchronized(stateLock) {
+            router.reset()
+            syncEngine.reset()
+            readyCheck.reset()
+            syncNow.reset()
+            reactions.drain()
+            participants.clear()
+            synchronized(stateLock) { manualReady.clear() }
+            seenReactionIds.clear()
+            sequence.set(0L)
+            lastPositionSentAt = 0
+            lastPresenceSentAt = 0
+            countdownSuppressedUntil = 0
+            authoritativeSnapshot = null
+
+            participants[selfId] = ParticipantInfo(
+                participantId = selfId,
+                displayName = selfName(),
+                role = if (isHost) ParticipantRole.HOST else ParticipantRole.GUEST,
+                paused = player.isPaused(),
+                positionMs = player.positionMs(),
+                updatedAt = now(),
+            )
+            participants.values.toList()
+        }
 
         sessionScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         transport = transportFactory(newRoomId) { selfName() }.also { it.listener = this }
-
-        participants[selfId] = ParticipantInfo(
-            participantId = selfId,
-            displayName = selfName(),
-            role = if (isHost) ParticipantRole.HOST else ParticipantRole.GUEST,
-            paused = player.isPaused(),
-            positionMs = player.positionMs(),
-            updatedAt = now(),
-        )
 
         _state.update {
             it.copy(
@@ -249,7 +260,7 @@ class WatchPartyEngine(
                 connection = ConnectionState.CONNECTING,
                 error = null,
                 warning = null,
-                participants = participants.values.toList(),
+                participants = initialParticipants,
                 readyStates = emptyMap(),
                 chat = emptyList(),
                 reactions = emptyList(),
@@ -272,10 +283,12 @@ class WatchPartyEngine(
             }
         }
         teardownSession()
-        roomId = ""
-        participants.clear()
-        manualReady.clear()
-        seenReactionIds.clear()
+        synchronized(stateLock) {
+            roomId = ""
+            participants.clear()
+            synchronized(stateLock) { manualReady.clear() }
+            seenReactionIds.clear()
+        }
         _state.value = WatchPartyUiState()
     }
 
@@ -339,7 +352,8 @@ class WatchPartyEngine(
 
     override fun onMessage(text: String) {
         val event = RoomMessageCodec.decode(text) ?: return
-        when (val routed = router.route(event)) {
+        val routed = synchronized(stateLock) { router.route(event) }
+        when (routed) {
             is EventRouter.Result.Dropped -> logcat(LogPriority.VERBOSE) { "WatchParty drop: ${routed.reason}" }
             is EventRouter.Result.Deliver -> {
                 try {
@@ -356,7 +370,7 @@ class WatchPartyEngine(
 
     // <editor-fold desc="Outgoing events">
 
-    private fun nextSeq(): Long = ++sequence
+    private fun nextSeq(): Long = sequence.incrementAndGet()
 
     private fun sendEvent(type: WatchPartyEventType, payload: EventPayload = EventPayload()) {
         if (!_state.value.active) return
@@ -379,12 +393,14 @@ class WatchPartyEngine(
 
     private fun announceJoin() {
         val role = if (_state.value.isHost) ParticipantRole.HOST else ParticipantRole.GUEST
-        participants[selfId] = (participants[selfId] ?: ParticipantInfo(selfId, selfName())).copy(
-            role = role,
-            paused = player.isPaused(),
-            positionMs = player.positionMs(),
-            updatedAt = now(),
-        )
+        synchronized(stateLock) {
+            participants[selfId] = (participants[selfId] ?: ParticipantInfo(selfId, selfName())).copy(
+                role = role,
+                paused = player.isPaused(),
+                positionMs = player.positionMs(),
+                updatedAt = now(),
+            )
+        }
         publishParticipants()
         lastPresenceSentAt = now()
         sendEvent(WatchPartyEventType.PARTICIPANT_JOIN) {
@@ -452,7 +468,9 @@ class WatchPartyEngine(
     /** Guest drift correction towards the host's projected position. */
     private fun followAuthoritative(localPositionMs: Long) {
         val snapshot = authoritativeSnapshot ?: return
-        if (_state.value.isSyncing || _state.value.isCountingDown) return
+        val currentState = _state.value
+        if (currentState.isSyncing || currentState.isCountingDown) return
+        if (currentState.episodeMatch == EpisodeMatch.MISMATCH || currentState.episodeMatch == EpisodeMatch.UNRESOLVED) return
         val expected = syncEngine.projectPosition(snapshot, now())
         val decision = syncEngine.evaluate(
             expected = expected,
@@ -469,8 +487,21 @@ class WatchPartyEngine(
     fun onEpisodeReady(episode: EpisodeIdentity?) {
         if (!isLive()) return
         val local = episode ?: player.localEpisode()
+        if (_state.value.isHost) {
+            _state.update {
+                it.copy(
+                    episode = local ?: it.episode,
+                    episodeMatch = if (local != null) EpisodeMatch.EXACT else null,
+                    warning = null,
+                )
+            }
+            sendEvent(WatchPartyEventType.EPISODE_CHANGE) { it.copy(episode = local) }
+            broadcastPlayback(force = true)
+            return
+        }
+
         val roomEpisode = _state.value.episode
-        val (key, source) = player.localMediaKey() ?: (null to null)
+        val (source, key) = player.localMediaKey() ?: (null to null)
         val match = if (roomEpisode == null) null else EpisodeMatcher.match(roomEpisode, local, key, source)
 
         _state.update {
@@ -485,17 +516,39 @@ class WatchPartyEngine(
                 },
             )
         }
+        if (match == EpisodeMatch.EXACT || match == EpisodeMatch.PROBABLE) {
+            applyAuthoritativeSnapshotIfReady()
+        }
+    }
 
-        if (_state.value.isHost) {
-            sendEvent(WatchPartyEventType.EPISODE_CHANGE) { it.copy(episode = local) }
-            broadcastPlayback(force = true)
+    private fun applyAuthoritativeSnapshotIfReady() {
+        val snapshot = authoritativeSnapshot ?: return
+        val currentState = _state.value
+        if (currentState.isHost || currentState.isSyncing || currentState.isCountingDown) return
+        if (currentState.episodeMatch == EpisodeMatch.MISMATCH || currentState.episodeMatch == EpisodeMatch.UNRESOLVED) return
+        if (player.localEpisode() == null) return
+        syncEngine.reset()
+        val expected = syncEngine.projectPosition(snapshot, now())
+        val clamped = syncEngine.clampRemoteSeek(expected, player.durationMs())
+        applyRemote {
+            if (snapshot.paused) {
+                if (!player.isPaused()) player.pause()
+                if (clamped != null && kotlin.math.abs(player.positionMs() - clamped) > PLAYBACK_PAUSE_TOLERANCE_MS) {
+                    player.seekTo(clamped)
+                }
+            } else {
+                if (clamped != null && syncEngine.shouldApplyRemotePosition(player.positionMs(), clamped, paused = false)) {
+                    player.seekTo(clamped)
+                }
+                if (player.isPaused()) player.play()
+            }
         }
     }
 
     fun onLocalEpisodeChanged(episode: EpisodeIdentity?) {
         if (!isLive()) return
         // A new episode invalidates readiness: everyone has to prepare again.
-        manualReady.clear()
+        synchronized(stateLock) { manualReady.clear() }
         _state.update {
             it.copy(episode = episode ?: it.episode, episodeMatch = null, warning = null, countdown = null)
         }
@@ -512,7 +565,7 @@ class WatchPartyEngine(
 
     fun requestReady() {
         if (!isLive()) return
-        manualReady[selfId] = true
+        synchronized(stateLock) { manualReady[selfId] = true }
         countdownSuppressedUntil = 0
         sendEvent(WatchPartyEventType.READY) { it.copy(participantId = selfId, displayName = selfName()) }
         publishReadyStates()
@@ -521,13 +574,13 @@ class WatchPartyEngine(
 
     fun requestNotReady() {
         if (!isLive()) return
-        manualReady[selfId] = false
+        synchronized(stateLock) { manualReady[selfId] = false }
         sendEvent(WatchPartyEventType.NOT_READY) { it.copy(participantId = selfId, displayName = selfName()) }
         publishReadyStates()
         if (readyCheck.isCountingDown) cancelCountdown(reason = "You are no longer ready")
     }
 
-    fun isLocalReady(): Boolean = manualReady[selfId] == true
+    fun isLocalReady(): Boolean = synchronized(stateLock) { manualReady[selfId] == true }
 
     private fun cancelCountdown(reason: String) {
         if (!readyCheck.isCountingDown) return
@@ -549,9 +602,10 @@ class WatchPartyEngine(
         if (!isLive() || !_state.value.isHost) return
         if (readyCheck.isCountingDown || syncNow.isActive) return
         if (now() < countdownSuppressedUntil) return
-        if (participants.size < 2) return
+        val ids = synchronized(stateLock) { participants.keys.toList() }
+        if (ids.size < 2) return
 
-        val states = buildReadyStates(participants.keys.toList())
+        val states = buildReadyStates(ids)
         if (!allPrepared(states)) return
 
         val countdownId = UUID.randomUUID().toString()
@@ -621,7 +675,7 @@ class WatchPartyEngine(
         sessionScope?.launch {
             delay(SYNC_HOST_GATHER_MS)
             while (isActive && syncNow.isActive) {
-                if (syncNow.shouldResume(participants.keys.toList(), now(), hostPrepared = true)) {
+                if (syncNow.shouldResume(synchronized(stateLock) { participants.keys.toList() }, now(), hostPrepared = true)) {
                     completeSync()
                     return@launch
                 }
@@ -636,7 +690,7 @@ class WatchPartyEngine(
 
     private fun maybeCompleteSync() {
         if (!_state.value.isHost || !syncNow.isActive) return
-        if (syncNow.shouldResume(participants.keys.toList(), now(), hostPrepared = true)) {
+        if (syncNow.shouldResume(synchronized(stateLock) { participants.keys.toList() }, now(), hostPrepared = true)) {
             completeSync()
         }
     }
@@ -841,15 +895,19 @@ class WatchPartyEngine(
     // <editor-fold desc="Presence & ticker">
 
     private fun sendPresence() {
-        val current = participants[selfId] ?: return
         val paused = player.isPaused()
         val position = player.positionMs()
-        participants[selfId] = current.copy(
-            paused = paused,
-            positionMs = position,
-            updatedAt = now(),
-            presenceSeq = nextSeq(),
-        )
+        val updated = synchronized(stateLock) {
+            val current = participants[selfId] ?: return@synchronized false
+            participants[selfId] = current.copy(
+                paused = paused,
+                positionMs = position,
+                updatedAt = now(),
+                presenceSeq = nextSeq(),
+            )
+            true
+        }
+        if (!updated) return
         lastPresenceSentAt = now()
         publishParticipants()
         sendEvent(WatchPartyEventType.PRESENCE) {
@@ -895,7 +953,7 @@ class WatchPartyEngine(
         if (!_state.value.isHost) return
 
         // Re-validate readiness immediately before starting playback.
-        if (!allPrepared(buildReadyStates(participants.keys.toList()))) {
+        if (!allPrepared(buildReadyStates(synchronized(stateLock) { participants.keys.toList() }))) {
             sendEvent(WatchPartyEventType.COUNTDOWN_CANCEL) {
                 it.copy(countdownId = countdown.id, reason = "not ready")
             }
@@ -924,17 +982,20 @@ class WatchPartyEngine(
 
     private fun pruneStaleParticipants() {
         val nowMs = now()
-        val stale = participants.values.filter {
-            it.participantId != selfId &&
-                it.updatedAt > 0 &&
-                nowMs - it.updatedAt > DEFAULT_CONNECTION_TIMEOUT_MS
+        val stale = synchronized(stateLock) {
+            val expired = participants.values.filter {
+                it.participantId != selfId &&
+                    it.updatedAt > 0 &&
+                    nowMs - it.updatedAt > DEFAULT_CONNECTION_TIMEOUT_MS
+            }
+            expired.forEach { info ->
+                participants.remove(info.participantId)
+                manualReady.remove(info.participantId)
+                router.forget(info.participantId)
+            }
+            expired
         }
         if (stale.isEmpty()) return
-        stale.forEach { info ->
-            participants.remove(info.participantId)
-            manualReady.remove(info.participantId)
-            router.forget(info.participantId)
-        }
         publishParticipants()
         stale.forEach { info -> onParticipantRemoved(info.participantId, "${info.displayName} timed out") }
     }
@@ -955,12 +1016,15 @@ class WatchPartyEngine(
     }
 
     private fun publishParticipants() {
-        _state.update { it.copy(participants = participants.values.toList()) }
-        publishReadyStates()
+        val snapshot = synchronized(stateLock) { participants.values.toList() }
+        val ready = buildReadyStates(snapshot.map { it.participantId })
+        _state.update { it.copy(participants = snapshot, readyStates = ready) }
     }
 
     private fun publishReadyStates() {
-        _state.update { current -> current.copy(readyStates = buildReadyStates(participants.keys.toList())) }
+        val ids = synchronized(stateLock) { participants.keys.toList() }
+        val ready = buildReadyStates(ids)
+        _state.update { current -> current.copy(readyStates = ready) }
     }
 
     /**
@@ -969,8 +1033,9 @@ class WatchPartyEngine(
      * player's buffering state is layered on top so a stalled player is not ready.
      */
     private fun buildReadyStates(ids: Collection<String>): Map<String, ReadyState> {
+        val manualSnapshot = synchronized(stateLock) { manualReady.toMap() }
         return ids.associateWith { id ->
-            val manual = manualReady[id] == true
+            val manual = manualSnapshot[id] == true
             val resolved = if (id == selfId) player.localEpisode() != null && !player.isBuffering() else true
             when {
                 !manual || !resolved -> ReadyState.NOT_READY
@@ -1090,7 +1155,9 @@ class WatchPartyEngine(
             presenceSeq = event.seq,
             updatedAt = now(),
         )
-        participants[id] = info
+        synchronized(stateLock) {
+            participants[id] = info
+        }
         adoptHostIfClaimed(id, info.role)
         publishParticipants()
         if (_state.value.isHost) {
@@ -1104,9 +1171,11 @@ class WatchPartyEngine(
 
     private fun onParticipantLeave(event: RoomEvent) {
         val id = event.payload.participantId ?: event.senderId
-        participants.remove(id)
-        manualReady.remove(id)
-        router.forget(id)
+        synchronized(stateLock) {
+            participants.remove(id)
+            manualReady.remove(id)
+            router.forget(id)
+        }
         publishParticipants()
         onParticipantRemoved(id, "${event.senderName.ifBlank { "A participant" }} left")
     }
@@ -1114,19 +1183,22 @@ class WatchPartyEngine(
     private fun onPresence(event: RoomEvent) {
         val payload = event.payload
         val id = payload.participantId ?: event.senderId
-        val existing = participants[id] ?: ParticipantInfo(
-            participantId = id,
-            displayName = RoomMessageCodec.sanitizeDisplayName(event.senderName),
-        )
-        val role = payload.role ?: existing.role
-        participants[id] = existing.copy(
-            displayName = payload.displayName?.let(RoomMessageCodec::sanitizeDisplayName) ?: existing.displayName,
-            role = role,
-            paused = payload.paused ?: existing.paused,
-            positionMs = payload.positionMs ?: existing.positionMs,
-            presenceSeq = event.seq,
-            updatedAt = now(),
-        )
+        val role = synchronized(stateLock) {
+            val existing = participants[id] ?: ParticipantInfo(
+                participantId = id,
+                displayName = RoomMessageCodec.sanitizeDisplayName(event.senderName),
+            )
+            val resolvedRole = payload.role ?: existing.role
+            participants[id] = existing.copy(
+                displayName = payload.displayName?.let(RoomMessageCodec::sanitizeDisplayName) ?: existing.displayName,
+                role = resolvedRole,
+                paused = payload.paused ?: existing.paused,
+                positionMs = payload.positionMs ?: existing.positionMs,
+                presenceSeq = event.seq,
+                updatedAt = now(),
+            )
+            resolvedRole
+        }
         adoptHostIfClaimed(id, role)
         publishParticipants()
     }
@@ -1155,7 +1227,7 @@ class WatchPartyEngine(
         val knownHost = _state.value.hostId
         if (knownHost != null) return senderId == knownHost
         // Host not discovered yet (join race): trust the advertised host role once.
-        return participants[senderId]?.role == ParticipantRole.HOST
+        return synchronized(stateLock) { participants[senderId]?.role == ParticipantRole.HOST }
     }
 
     private fun onRemotePlayback(event: RoomEvent) {
@@ -1163,16 +1235,19 @@ class WatchPartyEngine(
         // Only the host is authoritative. Guests never drive playback directly;
         // recovery always goes through the explicit Sync Now flow.
         if (!isAuthoritative(event.senderId)) return
+        val canDriveLocal = _state.value.episodeMatch != EpisodeMatch.MISMATCH && player.localEpisode() != null
 
         when (event.type) {
             WatchPartyEventType.PLAY -> {
                 syncEngine.reset()
-                applyRemote {
-                    val target = payload.positionMs?.let { syncEngine.clampRemoteSeek(it, player.durationMs()) }
-                    if (target != null && syncEngine.shouldApplyRemotePosition(player.positionMs(), target, paused = false)) {
-                        player.seekTo(target)
+                if (canDriveLocal) {
+                    applyRemote {
+                        val target = payload.positionMs?.let { syncEngine.clampRemoteSeek(it, player.durationMs()) }
+                        if (target != null && syncEngine.shouldApplyRemotePosition(player.positionMs(), target, paused = false)) {
+                            player.seekTo(target)
+                        }
+                        if (player.isPaused()) player.play()
                     }
-                    if (player.isPaused()) player.play()
                 }
                 authoritativeSnapshot = PlaybackSnapshot(
                     positionMs = payload.positionMs ?: player.positionMs(),
@@ -1183,11 +1258,13 @@ class WatchPartyEngine(
             }
             WatchPartyEventType.PAUSE -> {
                 syncEngine.reset()
-                applyRemote {
-                    if (!player.isPaused()) player.pause()
-                    payload.positionMs?.let { target ->
-                        if (kotlin.math.abs(player.positionMs() - target) > PLAYBACK_PAUSE_TOLERANCE_MS) {
-                            syncEngine.clampRemoteSeek(target, player.durationMs())?.let { player.seekTo(it) }
+                if (canDriveLocal) {
+                    applyRemote {
+                        if (!player.isPaused()) player.pause()
+                        payload.positionMs?.let { target ->
+                            if (kotlin.math.abs(player.positionMs() - target) > PLAYBACK_PAUSE_TOLERANCE_MS) {
+                                syncEngine.clampRemoteSeek(target, player.durationMs())?.let { player.seekTo(it) }
+                            }
                         }
                     }
                 }
@@ -1201,10 +1278,12 @@ class WatchPartyEngine(
             WatchPartyEventType.SEEK -> {
                 val target = payload.positionMs ?: return
                 val clamped = syncEngine.clampRemoteSeek(target, player.durationMs()) ?: return
-                applyRemote {
-                    player.pause()
-                    player.seekTo(clamped)
-                    if (payload.paused == false) player.play()
+                if (canDriveLocal) {
+                    applyRemote {
+                        player.pause()
+                        player.seekTo(clamped)
+                        if (payload.paused == false) player.play()
+                    }
                 }
                 syncEngine.reset()
                 authoritativeSnapshot = PlaybackSnapshot(
@@ -1230,7 +1309,7 @@ class WatchPartyEngine(
     private fun onRemoteEpisode(event: RoomEvent) {
         val episode = event.payload.episode ?: return
         val local = player.localEpisode()
-        val (key, keySource) = player.localMediaKey() ?: (null to null)
+        val (keySource, key) = player.localMediaKey() ?: (null to null)
         val match = EpisodeMatcher.match(episode, local, key, keySource)
         _state.update {
             it.copy(
@@ -1244,12 +1323,15 @@ class WatchPartyEngine(
                 },
             )
         }
+        if (match == EpisodeMatch.EXACT || match == EpisodeMatch.PROBABLE) {
+            applyAuthoritativeSnapshotIfReady()
+        }
     }
 
     private fun onRemoteReady(event: RoomEvent) {
         val id = event.payload.participantId ?: event.senderId
         val ready = event.type == WatchPartyEventType.READY
-        manualReady[id] = ready
+        synchronized(stateLock) { manualReady[id] = ready }
         if (!ready && readyCheck.isCountingDown) {
             cancelCountdown(reason = "${event.senderName.ifBlank { "A participant" }} is not ready")
             countdownSuppressedUntil = now() + COUNTDOWN_RESTART_GUARD_MS
@@ -1309,8 +1391,12 @@ class WatchPartyEngine(
         val emoji = event.payload.emoji ?: return
         if (!ReactionAggregator.isAllowedEmoji(emoji)) return
         val id = event.payload.messageId ?: "${event.senderId}:${event.seq}"
-        if (!seenReactionIds.add(id)) return
-        if (seenReactionIds.size > MAX_SEEN_REACTIONS) seenReactionIds.clear()
+        val added = synchronized(stateLock) {
+            val isNew = seenReactionIds.add(id)
+            if (isNew && seenReactionIds.size > MAX_SEEN_REACTIONS) seenReactionIds.clear()
+            isNew
+        }
+        if (!added) return
         val reaction = ReactionEvent(
             senderId = event.senderId,
             senderName = RoomMessageCodec.sanitizeDisplayName(event.senderName),

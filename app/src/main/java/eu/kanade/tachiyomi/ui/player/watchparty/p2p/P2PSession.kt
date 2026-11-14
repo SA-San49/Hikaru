@@ -483,12 +483,12 @@ class P2PSession(
                 PeerConnection.IceConnectionState.CONNECTED,
                 PeerConnection.IceConnectionState.COMPLETED,
                 -> Unit // onConnected fires when the channel is actually open.
-                PeerConnection.IceConnectionState.FAILED -> {
+                PeerConnection.IceConnectionState.FAILED,
+                PeerConnection.IceConnectionState.CLOSED,
+                -> {
                     failHard(connectivityAdvice())
                 }
-                PeerConnection.IceConnectionState.DISCONNECTED -> {
-                    notifyDisconnected("The connection to this participant was lost.")
-                }
+                PeerConnection.IceConnectionState.DISCONNECTED -> Unit // ICE may recover transiently.
                 else -> Unit
             }
         }
@@ -630,8 +630,8 @@ class P2PSession(
     private companion object {
 
         const val CHANNEL_LABEL = "hikaru-watchparty"
-        const val GATHERING_GRACE_AFTER_CANDIDATE_MS = 600L
-        const val GATHERING_HARD_TIMEOUT_MS = 2_200L
+        const val GATHERING_GRACE_AFTER_CANDIDATE_MS = 1_200L
+        const val GATHERING_HARD_TIMEOUT_MS = 3_000L
 
         /**
          * Constraints for a DataChannel-only offer.

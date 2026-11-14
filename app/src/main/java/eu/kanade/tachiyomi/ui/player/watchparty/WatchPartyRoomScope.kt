@@ -16,6 +16,7 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import logcat.LogPriority
@@ -189,13 +190,26 @@ class WatchPartyRoomScope(
             startTicker()
             val session = serverless
             if (session != null) {
-                _pairing.value = _pairing.value.copy(
-                    state = PairingState.CREATING_ANSWER,
-                    failureReason = null,
-                    codes = emptyList(),
-                )
+                _pairing.update {
+                    it.copy(
+                        state = PairingState.CREATING_ANSWER,
+                        failureReason = null,
+                        codes = emptyList(),
+                    )
+                }
                 ensureScope().launch(Dispatchers.IO) {
-                    session.beginPairing(invitation!!)
+                    val ok = runCatching { session.beginPairing(invitation!!) }.getOrElse { error ->
+                        logcat(LogPriority.ERROR, error) { "WatchParty P2P: join pairing coroutine failed" }
+                        false
+                    }
+                    if (!ok && _pairing.value.failureReason == null && _pairing.value.state != PairingState.CONNECTED) {
+                        _pairing.update {
+                            it.copy(
+                                state = PairingState.FAILED,
+                                failureReason = "Could not read the invitation. Ask the host for a new one.",
+                            )
+                        }
+                    }
                 }
             }
         } else {
@@ -372,21 +386,37 @@ class WatchPartyRoomScope(
     /** Guest: begins pairing from a scanned or pasted code. */
     fun beginPairing(raw: String): Boolean {
         val session = serverless ?: return false
+        if (session.pairing.value.state == PairingState.CONNECTED) return false
         val payload = ChunkedPayload.decodePayload(raw)
         if (payload == null) {
-            _pairing.value = _pairing.value.copy(
-                state = PairingState.FAILED,
-                failureReason = "That is not a Hikaru Watch Party code.",
-            )
+            _pairing.update {
+                it.copy(
+                    state = PairingState.FAILED,
+                    failureReason = "That is not a Hikaru Watch Party code.",
+                )
+            }
             return false
         }
-        _pairing.value = _pairing.value.copy(
-            state = PairingState.CREATING_ANSWER,
-            codes = emptyList(),
-            failureReason = null,
-        )
+        _pairing.update {
+            it.copy(
+                state = PairingState.CREATING_ANSWER,
+                codes = emptyList(),
+                failureReason = null,
+            )
+        }
         ensureScope().launch(Dispatchers.IO) {
-            session.beginPairing(payload)
+            val ok = runCatching { session.beginPairing(payload) }.getOrElse { error ->
+                logcat(LogPriority.ERROR, error) { "WatchParty P2P: pairing coroutine failed" }
+                false
+            }
+            if (!ok && _pairing.value.failureReason == null && _pairing.value.state != PairingState.CONNECTED) {
+                _pairing.update {
+                    it.copy(
+                        state = PairingState.FAILED,
+                        failureReason = "Could not read the invitation. Ask the host for a new one.",
+                    )
+                }
+            }
         }
         return true
     }

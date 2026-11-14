@@ -83,7 +83,11 @@ class PairingSession(
 
     /** Marks the start of local description creation. */
     fun beginLocalDescription() {
-        check(state == PairingState.IDLE || state == PairingState.INVITATION_EXPIRED || state == PairingState.FAILED) {
+        val canStart = state == PairingState.IDLE ||
+            state == PairingState.INVITATION_EXPIRED ||
+            state == PairingState.FAILED ||
+            (role == PairingPayload.Role.ANSWER && state == PairingState.CREATING_ANSWER)
+        check(canStart) {
             "cannot restart a session in state $state"
         }
         state = if (role == PairingPayload.Role.OFFER) {
