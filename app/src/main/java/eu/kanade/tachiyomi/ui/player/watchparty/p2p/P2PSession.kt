@@ -458,7 +458,7 @@ class P2PSession(
                             val scheduler = ensureGatheringSchedulerLocked()
                             graceTimeoutFuture = scheduler.schedule(
                                 { finalizeLocalDescription() },
-                                GATHERING_GRACE_AFTER_CANDATE_MS,
+                                GATHERING_GRACE_AFTER_CANDIDATE_MS,
                                 TimeUnit.MILLISECONDS,
                             )
                         }
