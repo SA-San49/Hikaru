@@ -40,13 +40,12 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      # workflow_dispatch always supplies an input here; the fallback keeps
-      # `gh workflow run debug-v8a.yml` without -f behaving exactly as before.
-      VARIANT: ${{ inputs.variant || 'r8Debug' }}
+      # workflow_dispatch supplies variant; armeabi-v7a defaults to sideBySide so it installs beside original Hikaru
+      VARIANT: ${{ inputs.variant || (inputs.abi == 'armeabi-v7a' && 'sideBySide' || 'r8Debug') }}
       # The Gradle output directory is named after the build type.
-      APK_DIR: ${{ (inputs.variant || 'r8Debug') == 'sideBySide' && 'sideBySide' || 'r8Debug' }}
+      APK_DIR: ${{ (inputs.variant || (inputs.abi == 'armeabi-v7a' && 'sideBySide' || 'r8Debug')) == 'sideBySide' && 'sideBySide' || 'r8Debug' }}
       # Human-readable tag, so the two flavours never share an artifact name.
-      VARIANT_TAG: ${{ (inputs.variant || 'r8Debug') == 'sideBySide' && 'sideby' || 'r8-debug' }}
+      VARIANT_TAG: ${{ (inputs.variant || (inputs.abi == 'armeabi-v7a' && 'sideBySide' || 'r8Debug')) == 'sideBySide' && 'sideby' || 'r8-debug' }}
       ABI: ${{ inputs.abi || 'arm64-v8a' }}
       # Short ABI tag for filenames and artifact names: v8a / v7a.
       ABI_TAG: ${{ (inputs.abi || 'arm64-v8a') == 'armeabi-v7a' && 'v7a' || 'v8a' }}

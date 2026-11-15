@@ -489,6 +489,7 @@ class WatchPartyEngine(
         val currentState = _state.value
         if (currentState.isSyncing || currentState.isCountingDown) return
         if (currentState.episodeMatch == EpisodeMatch.MISMATCH || currentState.episodeMatch == EpisodeMatch.UNRESOLVED) return
+        if (player.localEpisode() == null || player.durationMs() == null || player.isBuffering()) return
         val expected = syncEngine.projectPosition(snapshot, now())
         val decision = syncEngine.evaluate(
             expected = expected,
@@ -544,7 +545,7 @@ class WatchPartyEngine(
         val currentState = _state.value
         if (currentState.isHost || currentState.isSyncing || currentState.isCountingDown) return
         if (currentState.episodeMatch == EpisodeMatch.MISMATCH || currentState.episodeMatch == EpisodeMatch.UNRESOLVED) return
-        if (player.localEpisode() == null) return
+        if (player.localEpisode() == null || player.durationMs() == null || player.isBuffering()) return
         syncEngine.reset()
         val expected = syncEngine.projectPosition(snapshot, now())
         val clamped = syncEngine.clampRemoteSeek(expected, player.durationMs())
@@ -1338,11 +1339,20 @@ class WatchPartyEngine(
         // Only the host is authoritative. Guests never drive playback directly;
         // recovery always goes through the explicit Sync Now flow.
         if (!isAuthoritative(event.senderId)) return
-        val canDriveLocal = _state.value.episodeMatch != EpisodeMatch.MISMATCH && player.localEpisode() != null
+        val canDriveLocal = _state.value.episodeMatch != EpisodeMatch.MISMATCH &&
+            player.localEpisode() != null &&
+            player.durationMs() != null &&
+            !player.isBuffering()
 
         when (event.type) {
             WatchPartyEventType.PLAY -> {
                 syncEngine.reset()
+                authoritativeSnapshot = PlaybackSnapshot(
+                    positionMs = payload.positionMs ?: player.positionMs(),
+                    paused = false,
+                    durationMs = payload.durationMs,
+                    sentAtMs = event.sentAtMs,
+                )
                 if (canDriveLocal) {
                     applyRemote {
                         val target = payload.positionMs?.let { syncEngine.clampRemoteSeek(it, player.durationMs()) }
@@ -1352,15 +1362,15 @@ class WatchPartyEngine(
                         if (player.isPaused()) player.play()
                     }
                 }
-                authoritativeSnapshot = PlaybackSnapshot(
-                    positionMs = payload.positionMs ?: player.positionMs(),
-                    paused = false,
-                    durationMs = payload.durationMs,
-                    sentAtMs = event.sentAtMs,
-                )
             }
             WatchPartyEventType.PAUSE -> {
                 syncEngine.reset()
+                authoritativeSnapshot = PlaybackSnapshot(
+                    positionMs = payload.positionMs ?: player.positionMs(),
+                    paused = true,
+                    durationMs = payload.durationMs,
+                    sentAtMs = event.sentAtMs,
+                )
                 if (canDriveLocal) {
                     applyRemote {
                         if (!player.isPaused()) player.pause()
@@ -1371,23 +1381,10 @@ class WatchPartyEngine(
                         }
                     }
                 }
-                authoritativeSnapshot = PlaybackSnapshot(
-                    positionMs = payload.positionMs ?: player.positionMs(),
-                    paused = true,
-                    durationMs = payload.durationMs,
-                    sentAtMs = event.sentAtMs,
-                )
             }
             WatchPartyEventType.SEEK -> {
                 val target = payload.positionMs ?: return
-                val clamped = syncEngine.clampRemoteSeek(target, player.durationMs()) ?: return
-                if (canDriveLocal) {
-                    applyRemote {
-                        player.pause()
-                        player.seekTo(clamped)
-                        if (payload.paused == false) player.play()
-                    }
-                }
+                val clamped = syncEngine.clampRemoteSeek(target, player.durationMs()) ?: target
                 syncEngine.reset()
                 authoritativeSnapshot = PlaybackSnapshot(
                     positionMs = clamped,
@@ -1395,6 +1392,13 @@ class WatchPartyEngine(
                     durationMs = player.durationMs(),
                     sentAtMs = event.sentAtMs,
                 )
+                if (canDriveLocal) {
+                    applyRemote {
+                        player.pause()
+                        player.seekTo(clamped)
+                        if (payload.paused == false) player.play()
+                    }
+                }
             }
             WatchPartyEventType.POSITION -> {
                 val target = payload.positionMs ?: return

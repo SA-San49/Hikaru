@@ -396,11 +396,7 @@ class P2PWatchPartySession(
 
         override fun send(text: String) {
             val link = guestLink ?: return
-            if (!link.send(text)) {
-                listener?.onStateChanged(
-                    RoomTransport.State.Failed("The connection to the host was lost."),
-                )
-            }
+            link.send(text)
         }
 
         override fun close() {

@@ -677,10 +677,10 @@ class P2PSession(
     private companion object {
 
         const val CHANNEL_LABEL = "hikaru-watchparty"
-        const val GATHERING_SETTLE_AFTER_SRFLX_MS = 700L
-        const val GATHERING_SETTLE_LAN_MS = 700L
-        const val GATHERING_WAIT_FOR_SRFLX_MS = 2_800L
-        const val GATHERING_HARD_TIMEOUT_MS = 4_500L
+        const val GATHERING_SETTLE_AFTER_SRFLX_MS = 1_000L
+        const val GATHERING_SETTLE_LAN_MS = 1_000L
+        const val GATHERING_WAIT_FOR_SRFLX_MS = 3_200L
+        const val GATHERING_HARD_TIMEOUT_MS = 5_000L
         const val MAX_PUBLISHED_CANDIDATES = 12
 
         /**
@@ -752,22 +752,25 @@ internal fun rankAndFilterCandidates(
     } else {
         candidates
     }
-    return filtered
-        .distinct()
-        .sortedWith(
-            compareBy<PairingPayload.IceCandidate>(
-                {
-                    when (it.type) {
-                        PairingPayload.IceCandidate.Type.HOST -> 0
-                        PairingPayload.IceCandidate.Type.SRFLX -> 1
-                        PairingPayload.IceCandidate.Type.PRFLX -> 2
-                        PairingPayload.IceCandidate.Type.RELAY -> 3
-                    }
-                },
-                { if (it.address.contains(':')) 1 else 0 },
-            ),
-        )
-        .take(limit)
+    val host = filtered.filter { it.type == PairingPayload.IceCandidate.Type.HOST }.distinct()
+        .sortedWith(compareBy({ if (it.address.contains(":")) 1 else 0 }, { it.address }))
+    val srflx = filtered.filter { it.type == PairingPayload.IceCandidate.Type.SRFLX }.distinct()
+        .sortedWith(compareBy({ if (it.address.contains(":")) 1 else 0 }, { it.address }))
+    val others = filtered.filter {
+        it.type != PairingPayload.IceCandidate.Type.HOST &&
+            it.type != PairingPayload.IceCandidate.Type.SRFLX
+    }.distinct()
+
+    // Guarantee that public SRFLX candidates are not squeezed out by an excess
+    // of local/virtual network interfaces (e.g. cellular + Wi-Fi + vpn + tun).
+    val maxHost = if (srflx.isNotEmpty()) (limit - srflx.size.coerceAtMost(4)).coerceAtLeast(1) else limit
+    val selectedHost = host.take(maxHost)
+    val remainingSlots = (limit - selectedHost.size).coerceAtLeast(0)
+    val selectedSrflx = srflx.take(remainingSlots)
+    val remainingForOthers = (limit - selectedHost.size - selectedSrflx.size).coerceAtLeast(0)
+    val selectedOthers = others.take(remainingForOthers)
+
+    return (selectedHost + selectedSrflx + selectedOthers).distinct()
 }
 
 private fun summarizeCandidates(candidates: List<PairingPayload.IceCandidate>): String {

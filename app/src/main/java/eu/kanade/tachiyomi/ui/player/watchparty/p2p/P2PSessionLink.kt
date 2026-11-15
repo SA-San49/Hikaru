@@ -103,13 +103,7 @@ class P2PSessionLink(
         }
 
         override fun send(text: String) {
-            // Qualified deliberately: an unqualified `send` here is this object's
-            // own method, which returns Unit and would recurse.
-            if (!this@P2PSessionLink.send(text)) {
-                listener?.onStateChanged(
-                    RoomTransport.State.Failed("The connection to the host was lost."),
-                )
-            }
+            this@P2PSessionLink.send(text)
         }
 
         override fun close() = this@P2PSessionLink.close()

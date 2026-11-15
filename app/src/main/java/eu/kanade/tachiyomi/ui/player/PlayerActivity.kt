@@ -892,7 +892,7 @@ class PlayerActivity : BaseActivity() {
                     viewModel.setChapter(value.toFloat())
                 }
                 // Watch Party does nothing unless a room is open.
-                if (watchPartyEngaged) {
+                if (watchPartyEngaged || viewModel.watchParty.isActive()) {
                     runCatching { viewModel.watchParty.onPositionChanged(value) }
                 }
             }
@@ -930,7 +930,7 @@ class PlayerActivity : BaseActivity() {
         when (property) {
             "interpolation" -> PlayerStats.isInterpolating.value = value
             "pause" -> {
-                if (watchPartyEngaged) {
+                if (watchPartyEngaged || viewModel.watchParty.isActive()) {
                     if (value) {
                         runCatching { viewModel.watchParty.onPause() }
                     } else {
@@ -1663,8 +1663,12 @@ class PlayerActivity : BaseActivity() {
     // at void is.xyz.mpv.MPVLib.event(int) (MPVLib.java:86)
     private fun fileLoaded() {
         if (player.isExiting) return
-        if (watchPartyEngaged) {
-            runCatching { viewModel.watchParty.onEpisodeReady() }
+        if (watchPartyEngaged || viewModel.watchParty.isActive()) {
+            engageWatchParty()
+            runCatching {
+                viewModel.watchParty.attachIfActive()
+                viewModel.watchParty.onEpisodeReady()
+            }
         }
         // Apply after mpv has created the subtitle tracks as well as before
         // loadfile; per-file subtitle defaults can otherwise win at this point.

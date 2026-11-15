@@ -59,11 +59,10 @@ class WatchPartyController(
 
         override fun isPaused(): Boolean = viewModel.paused.value
 
-        override fun isBuffering(): Boolean = viewModel.pausedForCache.value || viewModel.isLoading.value
+        override fun isBuffering(): Boolean =
+            viewModel.pausedForCache.value || viewModel.isLoading.value || viewModel.isLoadingEpisode.value
 
         override fun localEpisode(): EpisodeIdentity? {
-            // The player holds the legacy DB episode (SEpisode: `episode_number`);
-            // convert once here so the rest of the feature sees the domain model.
             val episode = viewModel.currentEpisode.value?.toDomainEpisode() ?: return null
             val media = resolvedMediaKey
             return EpisodeIdentity(
@@ -79,20 +78,50 @@ class WatchPartyController(
         override fun localMediaKey(): Pair<String, String>? = resolvedMediaKey
 
         override fun play() {
-            MPVLib.setPropertyBoolean("pause", false)
+            if (viewModel.isLoadingEpisode.value || viewModel.duration.value <= 0f) return
+            viewModel.activity.runOnUiThread {
+                runCatching {
+                    if (viewModel.paused.value) {
+                        viewModel.unpause()
+                    } else {
+                        MPVLib.setPropertyBoolean("pause", false)
+                    }
+                }
+            }
         }
 
         override fun pause() {
-            MPVLib.setPropertyBoolean("pause", true)
+            if (viewModel.isLoadingEpisode.value || viewModel.duration.value <= 0f) return
+            viewModel.activity.runOnUiThread {
+                runCatching {
+                    if (!viewModel.paused.value) {
+                        viewModel.pause()
+                    } else {
+                        MPVLib.setPropertyBoolean("pause", true)
+                    }
+                }
+            }
         }
 
         override fun seekTo(positionMs: Long) {
-            val targetSeconds = (positionMs / 1000.0).coerceAtLeast(0.0)
-            MPVLib.command(arrayOf("seek", targetSeconds.toString(), "absolute+exact"))
+            if (viewModel.isLoadingEpisode.value || viewModel.duration.value <= 0f) return
+            viewModel.activity.runOnUiThread {
+                runCatching {
+                    val targetSeconds = (positionMs / 1000.0).coerceAtLeast(0.0)
+                    val durSeconds = viewModel.duration.value.toDouble()
+                    if (targetSeconds <= durSeconds) {
+                        MPVLib.command(arrayOf("seek", targetSeconds.toString(), "absolute+exact"))
+                    }
+                }
+            }
         }
 
         override fun setSpeed(speed: Double) {
-            MPVLib.setPropertyDouble("speed", speed.coerceIn(0.5, 2.0))
+            viewModel.activity.runOnUiThread {
+                runCatching {
+                    MPVLib.setPropertyDouble("speed", speed.coerceIn(0.5, 2.0))
+                }
+            }
         }
     }
 
