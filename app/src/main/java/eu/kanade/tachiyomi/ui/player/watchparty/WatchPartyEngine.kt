@@ -1538,26 +1538,26 @@ class WatchPartyEngine(
 
     // </editor-fold>
 
-    private companion object {
-        const val TICK_MS = 250L
-        const val HOST_POSITION_INTERVAL_MS = 1_500L
-        const val PRESENCE_INTERVAL_MS = 4_000L
-        const val SYNC_HOST_GATHER_MS = 900L
-        const val SYNC_POLL_MS = 250L
-        const val SYNC_END_GUARD_MS = 1_500L
-        const val BUFFER_TIMEOUT_MS = 12_000L
-        const val BUFFER_POLL_MS = 200L
-        const val SPEED_NUDGE_DURATION_MS = 4_000L
-        const val PLAYBACK_PAUSE_TOLERANCE_MS = 1_000L
-        const val COUNTDOWN_RESTART_GUARD_MS = 3_000L
-        const val MAX_CHAT_HISTORY = 200
-        const val MAX_REACTION_BURST = 30
-        const val MAX_REACTION_HISTORY = 80
-        const val MAX_SEEN_REACTIONS = 256
-        const val REACTION_FLUSH_MS = 450L
-        const val COMMENT_LIKE = "\uD83D\uDC4D"
-        const val COMMENT_DISLIKE = "\uD83D\uDC4E"
-        const val COMMENT_CLEAR_VOTE = "\u2716\uFE0F"
+    companion object {
+        private const val TICK_MS = 250L
+        private const val HOST_POSITION_INTERVAL_MS = 1_500L
+        private const val PRESENCE_INTERVAL_MS = 4_000L
+        private const val SYNC_HOST_GATHER_MS = 900L
+        private const val SYNC_POLL_MS = 250L
+        private const val SYNC_END_GUARD_MS = 1_500L
+        private const val BUFFER_TIMEOUT_MS = 12_000L
+        private const val BUFFER_POLL_MS = 200L
+        private const val SPEED_NUDGE_DURATION_MS = 4_000L
+        private const val PLAYBACK_PAUSE_TOLERANCE_MS = 1_000L
+        private const val COUNTDOWN_RESTART_GUARD_MS = 3_000L
+        private const val MAX_CHAT_HISTORY = 200
+        private const val MAX_REACTION_BURST = 30
+        private const val MAX_REACTION_HISTORY = 80
+        private const val MAX_SEEN_REACTIONS = 256
+        private const val REACTION_FLUSH_MS = 450L
+        internal const val COMMENT_LIKE = "\uD83D\uDC4D"
+        internal const val COMMENT_DISLIKE = "\uD83D\uDC4E"
+        internal const val COMMENT_CLEAR_VOTE = "\u2716\uFE0F"
     }
 }
 

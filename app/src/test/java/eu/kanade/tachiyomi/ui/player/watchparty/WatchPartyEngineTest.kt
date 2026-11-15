@@ -5,7 +5,7 @@ import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import tachiyomi.core.common.preference.InMemoryPreferenceStore
-import tachiyomi.core.common.preference.InMemoryPreference
+import tachiyomi.core.common.preference.InMemoryPreferenceStore.InMemoryPreference
 
 class WatchPartyEngineTest {
 

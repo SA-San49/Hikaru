@@ -904,7 +904,8 @@ fun FloatingCommentsAssistant(
                 .pointerInput(Unit) {
                     val touchSlop = viewConfig.touchSlop
                     awaitEachGesture {
-                        awaitFirstDown(requireUnconsumed = false)
+                        val down = awaitFirstDown(requireUnconsumed = false)
+                        down.consume()
                         val startX = currentMinX + (currentMaxX - currentMinX) * currentFracX
                         val startY = currentMinY + (currentMaxY - currentMinY) * currentFracY
                         var sumDx = 0f
@@ -916,8 +917,11 @@ fun FloatingCommentsAssistant(
 
                         while (true) {
                             val event = awaitPointerEvent()
-                            val change = event.changes.firstOrNull() ?: break
+                            val change = event.changes.firstOrNull { it.id == down.id }
+                                ?: event.changes.firstOrNull()
+                                ?: break
                             if (!change.pressed) {
+                                change.consume()
                                 break
                             }
                             val delta = change.position - change.previousPosition
