@@ -348,25 +348,28 @@ class PlayerActivity : BaseActivity() {
         castManager
         // <-- Cast
 
-        // Watch Party reclaims the letterbox band for chat by constraining the
-        // mpv surface. It is a real view, not a Compose node, so this is the only
-        // place it can be done.
+        // Watch Party anchors the mpv surface at the top (16:9 full width in portrait,
+        // or side-by-side in landscape) when comments are open, and immediately
+        // restores normal full-screen playback when comments are closed.
         lifecycleScope.launch {
-            viewModel.watchParty.state.collect { state ->
-                if (state.active) {
-                    if (!watchPartyEngaged) {
+            kotlinx.coroutines.flow.combine(
+                viewModel.watchParty.state,
+                viewModel.watchPartyCommentsOpen,
+            ) { state, commentsOpen -> state.active to commentsOpen }
+                .collect { (active, commentsOpen) ->
+                    if (active && !watchPartyEngaged) {
                         engageWatchParty()
                         viewModel.watchParty.attachIfActive()
                     }
-                    applyVideoRegionHeight(computeWatchPartyVideoHeight())
-                } else {
-                    applyVideoRegionHeight(null)
+                    updateWatchPartyVideoLayout(active = active, commentsOpen = commentsOpen)
                 }
-            }
         }
-        // Orientation changes alter the split (stacked vs side-by-side).
-        // View.OnLayoutChangeListener takes nine arguments: the view plus eight
-        // bounds. Naming the receiver keeps the arity obvious.
+        androidx.core.view.ViewCompat.setOnApplyWindowInsetsListener(binding.root) { _, insets ->
+            if (viewModel.watchParty.state.value.active && viewModel.watchPartyCommentsOpen.value) {
+                updateWatchPartyVideoLayout(active = true, commentsOpen = true)
+            }
+            insets
+        }
         binding.root.addOnLayoutChangeListener(
             object : android.view.View.OnLayoutChangeListener {
                 override fun onLayoutChange(
@@ -380,8 +383,8 @@ class PlayerActivity : BaseActivity() {
                     oldRight: Int,
                     oldBottom: Int,
                 ) {
-                    if (viewModel.watchParty.state.value.active) {
-                        applyVideoRegionHeight(computeWatchPartyVideoHeight())
+                    if (viewModel.watchParty.state.value.active && viewModel.watchPartyCommentsOpen.value) {
+                        updateWatchPartyVideoLayout(active = true, commentsOpen = true)
                     }
                 }
             },
@@ -1838,63 +1841,108 @@ class PlayerActivity : BaseActivity() {
      * Uses the same arithmetic the chat panel uses, so the two always agree —
      * they are two views of one split, not two independent guesses.
      */
-    private fun computeWatchPartyVideoHeight(): Int {
+    private fun updateWatchPartyVideoLayout(active: Boolean, commentsOpen: Boolean) {
+        val view = binding.player
+        val params = view.layoutParams as? androidx.constraintlayout.widget.ConstraintLayout.LayoutParams
+        val parentId = androidx.constraintlayout.widget.ConstraintLayout.LayoutParams.PARENT_ID
+        val unset = androidx.constraintlayout.widget.ConstraintLayout.LayoutParams.UNSET
+        val matchParent = android.view.ViewGroup.LayoutParams.MATCH_PARENT
+
+        if (!active || !commentsOpen) {
+            if (params != null) {
+                val needsReset = params.width != matchParent ||
+                    params.height != matchParent ||
+                    params.topMargin != 0 ||
+                    params.bottomToBottom != parentId ||
+                    params.endToEnd != parentId
+                if (needsReset) {
+                    params.width = matchParent
+                    params.height = matchParent
+                    params.topMargin = 0
+                    params.topToTop = parentId
+                    params.bottomToBottom = parentId
+                    params.startToStart = parentId
+                    params.endToEnd = parentId
+                    view.layoutParams = params
+                }
+            }
+            viewModel.setWatchPartyVideoBounds(null)
+            viewModel.setWatchPartyVideoHeight(null)
+            return
+        }
+
         val metrics = resources.displayMetrics
         val heightPx = binding.root.height.takeIf { it > 0 } ?: metrics.heightPixels
         val widthPx = binding.root.width.takeIf { it > 0 } ?: metrics.widthPixels
         val mode = eu.kanade.tachiyomi.ui.player.watchparty.WatchPartyLayout.modeFor(widthPx, heightPx)
 
-        // In landscape the video owns the full height beside the chat column, so
-        // there is nothing to reclaim; only the portrait split needs a constraint.
-        if (mode == eu.kanade.tachiyomi.ui.player.watchparty.WatchPartyLayout.Mode.SIDE_BY_SIDE) {
-            return heightPx
+        val bounds = if (mode == eu.kanade.tachiyomi.ui.player.watchparty.WatchPartyLayout.Mode.SIDE_BY_SIDE) {
+            val maxChatWidth = (widthPx * 2) / 5
+            val chatWidth = (320 * metrics.density).toInt().coerceIn(0, maxChatWidth)
+            val videoWidth = (widthPx - chatWidth).coerceAtLeast(1)
+            if (params != null) {
+                val needsUpdate = params.width != videoWidth ||
+                    params.height != matchParent ||
+                    params.topMargin != 0 ||
+                    params.bottomToBottom != parentId ||
+                    params.endToEnd != unset
+                if (needsUpdate) {
+                    params.width = videoWidth
+                    params.height = matchParent
+                    params.topMargin = 0
+                    params.topToTop = parentId
+                    params.bottomToBottom = parentId
+                    params.startToStart = parentId
+                    params.endToEnd = unset
+                    view.layoutParams = params
+                }
+            }
+            PlayerViewModel.WatchPartyVideoBounds(
+                left = 0,
+                top = 0,
+                right = videoWidth,
+                bottom = heightPx,
+                sideBySide = true,
+            )
+        } else {
+            val insets = androidx.core.view.ViewCompat.getRootWindowInsets(binding.root)
+            val statusBarTop = insets?.getInsets(
+                androidx.core.view.WindowInsetsCompat.Type.statusBars() or
+                    androidx.core.view.WindowInsetsCompat.Type.displayCutout(),
+            )?.top ?: 0
+            val videoTop = statusBarTop.coerceIn(0, heightPx / 4)
+            val contentHeight = (heightPx - videoTop).coerceAtLeast(1)
+            val target169 = ((widthPx * 9.0) / 16.0).toInt()
+            val maxStackedHeight = ((contentHeight * 2) / 3).coerceAtLeast(1)
+            val videoHeight = target169.coerceIn(1, maxStackedHeight)
+            if (params != null) {
+                val needsUpdate = params.width != matchParent ||
+                    params.height != videoHeight ||
+                    params.topMargin != videoTop ||
+                    params.bottomToBottom != unset ||
+                    params.endToEnd != parentId
+                if (needsUpdate) {
+                    params.width = matchParent
+                    params.height = videoHeight
+                    params.topMargin = videoTop
+                    params.topToTop = parentId
+                    params.bottomToBottom = unset
+                    params.startToStart = parentId
+                    params.endToEnd = parentId
+                    view.layoutParams = params
+                }
+            }
+            PlayerViewModel.WatchPartyVideoBounds(
+                left = 0,
+                top = videoTop,
+                right = widthPx,
+                bottom = videoTop + videoHeight,
+                sideBySide = false,
+            )
         }
 
-        val insets = androidx.core.view.ViewCompat.getRootWindowInsets(binding.root)
-            ?: return heightPx
-        val statusBar = insets.getInsets(
-            androidx.core.view.WindowInsetsCompat.Type.statusBars() or
-                androidx.core.view.WindowInsetsCompat.Type.displayCutout(),
-        ).top
-        val ime = insets.getInsets(androidx.core.view.WindowInsetsCompat.Type.ime()).bottom
-
-        val geometry = eu.kanade.tachiyomi.ui.player.watchparty.WatchPartyLayout.compute(
-            eu.kanade.tachiyomi.ui.player.watchparty.WatchPartyLayout.Request(
-                widthPx = widthPx,
-                heightPx = heightPx,
-                statusBarPx = statusBar,
-                imePx = ime,
-                inputRowPx = (64 * resources.displayMetrics.density).toInt(),
-                videoAspect = currentVideoAspect(),
-                sideChatWidthPx = (320 * resources.displayMetrics.density).toInt(),
-                mode = mode,
-            ),
-        )
-        return geometry.video.bottom
-    }
-
-    /**
-     * The playing video's aspect ratio, from mpv.
-     *
-     * Falls back to 16:9 when nothing is loaded rather than collapsing the region
-     * to zero, which would make the screen flash black while switching episodes.
-     */
-    private fun currentVideoAspect(): Double {
-        // The view already resolves this correctly, including rotated video, where
-        // a raw width/height ratio would be wrong by 90 degrees.
-        return runCatching { binding.player.getVideoOutAspect() }
-            .getOrNull()
-            ?.takeIf { it > 0.01 }
-            ?: (16.0 / 9.0)
-    }
-
-    private fun applyVideoRegionHeight(heightPx: Int?) {
-        val view = binding.player
-        val params = view.layoutParams ?: return
-        val target = heightPx ?: android.view.ViewGroup.LayoutParams.MATCH_PARENT
-        if (params.height == target) return
-        params.height = target
-        view.layoutParams = params
+        viewModel.setWatchPartyVideoBounds(bounds)
+        viewModel.setWatchPartyVideoHeight(bounds.bottom)
     }
 
 }

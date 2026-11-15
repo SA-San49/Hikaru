@@ -1,6 +1,7 @@
 package eu.kanade.tachiyomi.ui.player.watchparty.p2p
 
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -175,5 +176,49 @@ class SdpTemplateTest {
         assertEquals(fingerprint, parsed.fingerprint)
         assertEquals(1, parsed.candidates.size)
         assertEquals(54321, parsed.candidates.single().port)
+    }
+
+    @Test
+    fun `unusable candidate addresses are filtered out`() {
+        assertFalse(isUsableCandidateAddress(""))
+        assertFalse(isUsableCandidateAddress("0.0.0.0"))
+        assertFalse(isUsableCandidateAddress("127.0.0.1"))
+        assertFalse(isUsableCandidateAddress("::1"))
+        assertFalse(isUsableCandidateAddress("169.254.10.2"))
+        assertFalse(isUsableCandidateAddress("fe80::1234:5678:abcd%wlan0"))
+        assertTrue(isUsableCandidateAddress("192.168.1.42"))
+        assertTrue(isUsableCandidateAddress("203.0.113.9"))
+        assertTrue(isUsableCandidateAddress("2001:db8::42%eth0"))
+    }
+
+    @Test
+    fun `rankAndFilterCandidates drops mdns when literal ips exist and sorts host ipv4 first`() {
+        val ranked = rankAndFilterCandidates(
+            listOf(
+                PairingPayload.IceCandidate(PairingPayload.IceCandidate.Type.SRFLX, "203.0.113.9", 51234),
+                PairingPayload.IceCandidate(PairingPayload.IceCandidate.Type.HOST, "abc-device.local", 40000),
+                PairingPayload.IceCandidate(PairingPayload.IceCandidate.Type.HOST, "2001:db8::1", 50001),
+                PairingPayload.IceCandidate(PairingPayload.IceCandidate.Type.HOST, "192.168.1.5", 54321),
+            ),
+        )
+        assertEquals(3, ranked.size)
+        assertEquals("192.168.1.5", ranked[0].address)
+        assertEquals("2001:db8::1", ranked[1].address)
+        assertEquals("203.0.113.9", ranked[2].address)
+    }
+
+    @Test
+    fun `rebuilt candidates assign distinct foundations and strip ipv6 zone ids`() {
+        val p = payload(PairingPayload.Role.OFFER).copy(
+            candidates = listOf(
+                PairingPayload.IceCandidate(PairingPayload.IceCandidate.Type.HOST, "192.168.1.5", 54321),
+                PairingPayload.IceCandidate(PairingPayload.IceCandidate.Type.SRFLX, "2001:db8::2%wlan0", 51234),
+            ),
+        )
+        val lines = SdpTemplate.build(p).split("\r\n").filter { it.startsWith("a=candidate:") }
+        assertEquals(2, lines.size)
+        assertTrue(lines[0].startsWith("a=candidate:1 "))
+        assertTrue(lines[1].startsWith("a=candidate:2 "))
+        assertFalse(lines[1].contains("%wlan0"))
     }
 }

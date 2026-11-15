@@ -181,7 +181,11 @@ class WatchPartyController(
                     else -> null
                 }
             }.getOrNull()
+            val changed = resolvedMediaKey != key
             resolvedMediaKey = key
+            if (changed && roomScope.isActive()) {
+                roomScope.onEpisodeIdentityResolved(bridge.localEpisode())
+            }
             logcat(LogPriority.VERBOSE) { "WatchParty media key: $key" }
         }
     }
@@ -220,7 +224,13 @@ class WatchPartyController(
 
     fun requestSyncNow() = roomScope.requestSyncNow()
 
-    fun sendChatMessage(text: String) = roomScope.sendChatMessage(text)
+    fun sendChatMessage(text: String, replyToId: String? = null) = roomScope.sendChatMessage(text, replyToId)
+
+    fun toggleCommentLike(commentId: String) =
+        roomScope.toggleCommentVote(commentId, WatchPartyEngine.COMMENT_LIKE)
+
+    fun toggleCommentDislike(commentId: String) =
+        roomScope.toggleCommentVote(commentId, WatchPartyEngine.COMMENT_DISLIKE)
 
     fun sendReaction(emoji: String) = roomScope.sendReaction(emoji)
 

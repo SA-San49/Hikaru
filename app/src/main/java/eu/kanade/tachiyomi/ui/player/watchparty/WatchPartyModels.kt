@@ -187,6 +187,12 @@ data class ChatMessage(
     val replyToId: String? = null,
 )
 
+/** Tracks per-user likes and dislikes on a Watch Party comment. */
+data class CommentFeedback(
+    val likedBy: Set<String> = emptySet(),
+    val dislikedBy: Set<String> = emptySet(),
+)
+
 /** A reaction event, aggregated by emoji before being broadcast. */
 @Serializable
 data class ReactionEvent(

@@ -383,8 +383,17 @@ private fun ServerlessPairingSection(
                 PairingState.CREATING_ANSWER,
                 PairingState.VALIDATING_ANSWER,
                 PairingState.ESTABLISHING,
-                -> PairingProgress(pairing.state.explanation(role = role))
-                else -> Unit
+                -> PairingProgress(pairing.statusDetail ?: pairing.state.explanation(role = role))
+                else -> {
+                    val detail = pairing.statusDetail
+                    if (detail != null && pairing.state != PairingState.CONNECTED) {
+                        Text(
+                            text = detail,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
             }
 
             if (pairing.codes.isNotEmpty()) {

@@ -60,6 +60,12 @@ class P2PSession(
 
         /** A text frame arrived from the peer. */
         fun onMessage(session: P2PSession, text: String)
+
+        /** Remote answer/offer was accepted by libwebrtc and ICE checks have started. */
+        fun onRemoteApplied(session: P2PSession) {}
+
+        /** Human-readable status update for ICE gathering / connectivity checks. */
+        fun onStatusChanged(session: P2PSession, detail: String) {}
     }
 
     /** Labels the single data channel; also its identity in `onDataChannel`. */
@@ -82,6 +88,7 @@ class P2PSession(
 
     private var awaitingGathering = false
     private var pendingLocalSdp: String? = null
+    private var usesStun = true
     private val gatheredCandidates = LinkedHashSet<PairingPayload.IceCandidate>()
     private var gatheringScheduler: ScheduledExecutorService? = null
     private var hardTimeoutFuture: ScheduledFuture<*>? = null
@@ -161,6 +168,8 @@ class P2PSession(
                         drainPendingRemoteCandidatesLocked()
                     }
                     pairing.onRemoteApplied()
+                    onEvent.onRemoteApplied(this@P2PSession)
+                    onEvent.onStatusChanged(this@P2PSession, "Checking direct connection…")
                 }
 
                 override fun onSetFailure(error: String) {
@@ -261,9 +270,10 @@ class P2PSession(
                     TimeUnit.MILLISECONDS,
                 )
                 if (gatheredCandidates.isNotEmpty() && graceTimeoutFuture == null) {
+                    val delayMs = computeGraceDelayLocked(gatheredCandidates)
                     graceTimeoutFuture = scheduler.schedule(
                         { finalizeLocalDescription() },
-                        GATHERING_GRACE_AFTER_CANDIDATE_MS,
+                        delayMs,
                         TimeUnit.MILLISECONDS,
                     )
                 }
@@ -302,8 +312,18 @@ class P2PSession(
         hardTimeoutFuture = null
         graceTimeoutFuture?.cancel(false)
         graceTimeoutFuture = null
-        gatheringScheduler?.shutdownNow()
+        gatheringScheduler?.shutdown()
         gatheringScheduler = null
+    }
+
+    private fun computeGraceDelayLocked(candidates: Collection<PairingPayload.IceCandidate>): Long {
+        val hasStunOrRelay = candidates.any {
+            it.type == PairingPayload.IceCandidate.Type.SRFLX ||
+                it.type == PairingPayload.IceCandidate.Type.RELAY
+        }
+        if (hasStunOrRelay) return GATHERING_SETTLE_AFTER_SRFLX_MS
+        if (!usesStun && candidates.any { isLiteralIp(it.address) }) return GATHERING_SETTLE_LAN_MS
+        return GATHERING_WAIT_FOR_SRFLX_MS
     }
 
     /**
@@ -325,17 +345,19 @@ class P2PSession(
             return
         }
         val mergedCandidates = LinkedHashSet<PairingPayload.IceCandidate>().apply {
-            addAll(parsed.candidates)
+            addAll(parsed.candidates.filter { isUsableCandidateAddress(it.address) })
             addAll(extraCandidates)
         }.toList()
-        if (mergedCandidates.isEmpty()) {
+        val prioritized = rankAndFilterCandidates(mergedCandidates, MAX_PUBLISHED_CANDIDATES)
+        if (prioritized.isEmpty()) {
             failHard(
-                "Could not find a network address for direct pairing. " +
+                "Could not find a usable network address for direct pairing. " +
                     "Connect to Wi-Fi or mobile data and try again.",
             )
             return
         }
-        onEvent.onLocalDescription(this, parsed.copy(candidates = mergedCandidates))
+        onEvent.onStatusChanged(this, summarizeCandidates(prioritized))
+        onEvent.onLocalDescription(this, parsed.copy(candidates = prioritized))
     }
 
     /**
@@ -409,7 +431,11 @@ class P2PSession(
             }
             retained = true
         }
-        val config = PeerConnection.RTCConfiguration(factoryHolder.iceServers()).apply {
+        val iceServers = factoryHolder.iceServers()
+        synchronized(lock) {
+            usesStun = iceServers.isNotEmpty()
+        }
+        val config = PeerConnection.RTCConfiguration(iceServers).apply {
             sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
             bundlePolicy = PeerConnection.BundlePolicy.MAXBUNDLE
             // No TURN. If a direct path cannot be found the call fails honestly.
@@ -443,22 +469,29 @@ class P2PSession(
         override fun onIceCandidate(candidate: IceCandidate) {
             val compact = candidate.toPairingCandidate() ?: return
             val alreadyPublished: Boolean
-            var shouldFinalizeNow = false
             synchronized(lock) {
                 if (closed) return
                 alreadyPublished = localPublished.get()
                 if (!alreadyPublished) {
-                    gatheredCandidates += compact
-                    if (awaitingGathering) {
-                        val hasHost = gatheredCandidates.any { it.type == PairingPayload.IceCandidate.Type.HOST }
-                        val hasSrflx = gatheredCandidates.any { it.type == PairingPayload.IceCandidate.Type.SRFLX }
-                        if (hasHost && hasSrflx) {
-                            shouldFinalizeNow = true
+                    val added = gatheredCandidates.add(compact)
+                    if (awaitingGathering && added) {
+                        val isServerDerived = compact.type == PairingPayload.IceCandidate.Type.SRFLX ||
+                            compact.type == PairingPayload.IceCandidate.Type.RELAY
+                        if (isServerDerived) {
+                            // Once a STUN/relay address arrives, give sibling interfaces
+                            // a short settle window rather than cutting them off immediately.
+                            graceTimeoutFuture?.cancel(false)
+                            val scheduler = ensureGatheringSchedulerLocked()
+                            graceTimeoutFuture = scheduler.schedule(
+                                { finalizeLocalDescription() },
+                                GATHERING_SETTLE_AFTER_SRFLX_MS,
+                                TimeUnit.MILLISECONDS,
+                            )
                         } else if (graceTimeoutFuture == null) {
                             val scheduler = ensureGatheringSchedulerLocked()
                             graceTimeoutFuture = scheduler.schedule(
                                 { finalizeLocalDescription() },
-                                GATHERING_GRACE_AFTER_CANDIDATE_MS,
+                                computeGraceDelayLocked(gatheredCandidates),
                                 TimeUnit.MILLISECONDS,
                             )
                         }
@@ -466,9 +499,7 @@ class P2PSession(
                 }
             }
             pairing.onLocalCandidate(compact)
-            if (shouldFinalizeNow) {
-                finalizeLocalDescription()
-            } else if (alreadyPublished) {
+            if (alreadyPublished) {
                 onEvent.onLocalCandidate(this@P2PSession, compact)
             }
         }
@@ -480,15 +511,31 @@ class P2PSession(
         override fun onIceConnectionChange(state: PeerConnection.IceConnectionState) {
             if (closed) return
             when (state) {
+                PeerConnection.IceConnectionState.CHECKING -> {
+                    onEvent.onStatusChanged(this@P2PSession, "Testing direct connection…")
+                }
                 PeerConnection.IceConnectionState.CONNECTED,
                 PeerConnection.IceConnectionState.COMPLETED,
-                -> Unit // onConnected fires when the channel is actually open.
+                -> {
+                    onEvent.onStatusChanged(this@P2PSession, "Path found; opening channel…")
+                }
                 PeerConnection.IceConnectionState.FAILED,
                 PeerConnection.IceConnectionState.CLOSED,
                 -> {
-                    failHard(connectivityAdvice())
+                    val advice = if (
+                        pairing.role == PairingPayload.Role.ANSWER &&
+                        pairing.state == PairingState.WAITING_FOR_ANSWER
+                    ) {
+                        "The connection attempt timed out before the host finished scanning your answer. " +
+                            "Create a fresh invitation on the host and scan again."
+                    } else {
+                        connectivityAdvice()
+                    }
+                    failHard(advice)
                 }
-                PeerConnection.IceConnectionState.DISCONNECTED -> Unit // ICE may recover transiently.
+                PeerConnection.IceConnectionState.DISCONNECTED -> {
+                    onEvent.onStatusChanged(this@P2PSession, "Connection interrupted; recovering…")
+                }
                 else -> Unit
             }
         }
@@ -630,8 +677,11 @@ class P2PSession(
     private companion object {
 
         const val CHANNEL_LABEL = "hikaru-watchparty"
-        const val GATHERING_GRACE_AFTER_CANDIDATE_MS = 1_200L
-        const val GATHERING_HARD_TIMEOUT_MS = 3_000L
+        const val GATHERING_SETTLE_AFTER_SRFLX_MS = 700L
+        const val GATHERING_SETTLE_LAN_MS = 700L
+        const val GATHERING_WAIT_FOR_SRFLX_MS = 2_800L
+        const val GATHERING_HARD_TIMEOUT_MS = 4_500L
+        const val MAX_PUBLISHED_CANDIDATES = 12
 
         /**
          * Constraints for a DataChannel-only offer.
@@ -659,7 +709,7 @@ internal fun IceCandidate.toPairingCandidate(): PairingPayload.IceCandidate? {
     val fields = candidateLineFields()
     if (fields.size < 8) return null
     if (!fields[2].equals("udp", ignoreCase = true)) return null
-    val host = fields[4].takeIf { it.isNotBlank() && it.length <= 64 } ?: return null
+    val host = fields[4].substringBefore('%').takeIf { it.isNotBlank() && it.length <= 64 } ?: return null
     val port = fields[5].toIntOrNull()?.takeIf { it in 1..65_535 } ?: return null
     val type = when (fields[7].lowercase()) {
         "host" -> PairingPayload.IceCandidate.Type.HOST
@@ -668,7 +718,67 @@ internal fun IceCandidate.toPairingCandidate(): PairingPayload.IceCandidate? {
         "relay" -> PairingPayload.IceCandidate.Type.RELAY
         else -> return null
     }
+    if (!isUsableCandidateAddress(host)) return null
     return PairingPayload.IceCandidate(type, host, port)
+}
+
+internal fun isLiteralIp(address: String): Boolean =
+    !address.endsWith(".local", ignoreCase = true) &&
+        (address.count { it == '.' } == 3 || address.contains(':'))
+
+internal fun isUsableCandidateAddress(address: String): Boolean {
+    val clean = address.substringBefore('%').trim().lowercase()
+    if (clean.isEmpty()) return false
+    if (clean == "0.0.0.0" || clean == "::" || clean == "::1") return false
+    if (clean.startsWith("127.") || clean.startsWith("169.254.")) return false
+    // Link-local IPv6 (fe80::/10) is interface-scoped and unroutable across peers.
+    if (clean.startsWith("fe8") || clean.startsWith("fe9") || clean.startsWith("fea") || clean.startsWith("feb")) {
+        return false
+    }
+    if (clean.startsWith("ff")) return false
+    return true
+}
+
+internal fun rankAndFilterCandidates(
+    candidates: List<PairingPayload.IceCandidate>,
+    limit: Int = 12,
+): List<PairingPayload.IceCandidate> {
+    if (candidates.isEmpty()) return emptyList()
+    val hasLiteralIp = candidates.any { isLiteralIp(it.address) }
+    val filtered = if (hasLiteralIp) {
+        // Standalone Android WebRTC cannot resolve mDNS `.local` hostnames without a
+        // Chromium NetworkMonitor responder; omit `.local` noise when real IPs exist.
+        candidates.filter { isLiteralIp(it.address) }
+    } else {
+        candidates
+    }
+    return filtered
+        .distinct()
+        .sortedWith(
+            compareBy<PairingPayload.IceCandidate>(
+                {
+                    when (it.type) {
+                        PairingPayload.IceCandidate.Type.HOST -> 0
+                        PairingPayload.IceCandidate.Type.SRFLX -> 1
+                        PairingPayload.IceCandidate.Type.PRFLX -> 2
+                        PairingPayload.IceCandidate.Type.RELAY -> 3
+                    }
+                },
+                { if (it.address.contains(':')) 1 else 0 },
+            ),
+        )
+        .take(limit)
+}
+
+private fun summarizeCandidates(candidates: List<PairingPayload.IceCandidate>): String {
+    val localCount = candidates.count { it.type == PairingPayload.IceCandidate.Type.HOST }
+    val publicCount = candidates.count { it.type == PairingPayload.IceCandidate.Type.SRFLX }
+    return when {
+        localCount > 0 && publicCount > 0 -> "$localCount local + $publicCount public address ready"
+        localCount > 0 -> "$localCount local Wi-Fi/LAN address ready"
+        publicCount > 0 -> "$publicCount public address ready"
+        else -> "${candidates.size} network path(s) ready"
+    }
 }
 
 /** Splits `candidate:<foundation> <component> <transport> <prio> <addr> <port> typ <type>`. */

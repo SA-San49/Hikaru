@@ -67,31 +67,36 @@ object SdpTemplate {
             PairingPayload.Role.ANSWER -> "active"
         }
         return buildString {
+            fun line(value: String) {
+                append(value).append("\r\n")
+            }
             // Session block. `a=group:BUNDLE 0` is required by the SDP grammar
             // even with a single m-line, and some stacks reject its absence.
-            appendLine("v=0")
-            appendLine("o=- $SESSION_ID $SESSION_VERSION IN IP4 127.0.0.1")
-            appendLine("s=-")
-            appendLine("t=0 0")
-            appendLine("a=group:BUNDLE 0")
-            appendLine("a=extmap-allow-mixed")
-            appendLine("a=msid-semantic: WMS")
+            line("v=0")
+            line("o=- $SESSION_ID $SESSION_VERSION IN IP4 127.0.0.1")
+            line("s=-")
+            line("t=0 0")
+            line("a=group:BUNDLE 0")
+            line("a=extmap-allow-mixed")
+            line("a=msid-semantic: WMS")
 
             // The one and only m-line: a DataChannel. No audio, no video.
-            appendLine("m=application 9 UDP/DTLS/SCTP webrtc-datachannel")
-            appendLine("c=IN IP4 0.0.0.0")
-            appendLine("a=ice-ufrag:${payload.ufrag}")
-            appendLine("a=ice-pwd:${payload.pwd}")
-            appendLine("a=ice-options:trickle")
-            appendLine("a=fingerprint:sha-256 ${payload.fingerprint}")
-            appendLine("a=setup:$setup")
-            appendLine("a=mid:0")
-            appendLine("a=sctp-port:$SCTP_PORT")
-            appendLine("a=max-message-size:$MAX_MESSAGE_SIZE")
+            line("m=application 9 UDP/DTLS/SCTP webrtc-datachannel")
+            line("c=IN IP4 0.0.0.0")
+            line("a=ice-ufrag:${payload.ufrag}")
+            line("a=ice-pwd:${payload.pwd}")
+            line("a=ice-options:trickle")
+            line("a=fingerprint:sha-256 ${payload.fingerprint}")
+            line("a=setup:$setup")
+            line("a=mid:0")
+            line("a=sctp-port:$SCTP_PORT")
+            line("a=max-message-size:$MAX_MESSAGE_SIZE")
 
-            // Candidates gathered before pairing. Later ones trickle in over the
-            // data channel once it opens.
-            payload.candidates.forEach { appendLine(candidateLine(it)) }
+            // Candidates gathered before pairing. Distinct foundations and
+            // type-ordered priorities keep ICE pairing clean on libwebrtc.
+            payload.candidates.forEachIndexed { index, candidate ->
+                line(candidateLine(candidate, index))
+            }
         }
     }
 
@@ -121,21 +126,23 @@ object SdpTemplate {
     )
 
     /** `a=candidate:1 1 udp 2130706431 192.168.1.5 54321 typ host ...` */
-    private fun candidateLine(candidate: PairingPayload.IceCandidate): String {
-        val type = when (candidate.type) {
-            PairingPayload.IceCandidate.Type.HOST -> "host"
-            PairingPayload.IceCandidate.Type.SRFLX -> "srflx"
-            PairingPayload.IceCandidate.Type.PRFLX -> "prflx"
-            PairingPayload.IceCandidate.Type.RELAY -> "relay"
+    private fun candidateLine(candidate: PairingPayload.IceCandidate, index: Int): String {
+        val (type, typePref) = when (candidate.type) {
+            PairingPayload.IceCandidate.Type.HOST -> "host" to 126
+            PairingPayload.IceCandidate.Type.PRFLX -> "prflx" to 110
+            PairingPayload.IceCandidate.Type.SRFLX -> "srflx" to 100
+            PairingPayload.IceCandidate.Type.RELAY -> "relay" to 0
         }
-        // Foundation, component and priority are placeholders: the receiving
-        // stack recomputes priority itself during the connectivity check, and
-        // never reads the foundation back.
+        // RFC 8445 priority: (2^24)*typePref + (2^8)*localPref + (256 - componentId).
+        val localPref = (65_535 - index).coerceAtLeast(1)
+        val priority = (typePref.toLong() shl 24) + (localPref.toLong() shl 8) + 255L
+        val foundation = index + 1
+        val cleanAddress = candidate.address.substringBefore('%')
         // Non-host candidates (srflx/prflx/relay) require `raddr ... rport ...`
         // for Chromium's libwebrtc SDP parser to accept them.
-        val base = "a=candidate:1 1 udp 2130706431 ${candidate.address} ${candidate.port} typ $type"
+        val base = "a=candidate:$foundation 1 udp $priority $cleanAddress ${candidate.port} typ $type"
         if (candidate.type == PairingPayload.IceCandidate.Type.HOST) return base
-        val raddr = if (candidate.address.contains(':')) "::" else "0.0.0.0"
+        val raddr = if (cleanAddress.contains(':')) "::" else "0.0.0.0"
         return "$base raddr $raddr rport 0"
     }
 
@@ -143,7 +150,7 @@ object SdpTemplate {
         val parts = line.removePrefix("a=candidate:").trim().split(' ').filter { it.isNotEmpty() }
         if (parts.size < 8) return null
         if (!parts[2].equals("udp", ignoreCase = true)) return null
-        val address = parts[4].takeIf { it.isNotBlank() && it.length <= 64 } ?: return null
+        val address = parts[4].substringBefore('%').takeIf { it.isNotBlank() && it.length <= 64 } ?: return null
         val port = parts[5].toIntOrNull()?.takeIf { it in 1..65_535 } ?: return null
         val typeIndex = parts.indexOfFirst { it.equals("typ", ignoreCase = true) }
         if (typeIndex < 0 || typeIndex + 1 >= parts.size) return null

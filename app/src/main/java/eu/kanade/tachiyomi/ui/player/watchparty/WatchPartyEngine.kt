@@ -66,6 +66,7 @@ data class WatchPartyUiState(
     val warning: String? = null,
     val error: String? = null,
     val hostId: String? = null,
+    val commentFeedback: Map<String, CommentFeedback> = emptyMap(),
 ) {
     val isCountingDown: Boolean get() = countdown != null
     val isSyncing: Boolean get() = syncPhase == SyncNowController.Phase.PREPARING
@@ -169,6 +170,10 @@ class WatchPartyEngine(
     private val participants = LinkedHashMap<String, ParticipantInfo>()
     private val manualReady = HashMap<String, Boolean>()
     private val seenReactionIds = HashSet<String>()
+    private val seenCommentVoteIds = HashSet<String>()
+
+    @Volatile
+    private var hasEverConnected = false
 
     @Volatile
     private var lastReactionQueuedAt = 0L
@@ -231,6 +236,8 @@ class WatchPartyEngine(
             participants.clear()
             synchronized(stateLock) { manualReady.clear() }
             seenReactionIds.clear()
+            seenCommentVoteIds.clear()
+            hasEverConnected = false
             sequence.set(0L)
             lastPositionSentAt = 0
             lastPresenceSentAt = 0
@@ -269,6 +276,7 @@ class WatchPartyEngine(
                 syncPendingIds = emptyList(),
                 episode = player.localEpisode(),
                 episodeMatch = null,
+                commentFeedback = emptyMap(),
             )
         }
 
@@ -288,6 +296,8 @@ class WatchPartyEngine(
             participants.clear()
             synchronized(stateLock) { manualReady.clear() }
             seenReactionIds.clear()
+            seenCommentVoteIds.clear()
+            hasEverConnected = false
         }
         _state.value = WatchPartyUiState()
     }
@@ -336,8 +346,13 @@ class WatchPartyEngine(
         if (!_state.value.active) return
         val connection = when (state) {
             RoomTransport.State.Disconnected -> ConnectionState.DISCONNECTED
-            RoomTransport.State.Connecting -> ConnectionState.RECONNECTING
-            is RoomTransport.State.Connected -> ConnectionState.CONNECTED
+            RoomTransport.State.Connecting -> {
+                if (hasEverConnected) ConnectionState.RECONNECTING else ConnectionState.CONNECTING
+            }
+            is RoomTransport.State.Connected -> {
+                hasEverConnected = true
+                ConnectionState.CONNECTED
+            }
             is RoomTransport.State.Failed -> ConnectionState.DISCONNECTED
         }
         _state.update { it.copy(connection = connection) }
@@ -414,6 +429,9 @@ class WatchPartyEngine(
         }
         if (_state.value.isHost) {
             sendEvent(WatchPartyEventType.EPISODE_CHANGE) { it.copy(episode = player.localEpisode()) }
+        }
+        if (isLocalReady()) {
+            sendEvent(WatchPartyEventType.READY) { it.copy(participantId = selfId, displayName = selfName()) }
         }
     }
 
@@ -629,6 +647,19 @@ class WatchPartyEngine(
 
     fun requestSyncNow() {
         if (!isLive() || isApplyingRemote) return
+        if (!_state.value.connected) {
+            val message = if (_state.value.isHost) {
+                "Wait for a guest to connect before syncing."
+            } else {
+                "Finish connecting with the host before syncing."
+            }
+            _effects.tryEmit(WatchPartyEffect.ShowMessage(message))
+            return
+        }
+        if (_state.value.participants.size < 2) {
+            _effects.tryEmit(WatchPartyEffect.ShowMessage("Wait for someone else to join before syncing."))
+            return
+        }
         if (_state.value.isHost) {
             beginSync(requestedBy = selfName())
             return
@@ -826,10 +857,15 @@ class WatchPartyEngine(
 
     // <editor-fold desc="Chat & reactions">
 
-    fun sendChatMessage(text: String) {
+    fun sendChatMessage(text: String, replyToId: String? = null) {
         if (!isLive()) return
+        if (!_state.value.connected) {
+            _effects.tryEmit(WatchPartyEffect.ShowMessage("Not connected yet — finish pairing first."))
+            return
+        }
         val sanitized = RoomMessageCodec.sanitizeChatText(text)
         if (sanitized.isBlank()) return
+        val cleanReplyTo = replyToId?.takeIf { it.isNotBlank() }
         val messageId = UUID.randomUUID().toString()
         val message = ChatMessage(
             id = messageId,
@@ -837,12 +873,72 @@ class WatchPartyEngine(
             senderName = selfName(),
             text = sanitized,
             timestampMs = now(),
+            replyToId = cleanReplyTo,
         )
         _state.update { current ->
             current.copy(chat = (current.chat + message).takeLast(MAX_CHAT_HISTORY))
         }
         sendEvent(WatchPartyEventType.CHAT_MESSAGE) {
-            it.copy(messageId = messageId, text = sanitized, displayName = selfName(), participantId = selfId)
+            it.copy(
+                messageId = messageId,
+                text = sanitized,
+                displayName = selfName(),
+                participantId = selfId,
+                targetMessageId = cleanReplyTo,
+            )
+        }
+    }
+
+    fun toggleCommentVote(commentId: String, voteEmoji: String) {
+        if (!isLive() || commentId.isBlank()) return
+        if (!_state.value.connected) {
+            _effects.tryEmit(WatchPartyEffect.ShowMessage("Not connected yet — finish pairing first."))
+            return
+        }
+        val current = _state.value.commentFeedback[commentId] ?: CommentFeedback()
+        val effectiveEmoji = when (voteEmoji) {
+            COMMENT_LIKE -> if (selfId in current.likedBy) COMMENT_CLEAR_VOTE else COMMENT_LIKE
+            COMMENT_DISLIKE -> if (selfId in current.dislikedBy) COMMENT_CLEAR_VOTE else COMMENT_DISLIKE
+            else -> return
+        }
+        applyCommentVote(commentId = commentId, voterId = selfId, voteEmoji = effectiveEmoji)
+        val messageId = UUID.randomUUID().toString()
+        sendEvent(WatchPartyEventType.EMOJI_REACTION) {
+            it.copy(
+                emoji = effectiveEmoji,
+                count = 1,
+                messageId = messageId,
+                targetMessageId = commentId,
+                displayName = selfName(),
+            )
+        }
+    }
+
+    private fun applyCommentVote(commentId: String, voterId: String, voteEmoji: String) {
+        _state.update { state ->
+            val prev = state.commentFeedback[commentId] ?: CommentFeedback()
+            val next = when (voteEmoji) {
+                COMMENT_LIKE -> prev.copy(
+                    likedBy = prev.likedBy + voterId,
+                    dislikedBy = prev.dislikedBy - voterId,
+                )
+                COMMENT_DISLIKE -> prev.copy(
+                    likedBy = prev.likedBy - voterId,
+                    dislikedBy = prev.dislikedBy + voterId,
+                )
+                COMMENT_CLEAR_VOTE -> prev.copy(
+                    likedBy = prev.likedBy - voterId,
+                    dislikedBy = prev.dislikedBy - voterId,
+                )
+                else -> prev
+            }
+            val updated = state.commentFeedback.toMutableMap()
+            if (next.likedBy.isEmpty() && next.dislikedBy.isEmpty()) {
+                updated.remove(commentId)
+            } else {
+                updated[commentId] = next
+            }
+            state.copy(commentFeedback = updated)
         }
     }
 
@@ -852,6 +948,10 @@ class WatchPartyEngine(
      */
     fun sendReaction(emoji: String, targetMessageId: String? = null) {
         if (!isLive()) return
+        if (!_state.value.connected) {
+            _effects.tryEmit(WatchPartyEffect.ShowMessage("Not connected yet — finish pairing first."))
+            return
+        }
         if (!ReactionAggregator.isAllowedEmoji(emoji)) return
         reactions.add(emoji, targetMessageId)
         // Aggregation happens on the ticker: a burst of taps becomes one packet.
@@ -1161,10 +1261,13 @@ class WatchPartyEngine(
         adoptHostIfClaimed(id, info.role)
         publishParticipants()
         if (_state.value.isHost) {
-            // Answer with role, episode and playback, in that order, so a
+            // Answer with role, episode, readiness and playback, in that order, so a
             // newcomer can identify the host and converge immediately.
             sendPresence()
             sendEvent(WatchPartyEventType.EPISODE_CHANGE) { it.copy(episode = player.localEpisode()) }
+            if (isLocalReady()) {
+                sendEvent(WatchPartyEventType.READY) { it.copy(participantId = selfId, displayName = selfName()) }
+            }
             broadcastPlayback(force = true)
         }
     }
@@ -1389,8 +1492,19 @@ class WatchPartyEngine(
 
     private fun onReaction(event: RoomEvent) {
         val emoji = event.payload.emoji ?: return
-        if (!ReactionAggregator.isAllowedEmoji(emoji)) return
+        val targetMessageId = event.payload.targetMessageId
         val id = event.payload.messageId ?: "${event.senderId}:${event.seq}"
+        if (targetMessageId != null && (emoji == COMMENT_LIKE || emoji == COMMENT_DISLIKE || emoji == COMMENT_CLEAR_VOTE)) {
+            val added = synchronized(stateLock) {
+                val isNew = seenCommentVoteIds.add(id)
+                if (isNew && seenCommentVoteIds.size > MAX_SEEN_REACTIONS) seenCommentVoteIds.clear()
+                isNew
+            }
+            if (!added) return
+            applyCommentVote(commentId = targetMessageId, voterId = event.senderId, voteEmoji = emoji)
+            return
+        }
+        if (!ReactionAggregator.isAllowedEmoji(emoji)) return
         val added = synchronized(stateLock) {
             val isNew = seenReactionIds.add(id)
             if (isNew && seenReactionIds.size > MAX_SEEN_REACTIONS) seenReactionIds.clear()
@@ -1441,6 +1555,9 @@ class WatchPartyEngine(
         const val MAX_REACTION_HISTORY = 80
         const val MAX_SEEN_REACTIONS = 256
         const val REACTION_FLUSH_MS = 450L
+        const val COMMENT_LIKE = "\uD83D\uDC4D"
+        const val COMMENT_DISLIKE = "\uD83D\uDC4E"
+        const val COMMENT_CLEAR_VOTE = "\u2716\uFE0F"
     }
 }
 

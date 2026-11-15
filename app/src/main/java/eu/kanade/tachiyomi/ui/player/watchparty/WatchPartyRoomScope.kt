@@ -78,6 +78,9 @@ class WatchPartyRoomScope(
      */
     private var animeKey: String = ""
 
+    @Volatile
+    private var currentBridge: WatchPartyPlayerBridge = IdlePlayerBridge
+
     /** Identity of the anime the current room is bound to, or blank when idle. */
     fun boundAnime(): String = animeKey
 
@@ -228,6 +231,7 @@ class WatchPartyRoomScope(
      * This is what makes the room survive an episode change.
      */
     fun attachBridge(bridge: WatchPartyPlayerBridge) {
+        currentBridge = bridge
         val current = engine ?: return
         current.attachPlayer(bridge)
         // Tell the room what is now loaded, so guests get an EXACT/PROBABLE/
@@ -235,8 +239,14 @@ class WatchPartyRoomScope(
         current.onEpisodeReady(bridge.localEpisode())
     }
 
+    /** Refreshes episode identity without clearing ready state when metadata resolves. */
+    fun onEpisodeIdentityResolved(episode: EpisodeIdentity?) {
+        engine?.onEpisodeReady(episode)
+    }
+
     /** Detaches [bridge] when the player closes without ending the room. */
     fun detachBridge(bridge: WatchPartyPlayerBridge) {
+        if (currentBridge === bridge) currentBridge = IdlePlayerBridge
         engine?.detachPlayer(bridge, IdlePlayerBridge)
     }
 
@@ -252,6 +262,7 @@ class WatchPartyRoomScope(
         bridge: WatchPartyPlayerBridge,
         roomIdHint: String? = null,
     ) {
+        currentBridge = bridge
         stop()
         serverlessUsesPairing = P2PWatchPartySession.usesServerlessPairing(prefs)
         val created = WatchPartyEngine(
@@ -397,6 +408,10 @@ class WatchPartyRoomScope(
             }
             return false
         }
+        val existingRoom = _state.value.roomId
+        if (_state.value.active && existingRoom.isNotEmpty() && payload.roomId != existingRoom) {
+            return joinRoom(animeKey, raw, currentBridge)
+        }
         _pairing.update {
             it.copy(
                 state = PairingState.CREATING_ANSWER,
@@ -441,7 +456,9 @@ class WatchPartyRoomScope(
 
     fun requestSyncNow() = engine?.requestSyncNow()
 
-    fun sendChatMessage(text: String) = engine?.sendChatMessage(text)
+    fun sendChatMessage(text: String, replyToId: String? = null) = engine?.sendChatMessage(text, replyToId)
+
+    fun toggleCommentVote(commentId: String, voteEmoji: String) = engine?.toggleCommentVote(commentId, voteEmoji)
 
     fun sendReaction(emoji: String) = engine?.sendReaction(emoji)
 

@@ -34,6 +34,7 @@ class P2PGuestCoordinator(
         val connected: Boolean = false,
         /** Countdown of the host's invitation, which may still matter on screen. */
         val invitationSecondsRemaining: Long = 0L,
+        val statusDetail: String? = null,
     )
 
     var listener: Listener? = null
@@ -47,6 +48,9 @@ class P2PGuestCoordinator(
 
         /** Pairing failed, with a reason that names the likely cause. */
         fun onFailed(reason: String)
+
+        /** Live pairing/ICE status detail changed. */
+        fun onStatusChanged(detail: String) {}
     }
 
     private val _state = MutableStateFlow(GuestState())
@@ -211,6 +215,12 @@ class P2PGuestCoordinator(
         override fun onMessage(session: P2PSession, text: String) {
             if (!isCurrentSession(session)) return
             messageSink?.invoke(text)
+        }
+
+        override fun onStatusChanged(session: P2PSession, detail: String) {
+            if (!isCurrentSession(session)) return
+            _state.value = _state.value.copy(statusDetail = detail)
+            listener?.onStatusChanged(detail)
         }
     }
 

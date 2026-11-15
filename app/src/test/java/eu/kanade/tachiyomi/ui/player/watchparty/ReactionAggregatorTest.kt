@@ -64,4 +64,11 @@ class ReactionAggregatorTest {
         assertEquals(7, ReactionAggregator.QUICK_REACTIONS.size)
         assertTrue(ReactionAggregator.QUICK_REACTIONS.contains("\uD83D\uDE31"))
     }
+
+    @Test
+    fun `comment like, dislike, and clear markers are allowed emojis`() {
+        assertTrue(ReactionAggregator.isAllowedEmoji(WatchPartyEngine.COMMENT_LIKE))
+        assertTrue(ReactionAggregator.isAllowedEmoji(WatchPartyEngine.COMMENT_DISLIKE))
+        assertTrue(ReactionAggregator.isAllowedEmoji(WatchPartyEngine.COMMENT_CLEAR_VOTE))
+    }
 }

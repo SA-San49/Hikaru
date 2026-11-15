@@ -41,6 +41,7 @@ class P2PHostCoordinator(
         val verificationCode: String?,
         val failureReason: String?,
         val guestName: String?,
+        val statusDetail: String? = null,
     )
 
     /** Invitations whose listener receives UI-facing updates. */
@@ -65,6 +66,7 @@ class P2PHostCoordinator(
 
     private val lock = Any()
     private val sessions = LinkedHashMap<String, P2PSession>()
+    private val statusDetails = HashMap<String, String>()
     private val _invitations = MutableStateFlow<List<Invitation>>(emptyList())
     val invitations: StateFlow<List<Invitation>> = _invitations.asStateFlow()
 
@@ -254,7 +256,10 @@ class P2PHostCoordinator(
 
     /** Drops a guest and their invitation. */
     fun removeSession(sessionId: String) {
-        val removed = synchronized(lock) { sessions.remove(sessionId) }
+        val removed = synchronized(lock) {
+            statusDetails.remove(sessionId)
+            sessions.remove(sessionId)
+        }
         removed?.close()
         publish()
     }
@@ -262,6 +267,7 @@ class P2PHostCoordinator(
     /** Ends every invitation and connection. */
     fun closeAll() {
         val all = synchronized(lock) {
+            statusDetails.clear()
             sessions.values.toList().also { sessions.clear() }
         }
         all.forEach { runCatching { it.close() } }
@@ -328,6 +334,24 @@ class P2PHostCoordinator(
             // Routed by the coordinator's owner (the engine), never by the UI.
             messageSink?.invoke(sessionId, text)
         }
+
+        override fun onRemoteApplied(session: P2PSession) {
+            val isCurrent = synchronized(lock) { sessions[sessionId] === session }
+            if (!isCurrent) return
+            publish()
+        }
+
+        override fun onStatusChanged(session: P2PSession, detail: String) {
+            val isCurrent = synchronized(lock) {
+                if (sessions[sessionId] === session) {
+                    statusDetails[sessionId] = detail
+                    true
+                } else {
+                    false
+                }
+            }
+            if (isCurrent) publish()
+        }
     }
 
     /** Where inbound frames go; set by the room layer. */
@@ -347,6 +371,7 @@ class P2PHostCoordinator(
                     verificationCode = pairing.verificationCode(),
                     failureReason = pairing.failureReason,
                     guestName = pairing.remoteName,
+                    statusDetail = statusDetails[pairing.sessionId],
                 )
             }
         }
@@ -374,7 +399,10 @@ class P2PHostCoordinator(
                 it.pairing.state == PairingState.WAITING_FOR_GUEST &&
                     it.pairing.isExpired(now)
             }
-            expired.forEach { sessions.remove(it.pairing.sessionId) }
+            expired.forEach {
+                sessions.remove(it.pairing.sessionId)
+                statusDetails.remove(it.pairing.sessionId)
+            }
         }
         if (!hasSessions) return
         if (expired.isNotEmpty()) {

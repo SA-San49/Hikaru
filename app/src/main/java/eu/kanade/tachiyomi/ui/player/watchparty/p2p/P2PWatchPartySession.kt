@@ -70,6 +70,7 @@ class P2PWatchPartySession(
         val remoteVerificationCode: String? = null,
         val failureReason: String? = null,
         val connectedGuests: Int = 0,
+        val statusDetail: String? = null,
     )
 
     val host: P2PHostCoordinator? = if (isHost) {
@@ -213,6 +214,7 @@ class P2PWatchPartySession(
                         verificationCode = current?.verificationCode,
                         failureReason = failure,
                         connectedGuests = connectedCount,
+                        statusDetail = current?.statusDetail,
                     )
                 }
             }
@@ -231,6 +233,7 @@ class P2PWatchPartySession(
                         verificationCode = snapshot.localVerificationCode,
                         remoteVerificationCode = snapshot.hostVerificationCode,
                         failureReason = null,
+                        statusDetail = snapshot.statusDetail,
                     )
                 }
             }
@@ -245,6 +248,7 @@ class P2PWatchPartySession(
                         secondsRemaining = 0L,
                         failureReason = null,
                         connectedGuests = 1,
+                        statusDetail = null,
                     )
                 }
                 activeGuestTransport?.notifyConnected()
@@ -261,9 +265,14 @@ class P2PWatchPartySession(
                         secondsRemaining = 0L,
                         failureReason = reason,
                         connectedGuests = 0,
+                        statusDetail = null,
                     )
                 }
                 activeGuestTransport?.notifyFailed(reason)
+            }
+
+            override fun onStatusChanged(detail: String) {
+                _pairing.update { it.copy(statusDetail = detail) }
             }
         }
         guest?.messageSink = { text -> onLocalFrame?.invoke(text) }
@@ -335,6 +344,7 @@ class P2PWatchPartySession(
                 remoteVerificationCode = guestSnapshot.hostVerificationCode,
                 failureReason = guestSnapshot.failureReason,
                 secondsRemaining = guestSnapshot.invitationSecondsRemaining,
+                statusDetail = guestSnapshot.statusDetail,
             )
         }
         return ok
