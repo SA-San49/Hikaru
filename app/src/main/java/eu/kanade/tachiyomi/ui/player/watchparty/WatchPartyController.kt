@@ -79,7 +79,7 @@ class WatchPartyController(
 
         override fun play() {
             if (viewModel.isLoadingEpisode.value || viewModel.duration.value <= 0f) return
-            viewModel.activity.runOnUiThread {
+            ensureScope().launch(Dispatchers.Main) {
                 runCatching {
                     if (viewModel.paused.value) {
                         viewModel.unpause()
@@ -92,7 +92,7 @@ class WatchPartyController(
 
         override fun pause() {
             if (viewModel.isLoadingEpisode.value || viewModel.duration.value <= 0f) return
-            viewModel.activity.runOnUiThread {
+            ensureScope().launch(Dispatchers.Main) {
                 runCatching {
                     if (!viewModel.paused.value) {
                         viewModel.pause()
@@ -105,7 +105,7 @@ class WatchPartyController(
 
         override fun seekTo(positionMs: Long) {
             if (viewModel.isLoadingEpisode.value || viewModel.duration.value <= 0f) return
-            viewModel.activity.runOnUiThread {
+            ensureScope().launch(Dispatchers.Main) {
                 runCatching {
                     val targetSeconds = (positionMs / 1000.0).coerceAtLeast(0.0)
                     val durSeconds = viewModel.duration.value.toDouble()
@@ -117,7 +117,7 @@ class WatchPartyController(
         }
 
         override fun setSpeed(speed: Double) {
-            viewModel.activity.runOnUiThread {
+            ensureScope().launch(Dispatchers.Main) {
                 runCatching {
                     MPVLib.setPropertyDouble("speed", speed.coerceIn(0.5, 2.0))
                 }
