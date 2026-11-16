@@ -31,8 +31,12 @@ import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material3.LocalContentColor
@@ -44,8 +48,12 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Modifier
@@ -53,6 +61,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.constraintlayout.compose.ConstraintLayout
 import androidx.constraintlayout.compose.Dimension
@@ -78,6 +87,11 @@ import eu.kanade.tachiyomi.ui.player.controls.components.TextPlayerUpdate
 import eu.kanade.tachiyomi.ui.player.controls.components.VolumeSlider
 import eu.kanade.tachiyomi.ui.player.controls.components.sheets.toFixed
 import eu.kanade.tachiyomi.ui.player.settings.AdvancedPlayerPreferences
+import eu.kanade.tachiyomi.ui.player.watchparty.FloatingCommentsAssistant
+import eu.kanade.tachiyomi.ui.player.watchparty.FloatingReactions
+import eu.kanade.tachiyomi.ui.player.watchparty.WatchPartyEffect
+import eu.kanade.tachiyomi.ui.player.watchparty.WatchPartyPanel
+import eu.kanade.tachiyomi.ui.player.watchparty.WatchPartyPreferences
 import eu.kanade.tachiyomi.ui.player.settings.AudioPreferences
 import eu.kanade.tachiyomi.ui.player.settings.GesturePreferences
 import eu.kanade.tachiyomi.ui.player.settings.PlayerPreferences
@@ -166,6 +180,42 @@ fun PlayerControls(
     val customButtons by viewModel.customButtons.collectAsState()
     val customButton by viewModel.primaryButton.collectAsState()
 
+    // Watch Party: only collected once the feature has been engaged, so a normal
+    // playback session never allocates any of this.
+    val activity = LocalContext.current as PlayerActivity
+    val watchPartyState by viewModel.watchParty.state.collectAsState()
+    val watchPartyPairing by viewModel.watchParty.pairing.collectAsState()
+    val watchPartyCommentsOpen by viewModel.watchPartyCommentsOpen.collectAsState()
+    val watchPartyVideoBounds by viewModel.watchPartyVideoBounds.collectAsState()
+    val watchPartySelfId = viewModel.watchParty.selfId
+    val watchPartyPrefs = remember { Injekt.get<WatchPartyPreferences>() }
+    // Recomputed on every state change: readiness derives from local playback too.
+    val watchPartyLocalReady = viewModel.watchParty.localReady()
+    val compactWatchPartyVideo = watchPartyState.active && watchPartyCommentsOpen &&
+        watchPartyVideoBounds != null && !watchPartyVideoBounds!!.sideBySide
+
+    val commentsListState = rememberLazyListState()
+    val expandedCommentThreads = remember { mutableStateMapOf<String, Boolean>() }
+    var commentsExpanded by rememberSaveable { mutableStateOf(false) }
+    var assistantFracX by rememberSaveable { mutableFloatStateOf(0.92f) }
+    var assistantFracY by rememberSaveable { mutableFloatStateOf(0.18f) }
+    var lastSeenChatCount by remember { mutableIntStateOf(watchPartyState.chat.size) }
+
+    LaunchedEffect(watchPartyState.active) {
+        if (!watchPartyState.active) {
+            commentsExpanded = false
+            expandedCommentThreads.clear()
+            lastSeenChatCount = 0
+            viewModel.resetWatchPartyCommentsOpen()
+        }
+    }
+
+    LaunchedEffect(watchPartyCommentsOpen, watchPartyState.chat.size) {
+        if (watchPartyCommentsOpen) {
+            lastSeenChatCount = watchPartyState.chat.size
+        }
+    }
+
     LaunchedEffect(
         controlsShown,
         paused,
@@ -183,40 +233,55 @@ fun PlayerControls(
         animationSpec = playerControlsExitAnimationSpec(),
         label = "controls_transparent_overlay",
     )
-    GestureHandler(
-        viewModel = viewModel,
-        interactionSource = interactionSource,
-    )
-    DoubleTapToSeekOvals(
-        amount = doubleTapSeekAmount,
-        text = seekText,
-        showOvals = showDoubleTapOvals,
-        showSeekIcon = showSeekIcon,
-        showSeekTime = showSeekTime,
-        interactionSource = interactionSource,
-    )
-    CompositionLocalProvider(
-        LocalRippleConfiguration provides playerRippleConfiguration,
-        LocalPlayerButtonsClickEvent provides { resetControls = !resetControls },
-        LocalContentColor provides Color.White,
-    ) {
-        CompositionLocalProvider(
-            LocalLayoutDirection provides LayoutDirection.Ltr,
-        ) {
-            ConstraintLayout(
-                modifier = modifier
-                    .fillMaxSize()
-                    .background(
-                        Brush.verticalGradient(
-                            Pair(0f, Color.Black),
-                            Pair(.2f, Color.Transparent),
-                            Pair(.7f, Color.Transparent),
-                            Pair(1f, Color.Black),
-                        ),
-                        alpha = transparentOverlay,
-                    )
-                    .padding(horizontal = MaterialTheme.padding.medium),
+
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    val videoOverlayModifier = if (watchPartyState.active && watchPartyCommentsOpen && watchPartyVideoBounds != null) {
+        val bounds = watchPartyVideoBounds!!
+        with(density) {
+            Modifier
+                .offset(x = bounds.left.toDp(), y = bounds.top.toDp())
+                .size(width = bounds.width.toDp(), height = bounds.height.toDp())
+        }
+    } else {
+        Modifier.fillMaxSize()
+    }
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        Box(modifier = videoOverlayModifier) {
+            GestureHandler(
+                viewModel = viewModel,
+                interactionSource = interactionSource,
+            )
+            DoubleTapToSeekOvals(
+                amount = doubleTapSeekAmount,
+                text = seekText,
+                showOvals = showDoubleTapOvals,
+                showSeekIcon = showSeekIcon,
+                showSeekTime = showSeekTime,
+                interactionSource = interactionSource,
+            )
+            CompositionLocalProvider(
+                LocalRippleConfiguration provides playerRippleConfiguration,
+                LocalPlayerButtonsClickEvent provides { resetControls = !resetControls },
+                LocalContentColor provides Color.White,
             ) {
+                CompositionLocalProvider(
+                    LocalLayoutDirection provides LayoutDirection.Ltr,
+                ) {
+                    ConstraintLayout(
+                        modifier = modifier
+                            .fillMaxSize()
+                            .background(
+                                Brush.verticalGradient(
+                                    Pair(0f, Color.Black),
+                                    Pair(.2f, Color.Transparent),
+                                    Pair(.7f, Color.Transparent),
+                                    Pair(1f, Color.Black),
+                                ),
+                                alpha = transparentOverlay,
+                            )
+                            .padding(horizontal = MaterialTheme.padding.medium),
+                    ) {
                 val (
                     topLeftControls, topRightControls, castButton,
                     volumeSlider, brightnessSlider,
@@ -431,7 +496,7 @@ fun PlayerControls(
                         fadeOut(playerControlsExitAnimationSpec())
                     },
                     modifier = Modifier.constrainAs(seekbar) {
-                        bottom.linkTo(parent.bottom, spacing.medium)
+                        bottom.linkTo(parent.bottom, if (compactWatchPartyVideo) spacing.extraSmall else spacing.medium)
                     },
                 ) {
                     val invertDuration by playerPreferences.invertDuration().collectAsState()
@@ -512,7 +577,7 @@ fun PlayerControls(
                         fadeOut(playerControlsExitAnimationSpec())
                     },
                     modifier = Modifier.constrainAs(topLeftControls) {
-                        top.linkTo(parent.top, spacing.medium)
+                        top.linkTo(parent.top, if (compactWatchPartyVideo) spacing.extraSmall else spacing.medium)
                         start.linkTo(parent.start)
                         width = Dimension.fillToConstraints
                         end.linkTo(topRightControls.start)
@@ -543,7 +608,7 @@ fun PlayerControls(
                         fadeOut(playerControlsExitAnimationSpec())
                     },
                     modifier = Modifier.constrainAs(topRightControls) {
-                        top.linkTo(parent.top, spacing.medium)
+                        top.linkTo(parent.top, if (compactWatchPartyVideo) spacing.extraSmall else spacing.medium)
                         end.linkTo(parent.end)
                     },
                 ) {
@@ -562,7 +627,7 @@ fun PlayerControls(
                     enter = fadeIn(),
                     exit = fadeOut(),
                     modifier = Modifier.constrainAs(portraitBottomBar) {
-                        bottom.linkTo(seekbar.top, spacing.medium)
+                        bottom.linkTo(seekbar.top, if (compactWatchPartyVideo) spacing.extraSmall else spacing.medium)
                         start.linkTo(parent.start)
                         end.linkTo(parent.end)
                         width = Dimension.fillToConstraints
@@ -661,6 +726,100 @@ fun PlayerControls(
                         bottom.linkTo(seekbar.top, spacing.medium)
                     },
                 )
+                    } // ConstraintLayout
+                } // LocalLayoutDirection
+            } // CompositionLocalProvider
+
+            val floatingReactions = remember(watchPartyState.reactions) {
+                watchPartyState.reactions.filter { it.targetMessageId == null }
+            }
+            if (watchPartyState.active && watchPartyPrefs.floatingReactions().get() && floatingReactions.isNotEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(end = MaterialTheme.padding.large, top = MaterialTheme.padding.large),
+                    contentAlignment = Alignment.TopEnd,
+                ) {
+                    FloatingReactions(reactions = floatingReactions)
+                }
+            }
+
+            if (watchPartyState.active && !watchPartyCommentsOpen) {
+                FloatingCommentsAssistant(
+                    hasUnread = watchPartyState.chat.size > lastSeenChatCount,
+                    fractionX = assistantFracX,
+                    fractionY = assistantFracY,
+                    onFractionChange = { fx, fy ->
+                        assistantFracX = fx
+                        assistantFracY = fy
+                    },
+                    onClick = { viewModel.setWatchPartyCommentsOpen(true) },
+                )
+            }
+        } // videoOverlayModifier Box
+
+        if (watchPartyState.active) {
+            LaunchedEffect(Unit) {
+                viewModel.watchParty.effects.collect { effect ->
+                    when (effect) {
+                        is WatchPartyEffect.ShowMessage -> viewModel.playerUpdate.update {
+                            PlayerUpdates.ShowText(effect.message)
+                        }
+                        WatchPartyEffect.PlaybackStarted -> Unit
+                    }
+                }
+            }
+        }
+
+        if (watchPartyState.active && watchPartyCommentsOpen) {
+            val bounds = watchPartyVideoBounds
+            val panelContainerModifier = when {
+                bounds != null && bounds.sideBySide -> with(density) {
+                    Modifier
+                        .fillMaxSize()
+                        .padding(start = bounds.right.toDp())
+                }
+                bounds != null -> {
+                    val topPadding = if (commentsExpanded) {
+                        with(density) { bounds.top.toDp() }
+                    } else {
+                        with(density) { bounds.bottom.toDp() }
+                    }
+                    Modifier
+                        .fillMaxSize()
+                        .padding(top = topPadding)
+                }
+                else -> Modifier
+                    .fillMaxSize()
+                    .padding(top = watchPartyPanelTopPadding(viewModel))
+            }
+            Box(
+                modifier = panelContainerModifier,
+                contentAlignment = Alignment.BottomCenter,
+            ) {
+                WatchPartyPanel(
+                    state = watchPartyState,
+                    selfId = watchPartySelfId,
+                    selfName = watchPartyState.nameOf(watchPartySelfId),
+                    localReady = watchPartyLocalReady,
+                    onSendChat = { text, replyToId -> viewModel.watchParty.sendChatMessage(text, replyToId) },
+                    onLikeComment = { commentId -> viewModel.watchParty.toggleCommentLike(commentId) },
+                    onDislikeComment = { commentId -> viewModel.watchParty.toggleCommentDislike(commentId) },
+                    onReaction = { emoji -> viewModel.watchParty.sendReaction(emoji) },
+                    onReady = { viewModel.watchParty.requestReady() },
+                    onNotReady = { viewModel.watchParty.requestNotReady() },
+                    onCancelCountdown = { viewModel.watchParty.requestCancelCountdown() },
+                    onSyncNow = { viewModel.watchParty.requestSyncNow() },
+                    onOpenInfoSheet = { viewModel.showSheet(Sheets.WatchParty) },
+                    onCloseComments = {
+                        commentsExpanded = false
+                        viewModel.setWatchPartyCommentsOpen(false)
+                    },
+                    listState = commentsListState,
+                    expanded = commentsExpanded,
+                    onExpandedChange = { commentsExpanded = it },
+                    expandedThreads = expandedCommentThreads,
+                )
             }
         }
 
@@ -748,6 +907,30 @@ fun PlayerControls(
             onOpenPanel = viewModel::showPanel,
             onDismissRequest = { viewModel.showSheet(Sheets.None) },
             dismissSheet = dismissSheet,
+
+            watchPartyState = watchPartyState,
+            watchPartySelfId = watchPartySelfId,
+            watchPartyLocalReady = watchPartyLocalReady,
+            watchPartyIsServerless = viewModel.watchParty.isServerless(),
+            watchPartyPairing = watchPartyPairing,
+            onCreateWatchParty = {
+                activity.engageWatchParty()
+                viewModel.watchParty.createRoom()
+            },
+            onJoinWatchParty = { code ->
+                activity.engageWatchParty()
+                viewModel.watchParty.joinRoom(code)
+            },
+            onLeaveWatchParty = { viewModel.watchParty.leaveRoom() },
+            onWatchPartyReady = { viewModel.watchParty.requestReady() },
+            onWatchPartyNotReady = { viewModel.watchParty.requestNotReady() },
+            onWatchPartyCancelCountdown = { viewModel.watchParty.requestCancelCountdown() },
+            onWatchPartySyncNow = { viewModel.watchParty.requestSyncNow() },
+            onWatchPartySendChat = { text -> viewModel.watchParty.sendChatMessage(text) },
+            onWatchPartyReaction = { emoji -> viewModel.watchParty.sendReaction(emoji) },
+            onWatchPartyCreateInvitation = { viewModel.watchParty.createInvitation() },
+            onWatchPartyAcceptAnswer = { answer -> viewModel.watchParty.acceptAnswer(answer) },
+            onWatchPartyBeginPairing = { invitation -> viewModel.watchParty.beginPairing(invitation) },
         )
         val panel by viewModel.panelShown.collectAsState()
         key("player-panels") {
@@ -757,7 +940,6 @@ fun PlayerControls(
             )
         }
 
-        val activity = LocalContext.current as PlayerActivity
         val dialog by viewModel.dialogShown.collectAsState()
         val anime by viewModel.currentAnime.collectAsState()
         val playlist by viewModel.currentPlaylist.collectAsState()
@@ -796,6 +978,25 @@ fun PlayerControls(
         )
     }
 }
+
+/**
+ * Top padding that makes the panel begin exactly where the picture ends.
+ *
+ * The activity constrains the mpv surface to that height, so the panel fills the
+ * band underneath instead of overlapping the picture.
+ */
+@Composable
+private fun watchPartyPanelTopPadding(viewModel: PlayerViewModel): androidx.compose.ui.unit.Dp {
+    val heightPx by viewModel.watchPartyVideoHeight.collectAsState()
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    val configuration = androidx.compose.ui.platform.LocalConfiguration.current
+    // The activity publishes the video height as soon as a room is active. Until
+    // that value lands, fall back to half the screen so the panel is never drawn
+    // over the whole picture.
+    val px = heightPx ?: (with(density) { configuration.screenHeightDp.dp.roundToPx() } / 2)
+    return with(density) { px.toDp() }
+}
+
 
 fun <T> playerControlsExitAnimationSpec(): FiniteAnimationSpec<T> = tween(
     durationMillis = 300,

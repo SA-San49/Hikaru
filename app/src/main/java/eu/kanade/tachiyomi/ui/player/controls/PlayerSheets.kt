@@ -42,6 +42,9 @@ import eu.kanade.tachiyomi.ui.player.controls.components.sheets.SubtitlesSheet
 import eu.kanade.tachiyomi.ui.player.controls.components.sheets.VideoZoomSheet
 import eu.kanade.tachiyomi.ui.player.PlayerViewModel
 import eu.kanade.tachiyomi.ui.player.settings.PlayerPreferences
+import eu.kanade.tachiyomi.ui.player.watchparty.WatchPartySheet
+import eu.kanade.tachiyomi.ui.player.watchparty.WatchPartyUiState
+import eu.kanade.tachiyomi.ui.player.watchparty.p2p.P2PWatchPartySession
 import tachiyomi.domain.custombuttons.model.CustomButton
 import tachiyomi.presentation.core.util.collectAsState
 import uy.kohesive.injekt.Injekt
@@ -108,6 +111,25 @@ fun PlayerSheets(
     onOpenPanel: (Panels) -> Unit,
     onDismissRequest: () -> Unit,
     dismissSheet: Boolean,
+
+    // Watch Party
+    watchPartyState: WatchPartyUiState,
+    watchPartySelfId: String,
+    watchPartyLocalReady: Boolean,
+    watchPartyIsServerless: Boolean = false,
+    watchPartyPairing: P2PWatchPartySession.PairingSnapshot = P2PWatchPartySession.PairingSnapshot(),
+    onCreateWatchParty: () -> Unit,
+    onJoinWatchParty: (String) -> Unit,
+    onLeaveWatchParty: () -> Unit,
+    onWatchPartyReady: () -> Unit,
+    onWatchPartyNotReady: () -> Unit,
+    onWatchPartyCancelCountdown: () -> Unit,
+    onWatchPartySyncNow: () -> Unit,
+    onWatchPartySendChat: (String) -> Unit,
+    onWatchPartyReaction: (String) -> Unit,
+    onWatchPartyCreateInvitation: () -> Unit = {},
+    onWatchPartyAcceptAnswer: (String) -> Unit = {},
+    onWatchPartyBeginPairing: (String) -> Unit = {},
 ) {
     when (sheetShown) {
         Sheets.None -> {}
@@ -225,6 +247,30 @@ fun PlayerSheets(
                 onDismissRequest = onDismissRequest,
                 onEnterFiltersPanel = { onOpenPanel(Panels.VideoFilters) },
                 customButtons = buttons,
+            )
+        }
+
+        Sheets.WatchParty -> {
+            WatchPartySheet(
+                state = watchPartyState,
+                selfId = watchPartySelfId,
+                localReady = watchPartyLocalReady,
+                onDismissRequest = onDismissRequest,
+                onCreateRoom = onCreateWatchParty,
+                onJoinRoom = onJoinWatchParty,
+                onLeaveRoom = onLeaveWatchParty,
+                onReady = onWatchPartyReady,
+                onNotReady = onWatchPartyNotReady,
+                onCancelCountdown = onWatchPartyCancelCountdown,
+                onSyncNow = onWatchPartySyncNow,
+                onSendChat = onWatchPartySendChat,
+                onReaction = onWatchPartyReaction,
+                initialJoinCode = viewModel.watchParty.consumePendingInvite(),
+                isServerless = watchPartyIsServerless,
+                pairing = watchPartyPairing,
+                onCreateInvitation = onWatchPartyCreateInvitation,
+                onAcceptAnswer = onWatchPartyAcceptAnswer,
+                onBeginPairing = onWatchPartyBeginPairing,
             )
         }
 

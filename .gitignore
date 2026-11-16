@@ -39,3 +39,6 @@ CODE_MAP.md
 # Local conductor tracking
 conductor/
 GEMINI.md
+
+# Watch Party relay dependencies
+/relay/node_modules/

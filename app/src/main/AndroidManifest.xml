@@ -17,6 +17,14 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
 
+    <!--
+      Watch Party: scanning a pairing QR code. Requested at runtime only when the
+      user opens the scanner, and never needed for the feature to be installed —
+      both camera uses-features above stay required="false" so devices without a
+      camera can still use the gallery fallback.
+    -->
+    <uses-permission android:name="android.permission.CAMERA" />
+
     <!-- Storage -->
     <uses-permission
         android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
@@ -104,6 +112,32 @@
                 <data android:scheme="mihon" />
                 <data android:scheme="tachiyomi" />
                 <data android:host="add-repo" />
+            </intent-filter>
+
+            <!-- Watch Party invite links: hikaru://watchparty/<CODE> and
+                 https://hikaru.app/watchparty/<CODE> -->
+            <intent-filter android:label="@string/player_button_watch_party">
+                <action android:name="android.intent.action.VIEW" />
+
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+
+                <data android:scheme="hikaru" />
+                <data android:scheme="aniyomi" />
+                <data android:scheme="mihon" />
+                <data android:scheme="tachiyomi" />
+                <data android:host="watchparty" />
+            </intent-filter>
+
+            <intent-filter android:label="@string/player_button_watch_party">
+                <action android:name="android.intent.action.VIEW" />
+
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+
+                <data android:scheme="https" />
+                <data android:host="hikaru.app" />
+                <data android:pathPrefix="/watchparty/" />
             </intent-filter>
 
             <!-- Open backup files -->

@@ -39,7 +39,9 @@ android {
             keyAlias = props.getProperty("keyAlias") ?: System.getenv("SIGNING_KEY_ALIAS") ?: ""
             keyPassword = props.getProperty("keyPassword") ?: System.getenv("SIGNING_KEY_PASSWORD") ?: ""
 
-            enableV1Signing = true
+            // minSdk = 26 supports APK Signature Scheme v2/v3 natively; skipping
+            // v1 avoids per-entry JAR manifest digests and speeds up installation.
+            enableV1Signing = false
             enableV2Signing = true
             enableV3Signing = true
         }
@@ -94,6 +96,35 @@ android {
             initWith(debug)
             // Hikaru-signed, with debuggable mode off so R8 can optimize fully.
             isDebuggable = false
+            isPseudoLocalesEnabled = false
+            isCrunchPngs = true
+            isMinifyEnabled = true
+            isShrinkResources = true
+            signingConfig = signingConfigs.getByName("release")
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-android-optimize.txt",
+                "proguard-rules.pro",
+            )
+            matchingFallbacks.add(debug.name)
+        }
+        /**
+         * Side-by-side build: installs *beside* the normal Hikaru instead of
+         * replacing it. That requires a distinct applicationId, which is also
+         * what keeps content-provider authorities (`${applicationId}.provider`,
+         * `${applicationId}.shizuku`) from colliding across the two installs.
+         *
+         * It is a debug-shaped build so it can be installed over an existing
+         * install of the same variant without a signature downgrade.
+         */
+        maybeCreate("sideBySide").apply {
+            initWith(debug)
+            // Must match `AutoBackupNaming.SIDE_BY_SIDE_SUFFIX` in the app module.
+            applicationIdSuffix = ".sideby"
+            versionNameSuffix = "-${getCommitCount()}-sideby"
+            isDebuggable = false
+            isPseudoLocalesEnabled = false
+            isCrunchPngs = true
             isMinifyEnabled = true
             isShrinkResources = true
             signingConfig = signingConfigs.getByName("release")
@@ -164,6 +195,8 @@ android {
     sourceSets {
         getByName("preview").res.srcDirs("src/beta/res")
         getByName("benchmark").res.srcDirs("src/debug/res")
+        // App name + launcher tint only; nothing else is overridden.
+        getByName("sideBySide").res.srcDirs("src/sideBySide/res")
     }
 
     splits {
@@ -195,6 +228,9 @@ android {
                 "META-INF/NOTICE",
                 "META-INF/README.md",
                 "META-INF/versions/9/OSGI-INF/MANIFEST.MF",
+                "META-INF/native-image/**",
+                "META-INF/version-control-info.textproto",
+                "DebugProbesKt.bin",
             )
         }
     }
@@ -378,6 +414,9 @@ dependencies {
 
     // Shizuku
     implementation(libs.bundles.shizuku)
+
+    // Watch Party P2P (serverless): direct WebRTC data channels + QR pairing.
+    implementation(libs.bundles.watchparty)
 
     // Tests
     testImplementation(libs.bundles.test)

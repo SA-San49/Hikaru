@@ -77,6 +77,8 @@ import eu.kanade.tachiyomi.ui.player.settings.DecoderPreferences
 import eu.kanade.tachiyomi.ui.player.settings.GesturePreferences
 import eu.kanade.tachiyomi.ui.player.settings.PlayerPreferences
 import eu.kanade.tachiyomi.ui.player.settings.SubtitlePreferences
+import eu.kanade.tachiyomi.ui.player.watchparty.WatchPartyController
+import eu.kanade.tachiyomi.ui.player.watchparty.WatchPartyPreferences
 import eu.kanade.tachiyomi.ui.player.utils.AniSkipApi
 import eu.kanade.tachiyomi.ui.player.utils.ChapterUtils.Companion.getStringRes
 import eu.kanade.tachiyomi.ui.player.utils.DefaultStreamPreferenceStore
@@ -197,7 +199,66 @@ class PlayerViewModel @JvmOverloads constructor(
     private val libraryPreferences: LibraryPreferences = Injekt.get(),
     uiPreferences: UiPreferences = Injekt.get(),
     private val animeFillerListFetcher: AnimeFillerListFetcher = AnimeFillerListFetcher(),
+    private val watchPartyPreferences: WatchPartyPreferences = Injekt.get(),
 ) : ViewModel() {
+
+    /**
+     * Watch Party is optional and lazily created: no object, socket or coroutine
+     * exists until the user opens a room.
+     */
+    private var watchPartyCreated = false
+
+    /**
+     * Height of the video region while Watch Party is on screen, in pixels.
+     *
+     * The mpv surface is a real Android view owned by the activity, not a Compose
+     * node, so Compose cannot reflow it. The activity observes this and resizes
+     * the view, which is what removes the dead letterbox band and frees the space
+     * for chat.
+     *
+     * `null` means "full screen", i.e. the ordinary player.
+     */
+    @Immutable
+    data class WatchPartyVideoBounds(
+        val left: Int,
+        val top: Int,
+        val right: Int,
+        val bottom: Int,
+        val sideBySide: Boolean,
+    ) {
+        val width: Int get() = (right - left).coerceAtLeast(0)
+        val height: Int get() = (bottom - top).coerceAtLeast(0)
+    }
+
+    private val _watchPartyVideoHeight = MutableStateFlow<Int?>(null)
+    val watchPartyVideoHeight = _watchPartyVideoHeight.asStateFlow()
+
+    fun setWatchPartyVideoHeight(heightPx: Int?) {
+        _watchPartyVideoHeight.value = heightPx
+    }
+
+    private val _watchPartyVideoBounds = MutableStateFlow<WatchPartyVideoBounds?>(null)
+    val watchPartyVideoBounds = _watchPartyVideoBounds.asStateFlow()
+
+    fun setWatchPartyVideoBounds(bounds: WatchPartyVideoBounds?) {
+        _watchPartyVideoBounds.value = bounds
+    }
+
+    private val _watchPartyCommentsOpen = MutableStateFlow(watchPartyPreferences.autoOpenPanel().get())
+    val watchPartyCommentsOpen = _watchPartyCommentsOpen.asStateFlow()
+
+    fun setWatchPartyCommentsOpen(open: Boolean) {
+        _watchPartyCommentsOpen.value = open
+    }
+
+    fun resetWatchPartyCommentsOpen() {
+        _watchPartyCommentsOpen.value = watchPartyPreferences.autoOpenPanel().get()
+    }
+
+    val watchParty: WatchPartyController by lazy {
+        watchPartyCreated = true
+        WatchPartyController(this, watchPartyPreferences)
+    }
 
     private val _currentPlaylist = MutableStateFlow<List<Episode>>(emptyList())
     val currentPlaylist = _currentPlaylist.asStateFlow()
@@ -1168,6 +1229,10 @@ class PlayerViewModel @JvmOverloads constructor(
     fun seekTo(position: Int, precise: Boolean = true) {
         if (position !in 0..(activity.player.duration ?: 0)) return
         MPVLib.command(arrayOf("seek", position.toString(), if (precise) "absolute" else "absolute+keyframes"))
+        // Only reports while a Watch Party room is open and this is a local seek.
+        if (watchPartyCreated) {
+            runCatching { watchParty.onSeek(position * 1000L) }
+        }
     }
 
     fun changeBrightnessTo(
@@ -1646,6 +1711,11 @@ class PlayerViewModel @JvmOverloads constructor(
             }
         }
         deletePendingEpisodes()
+        // Only tears down the room if one was created (lazy property, so no
+        // engine is instantiated here).
+        if (watchPartyCreated) {
+            runCatching { watchParty.release() }
+        }
     }
 
     fun updateCastProgress(position: Float) {

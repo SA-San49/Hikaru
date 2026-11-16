@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Same accent in dark mode so the variant stays identifiable. -->
+    <color name="ic_launcher_background">#FF3D5AFE</color>
+</resources>

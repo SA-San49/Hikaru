@@ -90,6 +90,8 @@ import eu.kanade.tachiyomi.ui.player.settings.AdvancedPlayerPreferences
 import eu.kanade.tachiyomi.ui.player.settings.AudioPreferences
 import eu.kanade.tachiyomi.ui.player.settings.GesturePreferences
 import eu.kanade.tachiyomi.ui.player.settings.PlayerPreferences
+import eu.kanade.tachiyomi.ui.player.watchparty.WatchPartyInvites
+import eu.kanade.tachiyomi.ui.player.watchparty.WatchPartyPreferences
 import eu.kanade.tachiyomi.ui.player.utils.ChapterUtils
 import eu.kanade.tachiyomi.ui.player.utils.ChapterUtils.Companion.getStringRes
 import eu.kanade.tachiyomi.util.system.powerManager
@@ -174,6 +176,16 @@ class PlayerActivity : BaseActivity() {
     }
 
     private var pipReceiver: BroadcastReceiver? = null
+
+    /**
+     * True once the user opened the Watch Party entry point in this player.
+     * Keeps every Watch Party code path off until the feature is used.
+     */
+    private var watchPartyEngaged = false
+
+    internal fun engageWatchParty() {
+        watchPartyEngaged = true
+    }
 
     val isTv by lazy {
         packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK)
@@ -336,6 +348,48 @@ class PlayerActivity : BaseActivity() {
         castManager
         // <-- Cast
 
+        // Watch Party anchors the mpv surface at the top (16:9 full width in portrait,
+        // or side-by-side in landscape) when comments are open, and immediately
+        // restores normal full-screen playback when comments are closed.
+        lifecycleScope.launch {
+            kotlinx.coroutines.flow.combine(
+                viewModel.watchParty.state,
+                viewModel.watchPartyCommentsOpen,
+            ) { state, commentsOpen -> state.active to commentsOpen }
+                .collect { (active, commentsOpen) ->
+                    if (active && !watchPartyEngaged) {
+                        engageWatchParty()
+                        viewModel.watchParty.attachIfActive()
+                    }
+                    updateWatchPartyVideoLayout(active = active, commentsOpen = commentsOpen)
+                }
+        }
+        androidx.core.view.ViewCompat.setOnApplyWindowInsetsListener(binding.root) { _, insets ->
+            if (viewModel.watchParty.state.value.active && viewModel.watchPartyCommentsOpen.value) {
+                updateWatchPartyVideoLayout(active = true, commentsOpen = true)
+            }
+            insets
+        }
+        binding.root.addOnLayoutChangeListener(
+            object : android.view.View.OnLayoutChangeListener {
+                override fun onLayoutChange(
+                    v: android.view.View?,
+                    left: Int,
+                    top: Int,
+                    right: Int,
+                    bottom: Int,
+                    oldLeft: Int,
+                    oldTop: Int,
+                    oldRight: Int,
+                    oldBottom: Int,
+                ) {
+                    if (viewModel.watchParty.state.value.active && viewModel.watchPartyCommentsOpen.value) {
+                        updateWatchPartyVideoLayout(active = true, commentsOpen = true)
+                    }
+                }
+            },
+        )
+
  binding.controls.setContent {
             val uiPreferences = remember { Injekt.get<UiPreferences>() }
             val dynamicPlayerTheme by uiPreferences.dynamicPlayerTheme().collectAsStatePref()
@@ -368,6 +422,25 @@ class PlayerActivity : BaseActivity() {
         }
 
         onNewIntent(this.intent)
+        handleWatchPartyInvite()
+    }
+
+    /**
+     * Opens the Watch Party panel pre-filled when an invite link launched this
+     * player. The room is never joined automatically.
+     */
+    private fun handleWatchPartyInvite() {
+        // Claim only once we know the feature is on, so a disabled install
+        // leaves nothing armed. The singleton store avoids touching the
+        // controller (and therefore the network stack) from the activity.
+        if (!WatchPartyPreferences(Injekt.get()).enabled().get()) {
+            WatchPartyInvites.clear()
+            return
+        }
+        val code = WatchPartyInvites.take() ?: return
+        engageWatchParty()
+        viewModel.watchParty.rememberPendingInvite(code)
+        viewModel.showSheet(Sheets.WatchParty)
     }
 
     override fun onDestroy() {
@@ -818,6 +891,10 @@ class PlayerActivity : BaseActivity() {
                     viewModel.updatePlayBackPos(value.toFloat())
                     viewModel.setChapter(value.toFloat())
                 }
+                // Watch Party does nothing unless a room is open.
+                if (watchPartyEngaged || viewModel.watchParty.isActive()) {
+                    runCatching { viewModel.watchParty.onPositionChanged(value) }
+                }
             }
             "demuxer-cache-time" -> viewModel.updateReadAhead(value = value)
             "volume" -> viewModel.setMPVVolume(value.toInt())
@@ -853,6 +930,13 @@ class PlayerActivity : BaseActivity() {
         when (property) {
             "interpolation" -> PlayerStats.isInterpolating.value = value
             "pause" -> {
+                if (watchPartyEngaged || viewModel.watchParty.isActive()) {
+                    if (value) {
+                        runCatching { viewModel.watchParty.onPause() }
+                    } else {
+                        runCatching { viewModel.watchParty.onPlay() }
+                    }
+                }
                 if (value && player.paused == true) {
                     viewModel.pause()
                     runOnUiThread {
@@ -1319,6 +1403,9 @@ class PlayerActivity : BaseActivity() {
      * @param autoPlay whether the episode is switching due to auto play
      */
     internal fun changeEpisode(episodeId: Long?, autoPlay: Boolean = false) {
+        if (watchPartyEngaged) {
+            runCatching { viewModel.watchParty.onEpisodeChanged() }
+        }
         viewModel.sheetShown.update { _ -> Sheets.None }
         viewModel.panelShown.update { _ -> Panels.None }
         viewModel.pause()
@@ -1576,6 +1663,13 @@ class PlayerActivity : BaseActivity() {
     // at void is.xyz.mpv.MPVLib.event(int) (MPVLib.java:86)
     private fun fileLoaded() {
         if (player.isExiting) return
+        if (watchPartyEngaged || viewModel.watchParty.isActive()) {
+            engageWatchParty()
+            runCatching {
+                viewModel.watchParty.attachIfActive()
+                viewModel.watchParty.onEpisodeReady()
+            }
+        }
         // Apply after mpv has created the subtitle tracks as well as before
         // loadfile; per-file subtitle defaults can otherwise win at this point.
         player.applySubtitlePreferences()
@@ -1735,4 +1829,124 @@ class PlayerActivity : BaseActivity() {
             }
         }
     }
+    /**
+     * Constrains the mpv surface to [heightPx], or restores full screen for `null`.
+     *
+     * The surface is matched to the video region rather than the whole window so
+     * that mpv has no space left to letterbox into above and below the picture.
+     * That dead band is precisely what the Watch Party layout reclaims for chat.
+     *
+     * Only the height is changed: the width stays full, and mpv keeps its own
+     * accurate aspect handling inside the smaller region.
+     */
+    /**
+     * The video region for the current window, in pixels.
+     *
+     * Uses the same arithmetic the chat panel uses, so the two always agree —
+     * they are two views of one split, not two independent guesses.
+     */
+    private fun updateWatchPartyVideoLayout(active: Boolean, commentsOpen: Boolean) {
+        val view = binding.player
+        val params = view.layoutParams as? androidx.constraintlayout.widget.ConstraintLayout.LayoutParams
+        val parentId = androidx.constraintlayout.widget.ConstraintLayout.LayoutParams.PARENT_ID
+        val unset = androidx.constraintlayout.widget.ConstraintLayout.LayoutParams.UNSET
+        val matchParent = android.view.ViewGroup.LayoutParams.MATCH_PARENT
+
+        if (!active || !commentsOpen) {
+            if (params != null) {
+                val needsReset = params.width != matchParent ||
+                    params.height != matchParent ||
+                    params.topMargin != 0 ||
+                    params.bottomToBottom != parentId ||
+                    params.endToEnd != parentId
+                if (needsReset) {
+                    params.width = matchParent
+                    params.height = matchParent
+                    params.topMargin = 0
+                    params.topToTop = parentId
+                    params.bottomToBottom = parentId
+                    params.startToStart = parentId
+                    params.endToEnd = parentId
+                    view.layoutParams = params
+                }
+            }
+            viewModel.setWatchPartyVideoBounds(null)
+            viewModel.setWatchPartyVideoHeight(null)
+            return
+        }
+
+        val metrics = resources.displayMetrics
+        val heightPx = binding.root.height.takeIf { it > 0 } ?: metrics.heightPixels
+        val widthPx = binding.root.width.takeIf { it > 0 } ?: metrics.widthPixels
+        val mode = eu.kanade.tachiyomi.ui.player.watchparty.WatchPartyLayout.modeFor(widthPx, heightPx)
+
+        val bounds = if (mode == eu.kanade.tachiyomi.ui.player.watchparty.WatchPartyLayout.Mode.SIDE_BY_SIDE) {
+            val maxChatWidth = (widthPx * 2) / 5
+            val chatWidth = (320 * metrics.density).toInt().coerceIn(0, maxChatWidth)
+            val videoWidth = (widthPx - chatWidth).coerceAtLeast(1)
+            if (params != null) {
+                val needsUpdate = params.width != videoWidth ||
+                    params.height != matchParent ||
+                    params.topMargin != 0 ||
+                    params.bottomToBottom != parentId ||
+                    params.endToEnd != unset
+                if (needsUpdate) {
+                    params.width = videoWidth
+                    params.height = matchParent
+                    params.topMargin = 0
+                    params.topToTop = parentId
+                    params.bottomToBottom = parentId
+                    params.startToStart = parentId
+                    params.endToEnd = unset
+                    view.layoutParams = params
+                }
+            }
+            PlayerViewModel.WatchPartyVideoBounds(
+                left = 0,
+                top = 0,
+                right = videoWidth,
+                bottom = heightPx,
+                sideBySide = true,
+            )
+        } else {
+            val insets = androidx.core.view.ViewCompat.getRootWindowInsets(binding.root)
+            val statusBarTop = insets?.getInsets(
+                androidx.core.view.WindowInsetsCompat.Type.statusBars() or
+                    androidx.core.view.WindowInsetsCompat.Type.displayCutout(),
+            )?.top ?: 0
+            val videoTop = statusBarTop.coerceIn(0, heightPx / 4)
+            val contentHeight = (heightPx - videoTop).coerceAtLeast(1)
+            val target169 = ((widthPx * 9.0) / 16.0).toInt()
+            val maxStackedHeight = ((contentHeight * 2) / 3).coerceAtLeast(1)
+            val videoHeight = target169.coerceIn(1, maxStackedHeight)
+            if (params != null) {
+                val needsUpdate = params.width != matchParent ||
+                    params.height != videoHeight ||
+                    params.topMargin != videoTop ||
+                    params.bottomToBottom != unset ||
+                    params.endToEnd != parentId
+                if (needsUpdate) {
+                    params.width = matchParent
+                    params.height = videoHeight
+                    params.topMargin = videoTop
+                    params.topToTop = parentId
+                    params.bottomToBottom = unset
+                    params.startToStart = parentId
+                    params.endToEnd = parentId
+                    view.layoutParams = params
+                }
+            }
+            PlayerViewModel.WatchPartyVideoBounds(
+                left = 0,
+                top = videoTop,
+                right = widthPx,
+                bottom = videoTop + videoHeight,
+                sideBySide = false,
+            )
+        }
+
+        viewModel.setWatchPartyVideoBounds(bounds)
+        viewModel.setWatchPartyVideoHeight(bounds.bottom)
+    }
+
 }

@@ -140,11 +140,11 @@ class PlayerPreferences(
     )
     fun topRightControls() = preferenceStore.getString(
         "pref_top_right_controls",
-        "AutoPlay,Cast,SubtitleTracks,AudioTracks,QualityTracks,MoreOptions",
+        "AutoPlay,Cast,SubtitleTracks,AudioTracks,QualityTracks,WatchParty,MoreOptions",
     )
     fun bottomLeftControls() = preferenceStore.getString(
         "pref_bottom_left_controls",
-        "LockControls,ScreenRotation,PlaybackSpeed,CurrentChapter",
+        "LockControls,ScreenRotation,PlaybackSpeed,CurrentChapter,WatchParty",
     )
     fun bottomRightControls() = preferenceStore.getString(
         "pref_bottom_right_controls",
@@ -152,6 +152,6 @@ class PlayerPreferences(
     )
     fun portraitBottomControls() = preferenceStore.getString(
         "pref_portrait_bottom_controls",
-        "ScreenRotation,AudioTracks,SubtitleTracks,CurrentChapter,PlaybackSpeed,VideoZoom,SkipIntro,AspectRatio,PictureInPicture,LockControls,MoreOptions",
+        "ScreenRotation,AudioTracks,SubtitleTracks,CurrentChapter,PlaybackSpeed,VideoZoom,SkipIntro,AspectRatio,PictureInPicture,LockControls,WatchParty,MoreOptions",
     )
 }

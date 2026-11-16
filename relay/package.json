@@ -1,0 +1,16 @@
+{
+  "name": "hikaru-watch-party-relay",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Reference signalling relay for Hikaru Watch Party",
+  "main": "watch-party-relay.js",
+  "scripts": {
+    "start": "node watch-party-relay.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

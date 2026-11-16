@@ -24,6 +24,7 @@ import androidx.compose.material.icons.outlined.Audiotrack
 import androidx.compose.material.icons.outlined.Bookmarks
 import androidx.compose.material.icons.outlined.Cast
 import androidx.compose.material.icons.outlined.FastForward
+import androidx.compose.material.icons.outlined.Groups
 import androidx.compose.material.icons.outlined.HighQuality
 import androidx.compose.material.icons.outlined.LockOpen
 import androidx.compose.material.icons.outlined.MoreVert
@@ -157,6 +158,7 @@ enum class Sheets {
     AspectRatios,
     More,
     Screenshot,
+    WatchParty,
 }
 
 enum class Panels {
@@ -364,6 +366,7 @@ enum class PlayerButton(
     VideoZoom(MR.strings.player_button_video_zoom),
     SkipIntro(MR.strings.player_button_skip_intro),
     CustomButton(MR.strings.player_button_custom_button),
+    WatchParty(MR.strings.player_button_watch_party),
 }
 
 fun PlayerButton.getIcon(): ImageVector = when (this) {
@@ -384,6 +387,7 @@ fun PlayerButton.getIcon(): ImageVector = when (this) {
     PlayerButton.VideoZoom -> Icons.Outlined.ZoomIn
     PlayerButton.SkipIntro -> Icons.Outlined.FastForward
     PlayerButton.CustomButton -> Icons.Outlined.TouchApp
+    PlayerButton.WatchParty -> Icons.Outlined.Groups
 }
 
 val allPlayerButtons = PlayerButton.entries.filter { 
