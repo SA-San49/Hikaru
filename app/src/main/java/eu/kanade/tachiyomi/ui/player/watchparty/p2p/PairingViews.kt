@@ -186,18 +186,18 @@ fun PairingState.explanation(role: PairingPayload.Role): String = when (this) {
     PairingState.IDLE -> "Not connected yet."
     PairingState.CREATING_INVITATION -> "Preparing your invitation…"
     PairingState.CREATING_ANSWER -> "Reading the invitation…"
-    PairingState.WAITING_FOR_GUEST -> "Show this code to your guest."
-    PairingState.WAITING_FOR_ANSWER -> "Scan this code on the host's device."
-    PairingState.VALIDATING_ANSWER -> "Checking the answer…"
-    PairingState.ESTABLISHING -> "Connecting directly…"
-    PairingState.CONNECTED -> "Connected."
+    PairingState.WAITING_FOR_GUEST -> "Step 1 of 2: Ask your guest to scan this QR code."
+    PairingState.WAITING_FOR_ANSWER -> "Step 2 of 2: Host must now tap 'Scan guest's answer' and scan this QR code."
+    PairingState.VALIDATING_ANSWER -> "Checking connection handshake…"
+    PairingState.ESTABLISHING -> "Connecting directly to peer…"
+    PairingState.CONNECTED -> "Connected! You can now watch together."
     PairingState.INVITATION_EXPIRED ->
         if (role == PairingPayload.Role.OFFER) {
             "That code has expired. Create a new one."
         } else {
             "That invitation expired before it was used. Ask the host for a new code."
         }
-    PairingState.FAILED -> "Could not connect."
+    PairingState.FAILED -> "Could not connect." 
 }
 
 /** Shown while a step is in progress. */

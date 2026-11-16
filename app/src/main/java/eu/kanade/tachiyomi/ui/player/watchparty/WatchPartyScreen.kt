@@ -397,11 +397,31 @@ private fun ServerlessPairingSection(
             }
 
             if (pairing.codes.isNotEmpty()) {
-                Text(
-                    text = pairing.state.explanation(role = role),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                Surface(
+                    color = if (isHost) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.secondaryContainer,
+                    shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Column(
+                        modifier = Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        Text(
+                            text = if (isHost) "Step 1 of 2: Ask guest to scan this QR code" else "Step 2 of 2: Show this code to Host",
+                            style = MaterialTheme.typography.titleSmall,
+                            color = if (isHost) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSecondaryContainer,
+                        )
+                        Text(
+                            text = if (isHost) {
+                                "Once your guest scans this code, their device will show an answer code. Tap 'Scan answer' below."
+                            } else {
+                                "The host must tap 'Scan answer' on their device and scan this QR code to finish pairing."
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (isHost) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSecondaryContainer,
+                        )
+                    }
+                }
                 if (pairing.codes.size == 1) {
                     PairingQr(
                         payload = pairing.codes.first(),
@@ -467,7 +487,7 @@ private fun ServerlessPairingSection(
                         enabled = pairing.codes.isNotEmpty() || pairing.state == PairingState.WAITING_FOR_GUEST,
                         modifier = Modifier.weight(1f),
                     ) {
-                        Text("Scan answer")
+                        Text(if (pairing.codes.isNotEmpty()) "Scan answer (Step 2)" else "Scan answer")
                     }
                 }
             } else if (pairing.state != PairingState.CONNECTED) {

@@ -93,6 +93,7 @@ class P2PSession(
     private var gatheringScheduler: ScheduledExecutorService? = null
     private var hardTimeoutFuture: ScheduledFuture<*>? = null
     private var graceTimeoutFuture: ScheduledFuture<*>? = null
+    private var answerWatchdogFuture: ScheduledFuture<*>? = null
 
     val isConnected: Boolean get() = pairing.state == PairingState.CONNECTED
 
@@ -167,6 +168,9 @@ class P2PSession(
                         remoteApplied = true
                         drainPendingRemoteCandidatesLocked()
                     }
+                    payload.candidates.forEach { c ->
+                        runCatching { pc.addIceCandidate(c.toWebRtcCandidate()) }
+                    }
                     pairing.onRemoteApplied()
                     onEvent.onRemoteApplied(this@P2PSession)
                     onEvent.onStatusChanged(this@P2PSession, "Checking direct connection…")
@@ -205,7 +209,26 @@ class P2PSession(
                         remoteApplied = true
                         drainPendingRemoteCandidatesLocked()
                     }
+                    invitation.candidates.forEach { c ->
+                        runCatching { pc.addIceCandidate(c.toWebRtcCandidate()) }
+                    }
                     createAnswer(pc)
+                    synchronized(lock) {
+                        answerWatchdogFuture?.cancel(false)
+                        val scheduler = ensureGatheringSchedulerLocked()
+                        answerWatchdogFuture = scheduler.schedule(
+                            {
+                                synchronized(lock) {
+                                    if (closed || isConnected || pairing.state == PairingState.CONNECTED) return@schedule
+                                    if (pairing.role == PairingPayload.Role.ANSWER && pairing.state == PairingState.WAITING_FOR_ANSWER) {
+                                        failHard("The connection attempt timed out after 2 minutes. Ask the host to scan your answer QR or tap 'Scan another invitation'.")
+                                    }
+                                }
+                            },
+                            120_000L,
+                            TimeUnit.MILLISECONDS,
+                        )
+                    }
                 }
 
                 override fun onSetFailure(error: String) {
@@ -312,6 +335,8 @@ class P2PSession(
         hardTimeoutFuture = null
         graceTimeoutFuture?.cancel(false)
         graceTimeoutFuture = null
+        answerWatchdogFuture?.cancel(false)
+        answerWatchdogFuture = null
         gatheringScheduler?.shutdown()
         gatheringScheduler = null
     }
@@ -440,7 +465,8 @@ class P2PSession(
             bundlePolicy = PeerConnection.BundlePolicy.MAXBUNDLE
             // No TURN. If a direct path cannot be found the call fails honestly.
             iceTransportsType = PeerConnection.IceTransportsType.ALL
-            continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_ONCE
+            continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
+            iceConnectionReceivingTimeout = 30_000
         }
 
         val pc = try {
@@ -522,15 +548,13 @@ class P2PSession(
                 PeerConnection.IceConnectionState.FAILED,
                 PeerConnection.IceConnectionState.CLOSED,
                 -> {
-                    val advice = if (
-                        pairing.role == PairingPayload.Role.ANSWER &&
+                    if (pairing.role == PairingPayload.Role.ANSWER &&
                         pairing.state == PairingState.WAITING_FOR_ANSWER
                     ) {
-                        "The connection attempt timed out before the host finished scanning your answer. " +
-                            "Create a fresh invitation on the host and scan again."
-                    } else {
-                        connectivityAdvice()
+                        onEvent.onStatusChanged(this@P2PSession, "Waiting for host to scan answer QR…")
+                        return
                     }
+                    val advice = connectivityAdvice()
                     failHard(advice)
                 }
                 PeerConnection.IceConnectionState.DISCONNECTED -> {
@@ -576,7 +600,15 @@ class P2PSession(
                         notifyConnected()
                     }
                 }
-                PeerConnection.PeerConnectionState.FAILED -> failHard(connectivityAdvice())
+                PeerConnection.PeerConnectionState.FAILED -> {
+                    if (pairing.role == PairingPayload.Role.ANSWER &&
+                        pairing.state == PairingState.WAITING_FOR_ANSWER
+                    ) {
+                        onEvent.onStatusChanged(this@P2PSession, "Waiting for host to scan answer QR…")
+                        return
+                    }
+                    failHard(connectivityAdvice())
+                }
                 PeerConnection.PeerConnectionState.CLOSED ->
                     notifyDisconnected("The connection was closed.")
                 else -> Unit
@@ -614,6 +646,10 @@ class P2PSession(
 
     private fun notifyConnected() {
         if (closed) return
+        synchronized(lock) {
+            answerWatchdogFuture?.cancel(false)
+            answerWatchdogFuture = null
+        }
         if (connectedNotified.compareAndSet(false, true)) {
             pairing.onConnected()
             onEvent.onConnected(this)
@@ -680,7 +716,7 @@ class P2PSession(
         const val GATHERING_SETTLE_AFTER_SRFLX_MS = 1_000L
         const val GATHERING_SETTLE_LAN_MS = 1_000L
         const val GATHERING_WAIT_FOR_SRFLX_MS = 3_200L
-        const val GATHERING_HARD_TIMEOUT_MS = 5_000L
+        const val GATHERING_HARD_TIMEOUT_MS = 10_000L
         const val MAX_PUBLISHED_CANDIDATES = 12
 
         /**
