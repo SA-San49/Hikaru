@@ -68,9 +68,9 @@ class SourcesScreenModel(
             combine(
                 state.map { it.searchQuery }.distinctUntilChanged().debounce(250L),
                 state.map { it.nsfwOnly }.distinctUntilChanged(),
-                getEnabledSources.subscribe(),
-                extensionManager.installedExtensionsFlow,
-                SourceHealthCache.healthMap,
+                getEnabledSources.subscribe().distinctUntilChanged(),
+                extensionManager.installedExtensionsFlow.distinctUntilChanged(),
+                SourceHealthCache.healthMap.debounce(250L).distinctUntilChanged(),
             ) { query, nsfwOnly, sources, extensions, healthMap ->
                 // Offload CPU-bound sorting and formatting to Default dispatcher
                 withContext(Dispatchers.Default) {
@@ -157,10 +157,14 @@ class SourcesScreenModel(
             .toImmutableList()
 
         mutableState.update { state ->
-            state.copy(
-                isLoading = false,
-                items = items,
-            )
+            if (!state.isLoading && state.items == items) {
+                state
+            } else {
+                state.copy(
+                    isLoading = false,
+                    items = items,
+                )
+            }
         }
     }
 

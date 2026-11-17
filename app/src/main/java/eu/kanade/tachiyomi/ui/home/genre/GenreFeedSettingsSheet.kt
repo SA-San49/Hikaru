@@ -326,17 +326,6 @@ private fun CompactFetchButton(
     isDiscovering: Boolean,
     onClick: () -> Unit,
 ) {
-    val infiniteTransition = rememberInfiniteTransition(label = "fetch_spin")
-    val rotation by infiniteTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = 360f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 900, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart,
-        ),
-        label = "fetch_rotation",
-    )
-
     Surface(
         onClick = onClick,
         enabled = !isDiscovering,
@@ -349,16 +338,33 @@ private fun CompactFetchButton(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(4.dp),
         ) {
-            Icon(
-                imageVector = Icons.Outlined.Sync,
-                contentDescription = "Fetch Genres",
-                tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier
-                    .size(14.dp)
-                    .graphicsLayer {
-                        if (isDiscovering) rotationZ = rotation
-                    },
-            )
+            if (isDiscovering) {
+                val infiniteTransition = rememberInfiniteTransition(label = "fetch_spin")
+                val rotation by infiniteTransition.animateFloat(
+                    initialValue = 0f,
+                    targetValue = 360f,
+                    animationSpec = infiniteRepeatable(
+                        animation = tween(durationMillis = 900, easing = LinearEasing),
+                        repeatMode = RepeatMode.Restart,
+                    ),
+                    label = "fetch_rotation",
+                )
+                Icon(
+                    imageVector = Icons.Outlined.Sync,
+                    contentDescription = "Fetch Genres",
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier
+                        .size(14.dp)
+                        .graphicsLayer { rotationZ = rotation },
+                )
+            } else {
+                Icon(
+                    imageVector = Icons.Outlined.Sync,
+                    contentDescription = "Fetch Genres",
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(14.dp),
+                )
+            }
             Text(
                 text = if (isDiscovering) "Fetching" else "Fetch",
                 style = MaterialTheme.typography.labelSmall,

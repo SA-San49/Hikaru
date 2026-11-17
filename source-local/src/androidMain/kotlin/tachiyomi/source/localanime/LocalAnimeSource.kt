@@ -59,11 +59,12 @@ actual class LocalAnimeSource(
     private val thumbnailManager: LocalAnimeSourceEpisodeThumbnailManager,
 ) : CatalogueSource, UnmeteredSource {
 
-    private data class CachedAnimeEntry(
+    private class CachedAnimeEntry(
         val dir: UniFile,
         val name: String,
-        val lastModified: Long,
-    )
+    ) {
+        val lastModified: Long by lazy { dir.lastModified() }
+    }
 
     private val json: Json by injectLazy()
 
@@ -112,10 +113,10 @@ actual class LocalAnimeSource(
                     CachedAnimeEntry(
                         dir = dir,
                         name = dir.name.orEmpty(),
-                        lastModified = dir.lastModified(),
                     )
                 }
-            coverUriCache.clear()
+            val validNames = entries.mapTo(HashSet(entries.size * 2)) { it.name }
+            coverUriCache.keys.retainAll(validNames)
             cachedDirEntries = entries
             cachedDirTimestamp = System.currentTimeMillis()
             entries
@@ -413,7 +414,7 @@ actual class LocalAnimeSource(
         const val HELP_URL = "https://aniyomi.org/help/guides/local-anime/"
 
         private const val PAGE_SIZE = 30
-        private const val DIR_CACHE_TTL_MS = 15_000L
+        private const val DIR_CACHE_TTL_MS = 30_000L
 
         private const val DEFAULT_COVER_NAME = "cover.jpg"
         private const val DEFAULT_THUMBNAIL_NAME = "thumbnail.jpg"

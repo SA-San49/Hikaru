@@ -114,8 +114,13 @@ class AnnouncementsScreenModel(
         data class Error(val cachedEntries: ImmutableList<AnnouncementEntry>) : State
     }
 
-    init {
-        load()
+    private var hasTriggeredInitialLoad = false
+
+    fun ensureLoaded() {
+        if (!hasTriggeredInitialLoad) {
+            hasTriggeredInitialLoad = true
+            load()
+        }
     }
 
     fun load(forceRefresh: Boolean = false) {

@@ -362,7 +362,8 @@ private fun ExtensionItem(
     onClickItemSecondaryAction: (Extension) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val (extension, installStep) = item
+    val extension = item.extension
+    val installStep = item.installStep
     BaseBrowseItem(
         modifier = modifier,
         onClickItem = { onClickItem(extension) },
@@ -381,7 +382,11 @@ private fun ExtensionItem(
                     )
                 }
 
-                val padding by animateDpAsState(targetValue = if (idle) 0.dp else 8.dp)
+                val padding = if (idle) {
+                    0.dp
+                } else {
+                    animateDpAsState(targetValue = 8.dp, label = "ext_icon_pad").value
+                }
                 ExtensionIcon(
                     extension = extension,
                     modifier = Modifier
@@ -404,6 +409,7 @@ private fun ExtensionItem(
             extension = extension,
             installStep = installStep,
             repoName = item.repoName,
+            langDisplayName = item.langDisplayName,
             modifier = Modifier.weight(1f),
         )
     }
@@ -414,6 +420,7 @@ private fun ExtensionItemContent(
     extension: Extension,
     installStep: InstallStep,
     repoName: String?,
+    langDisplayName: String?,
     modifier: Modifier = Modifier,
 ) {
     Column(
@@ -434,7 +441,7 @@ private fun ExtensionItemContent(
             ProvideTextStyle(value = MaterialTheme.typography.bodySmall) {
                 if (extension is Extension.Installed && extension.lang.isNotEmpty()) {
                     Text(
-                        text = LocaleHelper.getSourceDisplayName(
+                        text = langDisplayName ?: LocaleHelper.getSourceDisplayName(
                             extension.lang,
                             LocalContext.current,
                         ),

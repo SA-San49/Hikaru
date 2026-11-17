@@ -14,6 +14,12 @@ import eu.kanade.tachiyomi.extension.model.Extension
 import eu.kanade.tachiyomi.extension.model.InstallStep
 import eu.kanade.tachiyomi.source.online.HttpSource
 import eu.kanade.tachiyomi.util.system.LocaleHelper
+import kotlinx.collections.immutable.ImmutableList
+import kotlinx.collections.immutable.ImmutableMap
+import kotlinx.collections.immutable.persistentMapOf
+import kotlinx.collections.immutable.toImmutableList
+import kotlinx.collections.immutable.toImmutableMap
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -28,11 +34,14 @@ import kotlinx.coroutines.flow.onCompletion
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.yield
 import tachiyomi.core.common.util.lang.launchIO
 import tachiyomi.i18n.MR
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
-import kotlin.time.Duration.Companion.seconds
+import java.util.concurrent.ConcurrentHashMap
+import kotlin.time.Duration.Companion.milliseconds
 
 class ExtensionsScreenModel(
     preferences: SourcePreferences = Injekt.get(),
@@ -42,9 +51,15 @@ class ExtensionsScreenModel(
 ) : StateScreenModel<ExtensionsScreenModel.State>(State()) {
 
     private val currentDownloads = MutableStateFlow<Map<String, InstallStep>>(hashMapOf())
+    private val displayNameCache = ConcurrentHashMap<String, String>()
 
     init {
         val context = Injekt.get<Application>()
+        val getDisplayName: (String) -> String = { lang ->
+            displayNameCache.getOrPut(lang) {
+                LocaleHelper.getSourceDisplayName(lang, context)
+            }
+        }
         val extensionMapper: (Map<String, InstallStep>) -> ((Extension) -> ExtensionUiModel.Item) = { map ->
             {
                 val author = when (it) {
@@ -52,7 +67,17 @@ class ExtensionsScreenModel(
                     is Extension.Installed -> it.author
                     is Extension.Untrusted -> it.author
                 }
-                ExtensionUiModel.Item(it, map[it.pkgName] ?: InstallStep.Idle, author)
+                val langDisplay = if (it is Extension.Installed && it.lang.isNotEmpty()) {
+                    getDisplayName(it.lang)
+                } else {
+                    null
+                }
+                ExtensionUiModel.Item(
+                    extension = it,
+                    installStep = map[it.pkgName] ?: InstallStep.Idle,
+                    repoName = author,
+                    langDisplayName = langDisplay,
+                )
             }
         }
         val queryFilter: (String) -> ((Extension) -> Boolean) = { query ->
@@ -98,63 +123,66 @@ class ExtensionsScreenModel(
             combine(
                 state.map { it.searchQuery }.distinctUntilChanged().debounce(SEARCH_DEBOUNCE_MILLIS),
                 state.map { it.nsfwOnly }.distinctUntilChanged(),
-                currentDownloads,
-                getExtensions.subscribe(),
+                currentDownloads.distinctUntilChanged(),
+                getExtensions.subscribe().distinctUntilChanged(),
             ) { query: String?, nsfwOnly: Boolean, downloads: Map<String, InstallStep>, extensions: eu.kanade.domain.extension.model.Extensions ->
-                val (_updates, _installed, _available, _untrusted) = extensions
-                val searchQuery = query ?: ""
+                withContext(Dispatchers.Default) {
+                    val (_updates, _installed, _available, _untrusted) = extensions
+                    val searchQuery = query ?: ""
+                    val filterFn = queryFilter(searchQuery)
+                    val mapperFn = extensionMapper(downloads)
 
-                val itemsGroups: ItemGroups = mutableMapOf()
+                    val itemsGroups = linkedMapOf<ExtensionUiModel.Header, ImmutableList<ExtensionUiModel.Item>>()
 
-                val updates = _updates
-                    .filter { !nsfwOnly || it.isNsfw }
-                    .filter(queryFilter(searchQuery))
-                    .map(
-                        extensionMapper(downloads),
-                    )
-                if (updates.isNotEmpty()) {
-                    itemsGroups[ExtensionUiModel.Header.Resource(MR.strings.ext_updates_pending)] = updates
-                }
-
-                val installed = _installed
-                    .filter { !nsfwOnly || it.isNsfw }
-                    .filter(queryFilter(searchQuery))
-                    .map(
-                        extensionMapper(downloads),
-                    )
-                val untrusted = _untrusted
-                    .filter { !nsfwOnly || it.isNsfw }
-                    .filter(queryFilter(searchQuery))
-                    .map(
-                        extensionMapper(downloads),
-                    )
-                if (installed.isNotEmpty() || untrusted.isNotEmpty()) {
-                    itemsGroups[ExtensionUiModel.Header.Resource(MR.strings.ext_installed)] = installed + untrusted
-                }
-
-                val languagesWithExtensions = _available
-                    .filter { !nsfwOnly || it.isNsfw }
-                    .filter(queryFilter(searchQuery))
-                    .groupBy { it.lang }
-                    .toSortedMap(LocaleHelper.comparator)
-                    .map { (lang, exts) ->
-                        ExtensionUiModel.Header.Text(
-                            LocaleHelper.getSourceDisplayName(lang, context),
-                        ) to exts.map(extensionMapper(downloads))
+                    val updates = _updates
+                        .filter { !nsfwOnly || it.isNsfw }
+                        .filter(filterFn)
+                        .map(mapperFn)
+                        .toImmutableList()
+                    if (updates.isNotEmpty()) {
+                        itemsGroups[ExtensionUiModel.Header.Resource(MR.strings.ext_updates_pending)] = updates
                     }
 
-                if (languagesWithExtensions.isNotEmpty()) {
-                    itemsGroups.putAll(languagesWithExtensions)
-                }
+                    val installed = _installed
+                        .filter { !nsfwOnly || it.isNsfw }
+                        .filter(filterFn)
+                        .map(mapperFn)
+                    val untrusted = _untrusted
+                        .filter { !nsfwOnly || it.isNsfw }
+                        .filter(filterFn)
+                        .map(mapperFn)
+                    if (installed.isNotEmpty() || untrusted.isNotEmpty()) {
+                        itemsGroups[ExtensionUiModel.Header.Resource(MR.strings.ext_installed)] = (installed + untrusted).toImmutableList()
+                    }
 
-                itemsGroups
+                    yield()
+
+                    val languagesWithExtensions = _available
+                        .filter { !nsfwOnly || it.isNsfw }
+                        .filter(filterFn)
+                        .groupBy { it.lang }
+                        .toSortedMap(LocaleHelper.comparator)
+                        .map { (lang, exts) ->
+                            ExtensionUiModel.Header.Text(getDisplayName(lang)) to exts.map(mapperFn).toImmutableList()
+                        }
+
+                    if (languagesWithExtensions.isNotEmpty()) {
+                        itemsGroups.putAll(languagesWithExtensions)
+                    }
+
+                    itemsGroups.toImmutableMap()
+                }
             }
                 .collectLatest {
                     mutableState.update { state ->
-                        state.copy(
-                            isLoading = false,
-                            items = it,
-                        )
+                        if (!state.isLoading && state.items == it) {
+                            state
+                        } else {
+                            state.copy(
+                                isLoading = false,
+                                items = it,
+                            )
+                        }
                     }
                 }
         }
@@ -228,8 +256,8 @@ class ExtensionsScreenModel(
             mutableState.update { it.copy(isRefreshing = true) }
             extensionManager.findAvailableExtensions()
 
-            // Fake slower refresh so it doesn't seem like it's not doing anything
-            delay(1.seconds)
+            // Short delay so pull-to-refresh feedback remains clear without sluggish startup
+            delay(250.milliseconds)
 
             mutableState.update { it.copy(isRefreshing = false) }
         }
@@ -245,7 +273,7 @@ class ExtensionsScreenModel(
     data class State(
         val isLoading: Boolean = true,
         val isRefreshing: Boolean = false,
-        val items: ItemGroups = mutableMapOf(),
+        val items: ItemGroups = persistentMapOf(),
         val updates: Int = 0,
         val installer: BasePreferences.ExtensionInstaller? = null,
         val searchQuery: String? = null,
@@ -255,7 +283,7 @@ class ExtensionsScreenModel(
     }
 }
 
-typealias ItemGroups = MutableMap<ExtensionUiModel.Header, List<ExtensionUiModel.Item>>
+typealias ItemGroups = ImmutableMap<ExtensionUiModel.Header, ImmutableList<ExtensionUiModel.Item>>
 
 object ExtensionUiModel {
     sealed interface Header {
@@ -266,5 +294,6 @@ object ExtensionUiModel {
         val extension: Extension,
         val installStep: InstallStep,
         val repoName: String? = null,
+        val langDisplayName: String? = null,
     )
 }

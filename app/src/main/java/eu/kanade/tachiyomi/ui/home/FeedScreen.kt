@@ -11,7 +11,6 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.snapping.rememberSnapFlingBehavior
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -69,6 +68,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -87,6 +87,7 @@ import tachiyomi.presentation.core.components.SkeletonFeedIsland
 import tachiyomi.presentation.core.components.material.PullRefresh
 import tachiyomi.presentation.core.screens.EmptyScreen
 import tachiyomi.presentation.core.screens.LoadingScreen
+import tachiyomi.presentation.core.util.secondaryItemAlpha
 
 @Composable
 fun FeedScreen(
@@ -237,10 +238,11 @@ fun FeedScreen(
                         ) {
                             EmptyScreen(
                                 stringRes = SYMR.strings.feed_tab_empty,
+                                modifier = Modifier.weight(1f),
                             )
                             Button(
                                 onClick = onAddSourceClick,
-                                modifier = Modifier.padding(top = 16.dp),
+                                modifier = Modifier.padding(top = 12.dp, bottom = 24.dp),
                             ) {
                                 Icon(imageVector = Icons.Outlined.Add, contentDescription = null)
                                 Spacer(Modifier.width(8.dp))
@@ -399,16 +401,6 @@ private fun FeedModeControlBar(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 // Small Fetch Genres pill button
-                val infiniteTransition = rememberInfiniteTransition(label = "genre_fetch_spin")
-                val spin by infiniteTransition.animateFloat(
-                    initialValue = 0f,
-                    targetValue = 360f,
-                    animationSpec = infiniteRepeatable(
-                        animation = tween(durationMillis = 850, easing = LinearEasing),
-                        repeatMode = RepeatMode.Restart,
-                    ),
-                    label = "spin",
-                )
                 Surface(
                     onClick = onFetchGenres,
                     enabled = !isDiscovering,
@@ -424,16 +416,19 @@ private fun FeedModeControlBar(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(4.dp),
                     ) {
-                        Icon(
-                            imageVector = Icons.Outlined.Sync,
-                            contentDescription = "Fetch Genres",
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier
-                                .size(13.dp)
-                                .graphicsLayer {
-                                    if (isDiscovering) rotationZ = spin
-                                },
-                        )
+                        if (isDiscovering) {
+                            SpinningSyncIcon(
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(13.dp),
+                            )
+                        } else {
+                            Icon(
+                                imageVector = Icons.Outlined.Sync,
+                                contentDescription = "Fetch Genres",
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(13.dp),
+                            )
+                        }
                         Text(
                             text = if (isDiscovering) "Fetching" else "Fetch",
                             style = MaterialTheme.typography.labelSmall,
@@ -477,6 +472,29 @@ private fun FeedModeControlBar(
             }
         }
     }
+}
+
+@Composable
+private fun SpinningSyncIcon(
+    tint: Color,
+    modifier: Modifier = Modifier,
+) {
+    val infiniteTransition = rememberInfiniteTransition(label = "genre_fetch_spin")
+    val spin by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 360f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 850, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart,
+        ),
+        label = "spin",
+    )
+    Icon(
+        imageVector = Icons.Outlined.Sync,
+        contentDescription = "Fetch Genres",
+        tint = tint,
+        modifier = modifier.graphicsLayer { rotationZ = spin },
+    )
 }
 
 @Composable
@@ -689,16 +707,24 @@ private fun EmptyOrSelectGenresView(
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(top = 48.dp),
+                        .padding(horizontal = 24.dp, vertical = 48.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
-                    EmptyScreen(
-                        message = if (sourceCount == 0) {
+                    Text(
+                        text = "Σ(ಠ_ಠ)",
+                        style = MaterialTheme.typography.displayMedium,
+                        modifier = Modifier.secondaryItemAlpha(),
+                    )
+                    Text(
+                        text = if (sourceCount == 0) {
                             "No sources in $categoryName feed yet. Add sources from Browse to discover live genres."
                         } else {
                             "No genre or tag filters found yet for your $sourceCount source${if (sourceCount == 1) "" else "s"} in $categoryName."
                         },
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center,
                     )
                     Row(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -738,7 +764,6 @@ private fun FeedIsland(
         item.savedSearch?.name ?: FeedSavedSearch.Type.from(item.feed.type).name
     }
     val rowState = rememberLazyListState()
-    val flingBehavior = rememberSnapFlingBehavior(lazyListState = rowState)
 
     Surface(
         modifier = Modifier.fillMaxWidth(),
@@ -775,7 +800,6 @@ private fun FeedIsland(
             } else {
                 LazyRow(
                     state = rowState,
-                    flingBehavior = flingBehavior,
                     contentPadding = PaddingValues(horizontal = 14.dp),
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
@@ -784,9 +808,10 @@ private fun FeedIsland(
                         key = { _, anime -> "anime-${item.feed.id}-${anime.id}" },
                         contentType = { _, _ -> "anime_card" },
                     ) { _, anime ->
+                        val itemClick = remember(anime.id, onAnimeClick) { { onAnimeClick(anime) } }
                         FeedCard(
                             anime = anime,
-                            onClick = { onAnimeClick(anime) },
+                            onClick = itemClick,
                             usePanorama = usePanorama,
                         )
                     }
@@ -804,7 +829,6 @@ private fun GenreFeedIsland(
     usePanorama: Boolean,
 ) {
     val rowState = rememberLazyListState()
-    val flingBehavior = rememberSnapFlingBehavior(lazyListState = rowState)
 
     Surface(
         modifier = Modifier.fillMaxWidth(),
@@ -850,7 +874,6 @@ private fun GenreFeedIsland(
             } else {
                 LazyRow(
                     state = rowState,
-                    flingBehavior = flingBehavior,
                     contentPadding = PaddingValues(horizontal = 14.dp),
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
@@ -859,9 +882,10 @@ private fun GenreFeedIsland(
                         key = { _, anime -> "genre-anime-${item.key}-${anime.id}" },
                         contentType = { _, _ -> "anime_card" },
                     ) { _, anime ->
+                        val itemClick = remember(anime.id, onAnimeClick) { { onAnimeClick(anime) } }
                         FeedCard(
                             anime = anime,
-                            onClick = { onAnimeClick(anime) },
+                            onClick = itemClick,
                             usePanorama = usePanorama,
                         )
                     }
@@ -988,7 +1012,7 @@ private fun FeedCard(
         ) {
             entry(
                 data = anime,
-                onClick = onClick,
+                onClick = null,
                 modifier = Modifier.fillMaxWidth(),
                 ratio = ratio,
                 shouldExtractColor = false,
