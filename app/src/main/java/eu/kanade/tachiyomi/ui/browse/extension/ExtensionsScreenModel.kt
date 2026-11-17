@@ -123,7 +123,7 @@ class ExtensionsScreenModel(
             combine(
                 state.map { it.searchQuery }.distinctUntilChanged().debounce(SEARCH_DEBOUNCE_MILLIS),
                 state.map { it.nsfwOnly }.distinctUntilChanged(),
-                currentDownloads.distinctUntilChanged(),
+                currentDownloads,
                 getExtensions.subscribe().distinctUntilChanged(),
             ) { query: String?, nsfwOnly: Boolean, downloads: Map<String, InstallStep>, extensions: eu.kanade.domain.extension.model.Extensions ->
                 withContext(Dispatchers.Default) {

@@ -69,7 +69,7 @@ class SourcesScreenModel(
                 state.map { it.searchQuery }.distinctUntilChanged().debounce(250L),
                 state.map { it.nsfwOnly }.distinctUntilChanged(),
                 getEnabledSources.subscribe().distinctUntilChanged(),
-                extensionManager.installedExtensionsFlow.distinctUntilChanged(),
+                extensionManager.installedExtensionsFlow,
                 SourceHealthCache.healthMap.debounce(250L).distinctUntilChanged(),
             ) { query, nsfwOnly, sources, extensions, healthMap ->
                 // Offload CPU-bound sorting and formatting to Default dispatcher
