@@ -1,5 +1,6 @@
 package eu.kanade.tachiyomi.ui.home.genre
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -25,6 +26,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Sync
@@ -66,9 +69,14 @@ fun GenreFeedSettingsSheet(
     onFetchGenres: () -> Unit = {},
     isDiscovering: Boolean = false,
     sourceCount: Int = 0,
+    feedSources: List<FeedSourceOption> = emptyList(),
+    prioritySourceIds: List<Long> = emptyList(),
+    onTogglePrioritySource: (Long) -> Unit = {},
+    onClearPrioritySources: () -> Unit = {},
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     var searchQuery by remember { mutableStateOf("") }
+    var sourcesExpanded by remember { mutableStateOf(false) }
 
     val filteredGenres = remember(discoveredGenres, searchQuery) {
         if (searchQuery.isBlank()) {
@@ -127,7 +135,19 @@ fun GenreFeedSettingsSheet(
                 }
             }
 
-            Spacer(Modifier.height(14.dp))
+            Spacer(Modifier.height(12.dp))
+
+            // Collapsible Added Sources (top 3 priority + random fallback)
+            AddedSourcesPriorityCard(
+                feedSources = feedSources,
+                prioritySourceIds = prioritySourceIds,
+                expanded = sourcesExpanded,
+                onToggleExpanded = { sourcesExpanded = !sourcesExpanded },
+                onToggleSourcePriority = onTogglePrioritySource,
+                onClearPriorities = onClearPrioritySources,
+            )
+
+            Spacer(Modifier.height(12.dp))
 
             // Compact modern scope switcher
             Surface(
@@ -373,4 +393,221 @@ private fun CompactFetchButton(
             )
         }
     }
+}
+
+@Composable
+private fun AddedSourcesPriorityCard(
+    feedSources: List<FeedSourceOption>,
+    prioritySourceIds: List<Long>,
+    expanded: Boolean,
+    onToggleExpanded: () -> Unit,
+    onToggleSourcePriority: (Long) -> Unit,
+    onClearPriorities: () -> Unit,
+) {
+    val activeRankSummary = remember(feedSources, prioritySourceIds) {
+        if (prioritySourceIds.isEmpty()) {
+            "Auto (card source)"
+        } else {
+            prioritySourceIds.mapIndexedNotNull { idx, id ->
+                val name = feedSources.firstOrNull { it.sourceId == id }?.sourceName ?: return@mapIndexedNotNull null
+                "${rankLabel(idx)} $name"
+            }.ifEmpty { listOf("Auto (card source)") }.joinToString(" • ")
+        }
+    }
+
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.72f),
+        border = BorderStroke(
+            width = 0.75.dp,
+            color = if (prioritySourceIds.isNotEmpty()) {
+                MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)
+            } else {
+                MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)
+            },
+        ),
+    ) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(onClick = onToggleExpanded)
+                    .padding(horizontal = 14.dp, vertical = 11.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Text(
+                            text = "Added Sources Priority",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = MaterialTheme.colorScheme.surfaceContainerHighest,
+                        ) {
+                            Text(
+                                text = "${feedSources.size}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        text = activeRankSummary,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (prioritySourceIds.isNotEmpty()) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                        maxLines = 1,
+                    )
+                }
+
+                Icon(
+                    imageVector = if (expanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                    contentDescription = if (expanded) "Collapse added sources" else "Expand added sources",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+
+            AnimatedVisibility(visible = expanded) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = 14.dp, end = 14.dp, bottom = 12.dp),
+                ) {
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f))
+                    Spacer(Modifier.height(8.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = "Tap up to 3 sources (1st → 2nd → 3rd), then random fallback.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.weight(1f),
+                        )
+                        if (prioritySourceIds.isNotEmpty()) {
+                            TextButton(
+                                onClick = onClearPriorities,
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                            ) {
+                                Text("Clear", style = MaterialTheme.typography.labelSmall)
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(6.dp))
+
+                    if (feedSources.isEmpty()) {
+                        Text(
+                            text = "No live feed sources detected yet.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(vertical = 8.dp),
+                        )
+                    } else {
+                        LazyColumn(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 188.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            items(
+                                items = feedSources,
+                                key = { "priority-src-${it.sourceId}" },
+                                contentType = { "priority_source_row" },
+                            ) { source ->
+                                val rankIdx = prioritySourceIds.indexOf(source.sourceId)
+                                val isSelected = rankIdx >= 0
+                                Surface(
+                                    onClick = { onToggleSourcePriority(source.sourceId) },
+                                    shape = RoundedCornerShape(10.dp),
+                                    color = if (isSelected) {
+                                        MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
+                                    } else {
+                                        MaterialTheme.colorScheme.surfaceContainerLow
+                                    },
+                                    border = BorderStroke(
+                                        width = 0.75.dp,
+                                        color = if (isSelected) {
+                                            MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
+                                        } else {
+                                            MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f)
+                                        },
+                                    ),
+                                ) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 12.dp, vertical = 9.dp),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically,
+                                    ) {
+                                        Text(
+                                            text = source.sourceName,
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
+                                            color = if (isSelected) {
+                                                MaterialTheme.colorScheme.primary
+                                            } else {
+                                                MaterialTheme.colorScheme.onSurface
+                                            },
+                                            modifier = Modifier.weight(1f),
+                                        )
+                                        if (isSelected) {
+                                            val badgeContainer = when (rankIdx) {
+                                                0 -> MaterialTheme.colorScheme.primary
+                                                1 -> MaterialTheme.colorScheme.secondary
+                                                else -> MaterialTheme.colorScheme.tertiary
+                                            }
+                                            val badgeContent = when (rankIdx) {
+                                                0 -> MaterialTheme.colorScheme.onPrimary
+                                                1 -> MaterialTheme.colorScheme.onSecondary
+                                                else -> MaterialTheme.colorScheme.onTertiary
+                                            }
+                                            Surface(
+                                                shape = RoundedCornerShape(7.dp),
+                                                color = badgeContainer,
+                                            ) {
+                                                Text(
+                                                    text = rankLabel(rankIdx),
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = badgeContent,
+                                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                                                )
+                                            }
+                                        } else {
+                                            Text(
+                                                text = "Tap to set",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun rankLabel(index: Int): String = when (index) {
+    0 -> "1st"
+    1 -> "2nd"
+    else -> "3rd"
 }

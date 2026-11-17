@@ -15,17 +15,14 @@ import logcat.LogPriority
 import tachiyomi.core.common.util.system.logcat
 
 object GenreDiscoveryEngine {
-    private val GENRE_KEYWORDS = listOf(
-        "genre",
-        "genres",
-        "tag",
-        "tags",
-        "theme",
-        "themes",
-        "demographic",
-        "demographics",
-        "subgenre",
-        "subgenres",
+    private val GENRE_SECTION_REGEX = Regex(
+        "\\b(?:genres?|tags?|themes?|categor(?:y|ies)|demographics?|sub-?genres?)\\b",
+        RegexOption.IGNORE_CASE,
+    )
+
+    private val SORT_CONTROL_REGEX = Regex(
+        "\\b(?:sort(?:\\s*by|\\s*order)?|order(?:\\s*by)?|arrange|ranking)\\b",
+        RegexOption.IGNORE_CASE,
     )
 
     private val EXCLUDED_OPTION_NAMES = setOf(
@@ -46,14 +43,16 @@ object GenreDiscoveryEngine {
     private val discoveryLimiter = Semaphore(4)
 
     fun isGenreLikeGroupOrFilterName(name: String): Boolean {
-        val lower = name.lowercase().trim()
-        if (lower.isBlank()) return false
-        return GENRE_KEYWORDS.any { keyword ->
-            lower == keyword ||
-                lower.contains(" $keyword") ||
-                lower.contains("$keyword ") ||
-                lower.contains(keyword)
-        }
+        val trimmed = name.trim()
+        if (trimmed.isBlank()) return false
+        if (SORT_CONTROL_REGEX.containsMatchIn(trimmed)) return false
+        return GENRE_SECTION_REGEX.containsMatchIn(trimmed)
+    }
+
+    private fun isSortLikeControlName(name: String): Boolean {
+        val trimmed = name.trim()
+        if (trimmed.isBlank()) return false
+        return SORT_CONTROL_REGEX.containsMatchIn(trimmed)
     }
 
     suspend fun discoverGenresForSourcesAsync(
@@ -134,7 +133,11 @@ object GenreDiscoveryEngine {
         for (item in items) {
             when (item) {
                 is AnimeFilter.Header -> {
-                    headerGenreActive = inGenreSection || isGenreLikeGroupOrFilterName(item.name)
+                    headerGenreActive = if (isSortLikeControlName(item.name)) {
+                        false
+                    } else {
+                        inGenreSection || isGenreLikeGroupOrFilterName(item.name)
+                    }
                 }
                 is AnimeFilter.Separator -> {
                     if (!inGenreSection) {
@@ -142,7 +145,11 @@ object GenreDiscoveryEngine {
                     }
                 }
                 is AnimeFilter.Group<*> -> {
-                    val groupMatches = inGenreSection || isGenreLikeGroupOrFilterName(item.name)
+                    val groupMatches = if (isSortLikeControlName(item.name)) {
+                        false
+                    } else {
+                        inGenreSection || isGenreLikeGroupOrFilterName(item.name)
+                    }
                     traverseFilterItems(
                         source = source,
                         items = item.state,
@@ -153,7 +160,9 @@ object GenreDiscoveryEngine {
                     )
                 }
                 is AnimeFilter.Select<*> -> {
-                    if (headerGenreActive || isGenreLikeGroupOrFilterName(item.name)) {
+                    if (!isSortLikeControlName(item.name) &&
+                        (headerGenreActive || isGenreLikeGroupOrFilterName(item.name))
+                    ) {
                         item.values.forEachIndexed { index, option ->
                             val rawName = option?.toString() ?: return@forEachIndexed
                             val lower = rawName.lowercase().trim()
@@ -171,7 +180,9 @@ object GenreDiscoveryEngine {
                     }
                 }
                 is AnimeFilter.CheckBox -> {
-                    if (headerGenreActive || isGenreLikeGroupOrFilterName(item.name)) {
+                    if (!isSortLikeControlName(item.name) &&
+                        (headerGenreActive || isGenreLikeGroupOrFilterName(item.name))
+                    ) {
                         val applier = if (groupPath.isEmpty()) {
                             GenreFilterApplier.TopLevelCheckBox(item.name)
                         } else {
@@ -187,7 +198,9 @@ object GenreDiscoveryEngine {
                     }
                 }
                 is AnimeFilter.TriState -> {
-                    if (headerGenreActive || isGenreLikeGroupOrFilterName(item.name)) {
+                    if (!isSortLikeControlName(item.name) &&
+                        (headerGenreActive || isGenreLikeGroupOrFilterName(item.name))
+                    ) {
                         val applier = if (groupPath.isEmpty()) {
                             GenreFilterApplier.TopLevelTriState(item.name)
                         } else {

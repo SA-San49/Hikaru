@@ -125,6 +125,12 @@ data class DiscoveredGenre(
 )
 
 @Immutable
+data class FeedSourceOption(
+    val sourceId: Long,
+    val sourceName: String,
+)
+
+@Immutable
 data class GenreFeedItem(
     val key: String,
     val title: String,

@@ -124,12 +124,11 @@ data object FeedTab : Tab {
                 navigator.push(screen)
             },
             onGenreSeeAllClick = { item ->
-                val bindings = screenModel.getBindingsForGenre(item.key)
-                val firstSource = bindings.firstOrNull()
-                if (firstSource != null) {
+                val preferredSource = screenModel.getPreferredSourceBindingForGenre(item.key)
+                if (preferredSource != null) {
                     navigator.push(
                         eu.kanade.tachiyomi.ui.browse.source.browse.BrowseSourceScreen(
-                            sourceId = firstSource.sourceId,
+                            sourceId = preferredSource.sourceId,
                         ),
                     )
                 }

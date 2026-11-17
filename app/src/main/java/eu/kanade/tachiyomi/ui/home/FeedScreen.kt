@@ -42,6 +42,7 @@ import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.Public
 import androidx.compose.material.icons.outlined.Sync
 import androidx.compose.material.icons.outlined.Tune
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -53,6 +54,7 @@ import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRowDefaults
 import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
@@ -129,6 +131,7 @@ fun FeedScreen(
     if (showGenreSettings) {
         val discoveredForCategory = currentCategory?.let { state.discoveredGenres[it.id] } ?: emptyList()
         val sourceCount = currentCategory?.let { state.feedSourceCount[it.id] } ?: 0
+        val feedSources = currentCategory?.let { state.feedSourcesByCategory[it.id] } ?: emptyList()
         GenreFeedSettingsSheet(
             onDismissRequest = { showGenreSettings = false },
             selectionMode = state.genreSelectionMode,
@@ -141,6 +144,61 @@ fun FeedScreen(
             onFetchGenres = { screenModel.fetchGenres(currentCategory?.id) },
             isDiscovering = isCurrentCategoryDiscovering,
             sourceCount = sourceCount,
+            feedSources = feedSources,
+            prioritySourceIds = state.prioritySourceIds,
+            onTogglePrioritySource = screenModel::togglePrioritySource,
+            onClearPrioritySources = screenModel::clearPrioritySources,
+        )
+    }
+
+    val resolvingAnime = state.resolvingAnime
+    if (resolvingAnime != null) {
+        AlertDialog(
+            onDismissRequest = {
+                screenModel.cancelTapResolution { fallback -> onAnimeClick(fallback, null) }
+            },
+            title = {
+                Text(
+                    text = "Finding Priority Source",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                )
+            },
+            text = {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(14.dp),
+                ) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(24.dp),
+                        strokeWidth = 2.5.dp,
+                    )
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(
+                            text = resolvingAnime.title,
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Text(
+                            text = state.resolvingSourceName?.let { "Checking $it..." }
+                                ?: "Searching feed sources...",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        screenModel.cancelTapResolution { fallback -> onAnimeClick(fallback, null) }
+                    },
+                ) {
+                    Text("Open Original")
+                }
+            },
         )
     }
 
@@ -335,7 +393,11 @@ fun FeedScreen(
                                 ) { _, item ->
                                     GenreFeedIsland(
                                         item = item,
-                                        onAnimeClick = { onAnimeClick(it, null) },
+                                        onAnimeClick = { anime ->
+                                            screenModel.resolveGenreAnimeClick(anime, category.id) { resolved ->
+                                                onAnimeClick(resolved, null)
+                                            }
+                                        },
                                         onSeeAllClick = { onGenreSeeAllClick(item) },
                                         usePanorama = usePanorama,
                                     )
