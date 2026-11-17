@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -52,11 +53,13 @@ fun BrowseSourceList(
 
         items(
             count = animeList.itemCount,
-            key = { index -> "source-list-${animeList.peek(index)?.value?.id ?: "placeholder"}-$index" },
+            key = { index -> "source-list-$index" },
             contentType = { index -> if (animeList.peek(index) != null) "anime" else "placeholder" },
         ) { index ->
             val anime by animeList[index]?.collectAsState() ?: return@items
-            onBatchIncrement(index)
+            LaunchedEffect(index) {
+                onBatchIncrement(index)
+            }
 
             val currentOnAnimeClick = remember(onAnimeClick, anime, index) { 
                 { onAnimeClick(anime, index) } 
@@ -130,6 +133,7 @@ internal fun BrowseSourceListItem(
         onClick = onClick,
         entries = entries,
         containerHeight = containerHeight,
+        shouldExtractColor = false,
         usePanorama = usePanorama,
     )
 }

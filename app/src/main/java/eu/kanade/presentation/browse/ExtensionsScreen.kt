@@ -18,7 +18,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyListState
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -234,14 +234,14 @@ private fun ExtensionContent(
                 }
             }
 
-            items(
+            itemsIndexed(
                 items = items,
-                key = { "extension-${it.extension.pkgName}-${it.repoName}" },
-                contentType = { "extension_item" },
-            ) { item ->
+                key = { _, item -> "extension-${item.extension.pkgName}-${item.repoName}" },
+                contentType = { _, _ -> "extension_item" },
+            ) { index, item ->
                 if (useContainer) {
-                    val isFirst = items.first() == item
-                    val isLast = items.last() == item
+                    val isFirst = index == 0
+                    val isLast = index == items.lastIndex
                     Surface(
                         modifier = Modifier
                             .fillMaxWidth()

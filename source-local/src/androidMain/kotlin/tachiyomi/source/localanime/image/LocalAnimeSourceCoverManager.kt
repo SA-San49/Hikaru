@@ -4,8 +4,6 @@ import android.content.Context
 import com.hippo.unifile.UniFile
 import eu.kanade.tachiyomi.source.model.SAnime
 import eu.kanade.tachiyomi.util.storage.DiskUtil
-import tachiyomi.core.common.storage.nameWithoutExtension
-import tachiyomi.core.common.util.system.ImageUtil
 import tachiyomi.source.localanime.io.LocalAnimeSourceFileSystem
 import java.io.InputStream
 
@@ -18,12 +16,17 @@ actual class LocalAnimeSourceCoverManager(
 
     actual fun find(animeUrl: String): UniFile? {
         val animeDir = fileSystem.getAnimeDirectory(animeUrl) ?: return null
-        return animeDir.findFile("cover.jpg")
-            ?: animeDir.findFile("cover.png")
-            ?: animeDir.findFile("cover.jpeg")
-            ?: animeDir.findFile("Cover.jpg")
-            ?: animeDir.findFile("Cover.png")
-            ?: animeDir.findFile("Cover.jpeg")
+        return findInDirectory(animeDir)
+    }
+
+    actual fun findInDirectory(animeDir: UniFile): UniFile? {
+        val files = animeDir.listFiles() ?: return null
+        return files.firstOrNull { file ->
+            when (file.name?.lowercase()) {
+                "cover.jpg", "cover.jpeg", "cover.png", "cover.webp" -> true
+                else -> false
+            }
+        }
     }
 
     actual fun update(anime: SAnime, inputStream: InputStream): UniFile? {
@@ -33,7 +36,7 @@ actual class LocalAnimeSourceCoverManager(
             return null
         }
 
-        val targetFile = find(anime.url) ?: directory.createFile(DEFAULT_COVER_NAME)!!
+        val targetFile = findInDirectory(directory) ?: directory.createFile(DEFAULT_COVER_NAME)!!
 
         inputStream.use { input ->
             targetFile.openOutputStream().use { output ->

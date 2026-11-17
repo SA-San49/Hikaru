@@ -189,9 +189,9 @@ class BrowseSourceScreenModel(
         .map { listing ->
             Pager(
                 PagingConfig(
-                    pageSize = 20,
-                    prefetchDistance = 5,
-                    initialLoadSize = 40,
+                    pageSize = 30,
+                    prefetchDistance = 10,
+                    initialLoadSize = 30,
                 ),
             ) {
                 getRemoteAnime.subscribe(sourceId, listing.query ?: "", listing.filters)
@@ -201,7 +201,7 @@ class BrowseSourceScreenModel(
                     getAnime.subscribe(localAnime.url, localAnime.source)
                         .filterNotNull()
                         .distinctUntilChanged()
-                        .stateIn(ioCoroutineScope, SharingStarted.WhileSubscribed(5000), localAnime)
+                        .stateIn(ioCoroutineScope, SharingStarted.WhileSubscribed(0), localAnime)
                 }
                     .filter { !hideInLibraryItems || !it.value.favorite }
             }.cachedIn(ioCoroutineScope)

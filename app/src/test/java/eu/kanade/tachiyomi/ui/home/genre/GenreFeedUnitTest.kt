@@ -118,4 +118,21 @@ class GenreFeedUnitTest {
         assertTrue(success)
         assertEquals(1, select.state)
     }
+
+    @Test
+    fun `applies genre filter on nested subsection group`() {
+        class TestCheck(name: String) : AnimeFilter.CheckBox(name, false)
+        class TestGroup(name: String, items: List<AnimeFilter<*>>) : AnimeFilter.Group<AnimeFilter<*>>(name, items)
+
+        val isekaiCheck = TestCheck("Isekai")
+        val nestedTagsGroup = TestGroup("Tags", listOf(isekaiCheck))
+        val rootFiltersGroup = TestGroup("Filters", listOf(nestedTagsGroup))
+        val filterList = AnimeFilterList(listOf(rootFiltersGroup))
+
+        val applier = GenreFilterApplier.GroupCheckBox(listOf("Filters", "Tags"), "Isekai")
+        val success = applier.apply(filterList)
+
+        assertTrue(success)
+        assertTrue(isekaiCheck.state)
+    }
 }

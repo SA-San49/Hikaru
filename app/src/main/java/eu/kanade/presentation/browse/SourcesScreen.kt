@@ -153,20 +153,17 @@ fun SourcesScreen(
                 ) { _, model ->
                     when (model) {
                         is SourceUiModel.Header -> {
-                            val headerModifier = remember { Modifier.animateItem() }
                             SourceHeader(
                                 displayName = model.displayName,
-                                modifier = headerModifier
                             )
                         }
                         is SourceUiModel.Item -> {
-                            val itemModifier = remember { Modifier.animateItem() }
                             val sourceModifier = if (model.source.id == firstSourceId) {
-                                itemModifier
+                                Modifier
                                     .semantics { testTagsAsResourceId = true }
                                     .testTag("benchmark_source_item")
                             } else {
-                                itemModifier
+                                Modifier
                             }
                             if (useContainer) {
                                 Surface(

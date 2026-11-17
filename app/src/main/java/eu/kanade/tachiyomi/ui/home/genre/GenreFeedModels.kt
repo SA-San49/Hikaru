@@ -17,15 +17,27 @@ enum class FeedGenreSelectionMode {
     SELECTED,
 }
 
+private fun resolveTargetContainer(filters: List<*>, groupPath: List<String>): List<*>? {
+    var current: List<*> = filters
+    for (groupName in groupPath) {
+        val nextGroup = current
+            .filterIsInstance<AnimeFilter.Group<*>>()
+            .find { it.name.equals(groupName, ignoreCase = true) }
+            ?: return null
+        current = nextGroup.state
+    }
+    return current
+}
+
 sealed interface GenreFilterApplier {
     fun apply(filters: AnimeFilterList): Boolean
 
-    data class GroupCheckBox(val groupName: String, val itemName: String) : GenreFilterApplier {
+    data class GroupCheckBox(val groupPath: List<String>, val itemName: String) : GenreFilterApplier {
+        constructor(groupName: String, itemName: String) : this(listOf(groupName), itemName)
+
         override fun apply(filters: AnimeFilterList): Boolean {
-            val group = filters.filterIsInstance<AnimeFilter.Group<*>>().find {
-                it.name.equals(groupName, ignoreCase = true)
-            } ?: return false
-            val item = group.state.filterIsInstance<AnimeFilter.CheckBox>().find {
+            val container = resolveTargetContainer(filters, groupPath) ?: return false
+            val item = container.filterIsInstance<AnimeFilter.CheckBox>().find {
                 it.name.equals(itemName, ignoreCase = true)
             } ?: return false
             item.state = true
@@ -33,12 +45,12 @@ sealed interface GenreFilterApplier {
         }
     }
 
-    data class GroupTriState(val groupName: String, val itemName: String) : GenreFilterApplier {
+    data class GroupTriState(val groupPath: List<String>, val itemName: String) : GenreFilterApplier {
+        constructor(groupName: String, itemName: String) : this(listOf(groupName), itemName)
+
         override fun apply(filters: AnimeFilterList): Boolean {
-            val group = filters.filterIsInstance<AnimeFilter.Group<*>>().find {
-                it.name.equals(groupName, ignoreCase = true)
-            } ?: return false
-            val item = group.state.filterIsInstance<AnimeFilter.TriState>().find {
+            val container = resolveTargetContainer(filters, groupPath) ?: return false
+            val item = container.filterIsInstance<AnimeFilter.TriState>().find {
                 it.name.equals(itemName, ignoreCase = true)
             } ?: return false
             item.state = AnimeFilter.TriState.STATE_INCLUDE
@@ -46,9 +58,22 @@ sealed interface GenreFilterApplier {
         }
     }
 
-    data class SelectOption(val selectName: String, val optionIndex: Int, val optionName: String) : GenreFilterApplier {
+    data class SelectOption(
+        val groupPath: List<String>,
+        val selectName: String,
+        val optionIndex: Int,
+        val optionName: String,
+    ) : GenreFilterApplier {
+        constructor(selectName: String, optionIndex: Int, optionName: String) : this(
+            emptyList(),
+            selectName,
+            optionIndex,
+            optionName,
+        )
+
         override fun apply(filters: AnimeFilterList): Boolean {
-            val select = filters.filterIsInstance<AnimeFilter.Select<*>>().find {
+            val container = resolveTargetContainer(filters, groupPath) ?: return false
+            val select = container.filterIsInstance<AnimeFilter.Select<*>>().find {
                 it.name.equals(selectName, ignoreCase = true)
             } ?: return false
             val targetIndex = if (select.values.getOrNull(optionIndex)?.toString().equals(optionName, ignoreCase = true)) {
@@ -85,12 +110,14 @@ sealed interface GenreFilterApplier {
     }
 }
 
+@Immutable
 data class SourceGenreBinding(
     val sourceId: Long,
     val sourceName: String,
     val applier: GenreFilterApplier,
 )
 
+@Immutable
 data class DiscoveredGenre(
     val key: String,
     val displayName: String,

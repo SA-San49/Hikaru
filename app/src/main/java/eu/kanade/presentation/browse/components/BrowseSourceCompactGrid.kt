@@ -6,6 +6,7 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -56,11 +57,13 @@ fun BrowseSourceCompactGrid(
 
         items(
             count = animeList.itemCount,
-            key = { index -> "source-compact-grid-${animeList.peek(index)?.value?.id ?: "placeholder"}-$index" },
+            key = { index -> "source-compact-grid-$index" },
             contentType = { index -> if (animeList.peek(index) != null) "anime" else "placeholder" },
         ) { index ->
             val anime by animeList[index]?.collectAsState() ?: return@items
-            onBatchIncrement(index)
+            LaunchedEffect(index) {
+                onBatchIncrement(index)
+            }
 
             val currentOnAnimeClick = remember(onAnimeClick, anime, index) { 
                 { onAnimeClick(anime, index) } 
@@ -125,6 +128,7 @@ internal fun BrowseSourceCompactGridItem(
         onLongClick = onLongClick,
         onClick = onClick,
         isSelected = isSelected,
+        shouldExtractColor = false,
         usePanorama = usePanorama,
     )
 }

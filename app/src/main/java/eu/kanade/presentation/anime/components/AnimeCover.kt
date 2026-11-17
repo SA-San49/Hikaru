@@ -148,10 +148,30 @@ enum class AnimeCover(val ratio: Float) {
                 CoverLoading(shape, bgColor)
             }
 
+            val targetWidthPx = when {
+                size == Size.Big -> null
+                size == Size.Medium && ratio > RatioSwitchToPanorama -> 768
+                size == Size.Medium -> 512
+                ratio > RatioSwitchToPanorama -> 540
+                else -> 360
+            }
+            val targetHeightPx = when {
+                size == Size.Big -> null
+                size == Size.Medium && ratio > RatioSwitchToPanorama -> 512
+                size == Size.Medium -> 768
+                ratio > RatioSwitchToPanorama -> 360
+                else -> 540
+            }
+
             AsyncImage(
-                model = remember(data, animatedTransitions) {
+                model = remember(data, animatedTransitions, targetWidthPx, targetHeightPx) {
                     ImageRequest.Builder(context)
                         .data(data)
+                        .apply {
+                            if (targetWidthPx != null && targetHeightPx != null) {
+                                size(targetWidthPx, targetHeightPx)
+                            }
+                        }
                         .precision(coil3.size.Precision.INEXACT)
                         .crossfade(animatedTransitions)
                         .build()

@@ -11,6 +11,7 @@ import eu.kanade.tachiyomi.ui.home.genre.FeedDisplayMode
 import eu.kanade.tachiyomi.ui.home.genre.FeedGenreSelectionMode
 import eu.kanade.tachiyomi.ui.home.genre.GenreDiscoveryEngine
 import eu.kanade.tachiyomi.ui.home.genre.GenreFeedItem
+import eu.kanade.tachiyomi.ui.home.genre.SourceGenreBinding
 import eu.kanade.tachiyomi.ui.home.genre.TitleDeduplicator
 import kotlinx.collections.immutable.ImmutableList
 import kotlinx.collections.immutable.ImmutableMap
@@ -26,12 +27,15 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.withTimeout
 import logcat.LogPriority
 import tachiyomi.core.common.util.lang.launchIO
 import tachiyomi.core.common.util.system.logcat
@@ -51,6 +55,7 @@ import tachiyomi.domain.source.model.FeedSavedSearchCategory
 import tachiyomi.domain.source.model.FeedSavedSearchUpdate
 import tachiyomi.domain.source.model.SavedSearch
 import tachiyomi.domain.source.service.SourceManager
+import tachiyomi.source.localanime.LocalAnimeSource
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
 import java.util.concurrent.ConcurrentHashMap
@@ -81,7 +86,7 @@ class FeedScreenModel(
 
     // In-memory cache for genre rows with short TTL to prevent repeated network requests on tab switch
     private val genreCache = ConcurrentHashMap<String, Pair<Long, List<Anime>>>()
-    private val genreDiscoveryCache = ConcurrentHashMap<Long, List<DiscoveredGenre>>()
+    private val genreDiscoveryCache = ConcurrentHashMap<String, List<DiscoveredGenre>>()
     private val sourceRequestLimiter = Semaphore(3)
 
     companion object {
@@ -90,35 +95,25 @@ class FeedScreenModel(
     }
 
     init {
-        // Observe display mode preference changes
+        // Keep state synchronized with preference changes (without duplicate job triggers)
         uiPreferences.feedDisplayMode().changes()
+            .distinctUntilChanged()
             .onEach { mode ->
                 mutableState.update { it.copy(displayMode = mode) }
-                if (mode == FeedDisplayMode.GENRES) {
-                    triggerGenreReloadForAllCategories()
-                }
             }
             .launchIn(screenModelScope)
 
-        // Observe genre selection mode preference changes
         uiPreferences.feedGenreSelectionMode().changes()
+            .distinctUntilChanged()
             .onEach { selectionMode ->
                 mutableState.update { it.copy(genreSelectionMode = selectionMode) }
-                if (mutableState.value.displayMode == FeedDisplayMode.GENRES) {
-                    triggerGenreReloadForAllCategories()
-                }
             }
             .launchIn(screenModelScope)
 
-        // Observe selected genres set preference changes
         uiPreferences.feedSelectedGenres().changes()
+            .distinctUntilChanged()
             .onEach { selectedSet ->
                 mutableState.update { it.copy(selectedGenres = selectedSet.toImmutableSet()) }
-                if (mutableState.value.displayMode == FeedDisplayMode.GENRES &&
-                    mutableState.value.genreSelectionMode == FeedGenreSelectionMode.SELECTED
-                ) {
-                    triggerGenreReloadForAllCategories()
-                }
             }
             .launchIn(screenModelScope)
 
@@ -136,19 +131,14 @@ class FeedScreenModel(
 
                     mutableState.update { state ->
                         val newItems = state.items.toMutableMap()
-                        val newGenreItems = state.genreItems.toMutableMap()
                         categoriesToUse.forEach { category ->
                             if (!newItems.containsKey(category.id)) {
                                 newItems[category.id] = persistentListOf()
-                            }
-                            if (!newGenreItems.containsKey(category.id)) {
-                                newGenreItems[category.id] = persistentListOf()
                             }
                         }
                         state.copy(
                             categories = categoriesToUse,
                             items = newItems.toImmutableMap(),
-                            genreItems = newGenreItems.toImmutableMap(),
                         )
                     }
 
@@ -167,17 +157,23 @@ class FeedScreenModel(
     }
 
     fun setDisplayMode(mode: FeedDisplayMode) {
+        if (state.value.displayMode == mode &&
+            (mode != FeedDisplayMode.GENRES || state.value.discoveredGenres.isNotEmpty())
+        ) {
+            return
+        }
         uiPreferences.feedDisplayMode().set(mode)
         mutableState.update { it.copy(displayMode = mode) }
         if (mode == FeedDisplayMode.GENRES) {
-            triggerGenreReloadForAllCategories()
+            triggerGenreReloadForAllCategories(forceDiscovery = false)
         }
     }
 
     fun setGenreSelectionMode(mode: FeedGenreSelectionMode) {
+        if (state.value.genreSelectionMode == mode) return
         uiPreferences.feedGenreSelectionMode().set(mode)
         mutableState.update { it.copy(genreSelectionMode = mode) }
-        triggerGenreReloadForAllCategories()
+        triggerGenreReloadForAllCategories(forceDiscovery = false)
     }
 
     fun toggleGenreSelected(genreKey: String) {
@@ -189,7 +185,7 @@ class FeedScreenModel(
         }
         uiPreferences.feedSelectedGenres().set(current)
         mutableState.update { it.copy(selectedGenres = current.toImmutableSet()) }
-        triggerGenreReloadForAllCategories()
+        triggerGenreReloadForAllCategories(forceDiscovery = false)
     }
 
     fun selectAllGenres(categoryId: Long) {
@@ -197,10 +193,10 @@ class FeedScreenModel(
         val allKeys = genres.map { it.key }.toSet()
         uiPreferences.feedSelectedGenres().set(allKeys)
         mutableState.update { it.copy(selectedGenres = allKeys.toImmutableSet()) }
-        triggerGenreReloadForAllCategories()
+        triggerGenreReloadForAllCategories(forceDiscovery = false)
     }
 
-    fun getBindingsForGenre(genreKey: String): List<eu.kanade.tachiyomi.ui.home.genre.SourceGenreBinding> {
+    fun getBindingsForGenre(genreKey: String): List<SourceGenreBinding> {
         return state.value.discoveredGenres.values
             .flatten()
             .find { it.key == genreKey }
@@ -211,7 +207,23 @@ class FeedScreenModel(
     fun deselectAllGenres() {
         uiPreferences.feedSelectedGenres().set(emptySet())
         mutableState.update { it.copy(selectedGenres = persistentSetOf()) }
-        triggerGenreReloadForAllCategories()
+        triggerGenreReloadForAllCategories(forceDiscovery = false)
+    }
+
+    fun fetchGenres(categoryId: Long? = null) {
+        if (categoryId != null) {
+            genreDiscoveryCache.keys.filter { it.startsWith("${categoryId}:") }.forEach {
+                genreDiscoveryCache.remove(it)
+            }
+            val cat = state.value.categories.find { it.id == categoryId }
+            if (cat != null) {
+                val feeds = lastFeedSavedSearches[cat.id]
+                loadGenresForCategory(cat, feeds, forceRefresh = false, forceDiscovery = true)
+            }
+        } else {
+            genreDiscoveryCache.clear()
+            triggerGenreReloadForAllCategories(forceRefresh = false, forceDiscovery = true)
+        }
     }
 
     fun refresh(categoryId: Long? = null) {
@@ -223,19 +235,27 @@ class FeedScreenModel(
             if (categoryId != null) {
                 val cat = state.value.categories.find { it.id == categoryId }
                 if (cat != null) {
-                    val feeds = lastFeedSavedSearches[cat.id] ?: emptyList()
-                    loadGenresForCategory(cat, feeds, forceRefresh = true)
+                    val feeds = lastFeedSavedSearches[cat.id]
+                    loadGenresForCategory(cat, feeds, forceRefresh = true, forceDiscovery = true)
                 }
             } else {
-                triggerGenreReloadForAllCategories(forceRefresh = true)
+                triggerGenreReloadForAllCategories(forceRefresh = true, forceDiscovery = true)
             }
         }
     }
 
-    private fun triggerGenreReloadForAllCategories(forceRefresh: Boolean = false) {
+    private fun triggerGenreReloadForAllCategories(
+        forceRefresh: Boolean = false,
+        forceDiscovery: Boolean = false,
+    ) {
         state.value.categories.forEach { category ->
-            val feeds = lastFeedSavedSearches[category.id] ?: emptyList()
-            loadGenresForCategory(category, feeds, forceRefresh = forceRefresh)
+            val feeds = lastFeedSavedSearches[category.id]
+            loadGenresForCategory(
+                category = category,
+                feedSavedSearches = feeds,
+                forceRefresh = forceRefresh,
+                forceDiscovery = forceDiscovery,
+            )
         }
     }
 
@@ -248,7 +268,9 @@ class FeedScreenModel(
             genreJobs[id]?.cancel()
             genreJobs.remove(id)
             lastFeedSavedSearches.remove(id)
-            genreDiscoveryCache.remove(id)
+            genreDiscoveryCache.keys.filter { it.startsWith("${id}:") }.forEach {
+                genreDiscoveryCache.remove(it)
+            }
         }
 
         categories.forEach { category ->
@@ -262,29 +284,41 @@ class FeedScreenModel(
                     }.collectLatest { (feedSavedSearches, isInitialized) ->
                         if (!isInitialized) return@collectLatest
 
+                        val feedsChanged = lastFeedSavedSearches[category.id]?.map { it.source } !=
+                            feedSavedSearches.map { it.source }
                         lastFeedSavedSearches[category.id] = feedSavedSearches
 
-                        // If currently in GENRES mode, trigger genre discovery & loading
-                        if (state.value.displayMode == FeedDisplayMode.GENRES) {
-                            loadGenresForCategory(category, feedSavedSearches)
+                        if (feedsChanged) {
+                            genreDiscoveryCache.keys.filter { it.startsWith("${category.id}:") }.forEach {
+                                genreDiscoveryCache.remove(it)
+                            }
                         }
 
-                        // Also populate source feed mode items as standard behavior
+                        // Auto-fetch live genres when in GENRES mode or when feed sources change
+                        if (state.value.displayMode == FeedDisplayMode.GENRES || feedsChanged) {
+                            loadGenresForCategory(
+                                category = category,
+                                feedSavedSearches = feedSavedSearches,
+                                forceRefresh = false,
+                                forceDiscovery = feedsChanged,
+                            )
+                        }
+
+                        // Populate source feed mode items
                         val savedSearches = getSavedSearchGlobalFeed.await()
 
-                        val initialItems = feedSavedSearches.map { feed ->
+                        val initialItems = feedSavedSearches.mapNotNull { feed ->
                             val source = sourceManager.get(feed.source) as? AnimeCatalogueSource
-                            if (source == null) null else {
-                                val savedSearch = savedSearches.find { it.id == feed.savedSearch }
-                                FeedItem(
-                                    feed = feed,
-                                    source = source,
-                                    savedSearch = savedSearch,
-                                    animeList = persistentListOf(),
-                                    isLoading = true,
-                                )
-                            }
-                        }.filterNotNull().toImmutableList()
+                                ?: return@mapNotNull null
+                            val savedSearch = savedSearches.find { it.id == feed.savedSearch }
+                            FeedItem(
+                                feed = feed,
+                                source = source,
+                                savedSearch = savedSearch,
+                                animeList = persistentListOf(),
+                                isLoading = true,
+                            )
+                        }.toImmutableList()
 
                         mutableState.update { state ->
                             val newItemsMap = state.items.toMutableMap()
@@ -298,7 +332,7 @@ class FeedScreenModel(
                                     val source = sourceManager.get(feed.source) as? AnimeCatalogueSource
                                         ?: return@launch
                                     try {
-                                        kotlinx.coroutines.withTimeout(SOURCE_TIMEOUT_MS) {
+                                        withTimeout(SOURCE_TIMEOUT_MS) {
                                             val results = when (FeedSavedSearch.Type.from(feed.type)) {
                                                 FeedSavedSearch.Type.Latest -> {
                                                     try {
@@ -396,39 +430,78 @@ class FeedScreenModel(
 
     private fun loadGenresForCategory(
         category: FeedSavedSearchCategory,
-        feedSavedSearches: List<FeedSavedSearch>,
+        feedSavedSearches: List<FeedSavedSearch>?,
         forceRefresh: Boolean = false,
+        forceDiscovery: Boolean = false,
     ) {
         genreJobs[category.id]?.cancel()
         genreJobs[category.id] = screenModelScope.launchIO {
-            // Source pool = catalogue sources in user's current feed for active category (preferred),
-            // or all enabled catalogue sources if feed list is empty.
-            val feedSources = feedSavedSearches
+            // Ensure source manager is ready before scanning source filters
+            if (!sourceManager.isInitialized.value) {
+                sourceManager.isInitialized.first { it }
+            }
+
+            // Always read live feeds from DB if not cached yet
+            val categoryFeeds = feedSavedSearches ?: getFeedSavedSearchGlobal.await(category.id).also {
+                lastFeedSavedSearches[category.id] = it
+            }
+
+            // Source pool priority:
+            // 1. Sources added to this category's feed
+            // 2. If category feed is empty, sources added across all feed categories
+            // 3. If feed is completely empty across app, fall back to enabled catalogue sources (excluding Local)
+            var feedSources = categoryFeeds
                 .mapNotNull { sourceManager.get(it.source) as? AnimeCatalogueSource }
                 .distinctBy { it.id }
+
+            if (feedSources.isEmpty()) {
+                val allCategoryFeeds = state.value.categories.flatMap { cat ->
+                    lastFeedSavedSearches[cat.id] ?: getFeedSavedSearchGlobal.await(cat.id)
+                }
+                feedSources = allCategoryFeeds
+                    .mapNotNull { sourceManager.get(it.source) as? AnimeCatalogueSource }
+                    .distinctBy { it.id }
+            }
 
             val sourcePool = if (feedSources.isNotEmpty()) {
                 feedSources
             } else {
-                sourceManager.getCatalogueSources().filterIsInstance<AnimeCatalogueSource>()
+                sourceManager.getCatalogueSources()
+                    .filterIsInstance<AnimeCatalogueSource>()
+                    .filterNot { it.id == LocalAnimeSource.ID }
             }
 
-            if (sourcePool.isEmpty()) {
-                mutableState.update { state ->
-                    val newMap = state.genreItems.toMutableMap()
-                    newMap[category.id] = persistentListOf()
-                    state.copy(genreItems = newMap.toImmutableMap())
+            mutableState.update { state ->
+                val countMap = state.feedSourceCount.toMutableMap()
+                countMap[category.id] = sourcePool.size
+                state.copy(
+                    discoveringCategories = (state.discoveringCategories + category.id).toImmutableSet(),
+                    feedSourceCount = countMap.toImmutableMap(),
+                )
+            }
+
+            val discovered: List<DiscoveredGenre> = try {
+                if (sourcePool.isEmpty()) {
+                    emptyList()
+                } else {
+                    val discoveryKey = "${category.id}:${sourcePool.map { it.id }.sorted().joinToString(",")}"
+                    val cachedDiscovery = genreDiscoveryCache[discoveryKey]
+                    if (!forceRefresh && !forceDiscovery && !cachedDiscovery.isNullOrEmpty()) {
+                        cachedDiscovery
+                    } else {
+                        val found = GenreDiscoveryEngine.discoverGenresForSourcesAsync(sourcePool)
+                        if (found.isNotEmpty()) {
+                            genreDiscoveryCache[discoveryKey] = found
+                        }
+                        found
+                    }
                 }
-                return@launchIO
-            }
-
-            // Genre discovery with cache
-            val discovered = if (!forceRefresh && genreDiscoveryCache.containsKey(category.id)) {
-                genreDiscoveryCache[category.id]!!
-            } else {
-                val found = GenreDiscoveryEngine.discoverGenresForSources(sourcePool)
-                genreDiscoveryCache[category.id] = found
-                found
+            } finally {
+                mutableState.update { state ->
+                    state.copy(
+                        discoveringCategories = (state.discoveringCategories - category.id).toImmutableSet(),
+                    )
+                }
             }
 
             val currentSelectionMode = uiPreferences.feedGenreSelectionMode().get()
@@ -438,6 +511,11 @@ class FeedScreenModel(
                 val newDiscoveredMap = state.discoveredGenres.toMutableMap()
                 newDiscoveredMap[category.id] = discovered.toImmutableList()
                 state.copy(discoveredGenres = newDiscoveredMap.toImmutableMap())
+            }
+
+            // Skip fetching anime rows while we're in SOURCES mode (we only needed live genre discovery)
+            if (state.value.displayMode != FeedDisplayMode.GENRES) {
+                return@launchIO
             }
 
             val genresToShow = when (currentSelectionMode) {
@@ -454,7 +532,6 @@ class FeedScreenModel(
                 return@launchIO
             }
 
-            // Setup initial rows in state
             val initialGenreItems = genresToShow.map { genre ->
                 val cacheKey = "${category.id}_${genre.key}"
                 val cached = genreCache[cacheKey]
@@ -485,7 +562,6 @@ class FeedScreenModel(
                 state.copy(genreItems = newMap.toImmutableMap())
             }
 
-            // Load uncached rows in parallel with concurrency cap
             coroutineScope {
                 genresToShow.forEach { genre ->
                     val cacheKey = "${category.id}_${genre.key}"
@@ -512,7 +588,7 @@ class FeedScreenModel(
                             val source = sourceManager.get(binding.sourceId) as? AnimeCatalogueSource
                                 ?: return@withPermit emptyList<Anime>()
                             try {
-                                kotlinx.coroutines.withTimeout(SOURCE_TIMEOUT_MS) {
+                                withTimeout(SOURCE_TIMEOUT_MS) {
                                     val filters = source.getFilterList()
                                     val applied = binding.applier.apply(filters)
                                     if (!applied) return@withTimeout emptyList<Anime>()
@@ -540,7 +616,6 @@ class FeedScreenModel(
                 }
             }
 
-            // Deduplicate anime within this genre row by normalized title
             val dedupedAnime = TitleDeduplicator.dedupeAnime(animeFromSources).toImmutableList()
 
             val cacheKey = "${categoryId}_${genre.key}"
@@ -588,9 +663,11 @@ class FeedScreenModel(
         val genreItems: ImmutableMap<Long, ImmutableList<GenreFeedItem>> = persistentMapOf(),
         val categories: ImmutableList<FeedSavedSearchCategory> = persistentListOf(),
         val displayMode: FeedDisplayMode = FeedDisplayMode.SOURCES,
-        val genreSelectionMode: FeedGenreSelectionMode = FeedGenreSelectionMode.ALL,
+        val genreSelectionMode: FeedGenreSelectionMode = FeedGenreSelectionMode.SELECTED,
         val selectedGenres: ImmutableSet<String> = persistentSetOf(),
         val discoveredGenres: ImmutableMap<Long, ImmutableList<DiscoveredGenre>> = persistentMapOf(),
+        val discoveringCategories: ImmutableSet<Long> = persistentSetOf(),
+        val feedSourceCount: ImmutableMap<Long, Int> = persistentMapOf(),
     ) {
         val isLoading: Boolean
             get() = if (displayMode == FeedDisplayMode.SOURCES) {
