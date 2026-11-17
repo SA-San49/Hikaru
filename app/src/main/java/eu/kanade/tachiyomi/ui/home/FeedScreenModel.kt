@@ -200,6 +200,14 @@ class FeedScreenModel(
         triggerGenreReloadForAllCategories()
     }
 
+    fun getBindingsForGenre(genreKey: String): List<eu.kanade.tachiyomi.ui.home.genre.SourceGenreBinding> {
+        return state.value.discoveredGenres.values
+            .flatten()
+            .find { it.key == genreKey }
+            ?.sourceBindings
+            ?: emptyList()
+    }
+
     fun deselectAllGenres() {
         uiPreferences.feedSelectedGenres().set(emptySet())
         mutableState.update { it.copy(selectedGenres = persistentSetOf()) }
