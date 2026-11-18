@@ -51,6 +51,8 @@ class AnimeRecencyResolver(
     private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
     private val aniListLimiter = Semaphore(2)
     private val jikanLimiter = Semaphore(2)
+    private val kitsuLimiter = Semaphore(2)
+    private val shikimoriLimiter = Semaphore(2)
 
     suspend fun sortNewestFirst(candidates: List<RankedAnime>): List<Anime> {
         if (candidates.isEmpty()) return emptyList()
@@ -68,10 +70,15 @@ class AnimeRecencyResolver(
             )
             val bestLocalDate = maxOf(announcementDate, metadataDate)
 
+            val persistentAirDate = persistentAirDateCache[titleKey]?.takeIf { it > 0L }
             val cachedInternetDate = if (bestLocalDate > 0L || titleKey.isBlank()) {
                 null
             } else {
-                aniListDateCache[titleKey] ?: jikanDateCache[titleKey]
+                persistentAirDate
+                    ?: aniListDateCache[titleKey]?.takeIf { it > 0L }
+                    ?: jikanDateCache[titleKey]?.takeIf { it > 0L }
+                    ?: kitsuDateCache[titleKey]?.takeIf { it > 0L }
+                    ?: shikimoriDateCache[titleKey]?.takeIf { it > 0L }
             }
 
             val resolvedDate = when {
@@ -79,6 +86,10 @@ class AnimeRecencyResolver(
                 cachedInternetDate != null && cachedInternetDate > 0L -> cachedInternetDate
                 else -> 0L
             }
+
+            val hasMissOnAniList = aniListDateCache[titleKey] == CACHE_MISS_SENTINEL
+            val hasMissOnJikan = jikanDateCache[titleKey] == CACHE_MISS_SENTINEL
+            val hasMissOnKitsu = kitsuDateCache[titleKey] == CACHE_MISS_SENTINEL
 
             ResolvedGroup(
                 anime = group.primary,
@@ -92,8 +103,21 @@ class AnimeRecencyResolver(
                 needsJikanFallback = bestLocalDate <= 0L &&
                     titleKey.isNotBlank() &&
                     resolvedDate <= 0L &&
-                    aniListDateCache[titleKey] == CACHE_MISS_SENTINEL &&
+                    hasMissOnAniList &&
                     !jikanDateCache.containsKey(titleKey),
+                needsKitsuFallback = bestLocalDate <= 0L &&
+                    titleKey.isNotBlank() &&
+                    resolvedDate <= 0L &&
+                    hasMissOnAniList &&
+                    hasMissOnJikan &&
+                    !kitsuDateCache.containsKey(titleKey),
+                needsShikimoriFallback = bestLocalDate <= 0L &&
+                    titleKey.isNotBlank() &&
+                    resolvedDate <= 0L &&
+                    hasMissOnAniList &&
+                    hasMissOnJikan &&
+                    hasMissOnKitsu &&
+                    !shikimoriDateCache.containsKey(titleKey),
                 dateKey = resolvedDate,
             )
         }.toMutableList()
@@ -113,7 +137,12 @@ class AnimeRecencyResolver(
                 val entry = resolved[idx]
                 val fetchedDate = fetched[entry.titleKey]
                 if (fetchedDate != null && fetchedDate > 0L) {
-                    resolved[idx] = entry.copy(dateKey = fetchedDate, needsJikanFallback = false)
+                    resolved[idx] = entry.copy(
+                        dateKey = fetchedDate,
+                        needsJikanFallback = false,
+                        needsKitsuFallback = false,
+                        needsShikimoriFallback = false,
+                    )
                 } else if (aniListDateCache[entry.titleKey] == CACHE_MISS_SENTINEL && !jikanDateCache.containsKey(entry.titleKey)) {
                     resolved[idx] = entry.copy(needsJikanFallback = true)
                 }
@@ -134,6 +163,54 @@ class AnimeRecencyResolver(
             for (idx in pendingJikanIndices) {
                 val entry = resolved[idx]
                 val fetchedDate = jikanFetched[entry.titleKey]
+                if (fetchedDate != null && fetchedDate > 0L) {
+                    resolved[idx] = entry.copy(
+                        dateKey = fetchedDate,
+                        needsKitsuFallback = false,
+                        needsShikimoriFallback = false,
+                    )
+                } else if (jikanDateCache[entry.titleKey] == CACHE_MISS_SENTINEL && !kitsuDateCache.containsKey(entry.titleKey)) {
+                    resolved[idx] = entry.copy(needsKitsuFallback = true)
+                }
+            }
+        }
+
+        // Stage 5: Kitsu REST API fallback for titles AniList and Jikan missed
+        val pendingKitsuIndices = resolved.indices
+            .filter { resolved[it].dateKey <= 0L && resolved[it].needsKitsuFallback }
+            .take(MAX_KITSU_FALLBACKS_PER_ROW)
+
+        if (pendingKitsuIndices.isNotEmpty()) {
+            val kitsuQueries = pendingKitsuIndices
+                .map { idx -> resolved[idx].titleKey to resolved[idx].anime.title }
+                .distinctBy { it.first }
+
+            val kitsuFetched = fetchKitsuDatesForMisses(kitsuQueries)
+            for (idx in pendingKitsuIndices) {
+                val entry = resolved[idx]
+                val fetchedDate = kitsuFetched[entry.titleKey]
+                if (fetchedDate != null && fetchedDate > 0L) {
+                    resolved[idx] = entry.copy(dateKey = fetchedDate, needsShikimoriFallback = false)
+                } else if (kitsuDateCache[entry.titleKey] == CACHE_MISS_SENTINEL && !shikimoriDateCache.containsKey(entry.titleKey)) {
+                    resolved[idx] = entry.copy(needsShikimoriFallback = true)
+                }
+            }
+        }
+
+        // Stage 6: Shikimori REST API fallback for titles still missing an air date
+        val pendingShikimoriIndices = resolved.indices
+            .filter { resolved[it].dateKey <= 0L && resolved[it].needsShikimoriFallback }
+            .take(MAX_SHIKIMORI_FALLBACKS_PER_ROW)
+
+        if (pendingShikimoriIndices.isNotEmpty()) {
+            val shikimoriQueries = pendingShikimoriIndices
+                .map { idx -> resolved[idx].titleKey to resolved[idx].anime.title }
+                .distinctBy { it.first }
+
+            val shikimoriFetched = fetchShikimoriDatesForMisses(shikimoriQueries)
+            for (idx in pendingShikimoriIndices) {
+                val entry = resolved[idx]
+                val fetchedDate = shikimoriFetched[entry.titleKey]
                 if (fetchedDate != null && fetchedDate > 0L) {
                     resolved[idx] = entry.copy(dateKey = fetchedDate)
                 }
@@ -408,6 +485,7 @@ class AnimeRecencyResolver(
 
                         if (dateKey > 0L) {
                             jikanDateCache[key] = dateKey
+                            persistentAirDateCache[key] = dateKey
                             result[key] = dateKey
                         } else if (dateKey == CACHE_MISS_SENTINEL) {
                             jikanDateCache[key] = CACHE_MISS_SENTINEL
@@ -430,6 +508,186 @@ class AnimeRecencyResolver(
                     item["title"]?.jsonPrimitive?.contentOrNull,
                     item["title_english"]?.jsonPrimitive?.contentOrNull,
                     item["title_japanese"]?.jsonPrimitive?.contentOrNull,
+                ).distinct()
+                for (variant in variants) {
+                    add(item to variant)
+                }
+            }
+        }
+        return TitleDeduplicator.selectBestMatch(
+            targetTitle = targetTitle,
+            candidates = expanded,
+            titleSelector = { it.second },
+        )?.first ?: candidates.firstOrNull()
+    }
+
+    private suspend fun fetchKitsuDatesForMisses(
+        queries: List<Pair<String, String>>,
+    ): Map<String, Long> {
+        val result = ConcurrentHashMap<String, Long>()
+        val maxPlausibleYear = Calendar.getInstance().get(Calendar.YEAR) + 2
+
+        coroutineScope {
+            queries.map { (key, rawTitle) ->
+                async {
+                    kitsuLimiter.withPermit {
+                        val dateKey = withTimeoutOrNull(KITSU_TIMEOUT_MS) {
+                            withContext(Dispatchers.IO) {
+                                runCatching {
+                                    val cleanedTitle = cleanSearchTitle(rawTitle)
+                                    val url = Uri.parse("https://kitsu.io/api/edge/anime").buildUpon()
+                                        .appendQueryParameter("filter[text]", cleanedTitle)
+                                        .appendQueryParameter("page[limit]", "3")
+                                        .build()
+                                    val request = Request.Builder()
+                                        .url(url.toString())
+                                        .header("Accept", "application/vnd.api+json")
+                                        .build()
+
+                                    networkHelper.client.newCall(request).execute().use { response ->
+                                        if (!response.isSuccessful) {
+                                            return@runCatching 0L
+                                        }
+                                        val root = json.parseToJsonElement(response.body.string()).jsonObject
+                                        val dataArray = root["data"] as? JsonArray ?: return@runCatching 0L
+                                        val items = dataArray.mapNotNull { it as? JsonObject }
+                                        val best = selectBestKitsuCandidate(cleanedTitle, items)
+                                            ?: return@runCatching CACHE_MISS_SENTINEL
+
+                                        val startDate = best["attributes"]
+                                            ?.jsonObject
+                                            ?.get("startDate")
+                                            ?.jsonPrimitive
+                                            ?.contentOrNull
+                                        val isoDate = startDate?.let { parseIsoDateKey(it, maxPlausibleYear) } ?: 0L
+                                        if (isoDate > 0L) {
+                                            isoDate
+                                        } else {
+                                            CACHE_MISS_SENTINEL
+                                        }
+                                    }
+                                }.onFailure { e ->
+                                    logcat(LogPriority.DEBUG, e) { "Kitsu recency fallback lookup skipped" }
+                                }.getOrDefault(0L)
+                            }
+                        } ?: 0L
+
+                        if (dateKey > 0L) {
+                            kitsuDateCache[key] = dateKey
+                            persistentAirDateCache[key] = dateKey
+                            result[key] = dateKey
+                        } else if (dateKey == CACHE_MISS_SENTINEL) {
+                            kitsuDateCache[key] = CACHE_MISS_SENTINEL
+                        }
+                    }
+                }
+            }.awaitAll()
+        }
+        return result
+    }
+
+    private fun selectBestKitsuCandidate(
+        targetTitle: String,
+        candidates: List<JsonObject>,
+    ): JsonObject? {
+        if (candidates.isEmpty()) return null
+        val expanded = buildList {
+            for (item in candidates) {
+                val attr = item["attributes"]?.jsonObject ?: continue
+                val titlesObj = attr["titles"]?.jsonObject
+                val variants = listOfNotNull(
+                    attr["canonicalTitle"]?.jsonPrimitive?.contentOrNull,
+                    titlesObj?.get("en")?.jsonPrimitive?.contentOrNull,
+                    titlesObj?.get("en_jp")?.jsonPrimitive?.contentOrNull,
+                    titlesObj?.get("ja_jp")?.jsonPrimitive?.contentOrNull,
+                ).distinct()
+                for (variant in variants) {
+                    add(item to variant)
+                }
+            }
+        }
+        return TitleDeduplicator.selectBestMatch(
+            targetTitle = targetTitle,
+            candidates = expanded,
+            titleSelector = { it.second },
+        )?.first ?: candidates.firstOrNull()
+    }
+
+    private suspend fun fetchShikimoriDatesForMisses(
+        queries: List<Pair<String, String>>,
+    ): Map<String, Long> {
+        val result = ConcurrentHashMap<String, Long>()
+        val maxPlausibleYear = Calendar.getInstance().get(Calendar.YEAR) + 2
+
+        coroutineScope {
+            queries.map { (key, rawTitle) ->
+                async {
+                    shikimoriLimiter.withPermit {
+                        val dateKey = withTimeoutOrNull(SHIKIMORI_TIMEOUT_MS) {
+                            withContext(Dispatchers.IO) {
+                                runCatching {
+                                    val cleanedTitle = cleanSearchTitle(rawTitle)
+                                    val url = Uri.parse("https://shikimori.one/api/animes").buildUpon()
+                                        .appendQueryParameter("search", cleanedTitle)
+                                        .appendQueryParameter("limit", "3")
+                                        .build()
+                                    val request = Request.Builder()
+                                        .url(url.toString())
+                                        .header("Accept", "application/json")
+                                        .header("User-Agent", "Hikaru/1.0")
+                                        .build()
+
+                                    networkHelper.client.newCall(request).execute().use { response ->
+                                        if (!response.isSuccessful) {
+                                            return@runCatching 0L
+                                        }
+                                        val root = json.parseToJsonElement(response.body.string())
+                                        val dataArray = root as? JsonArray ?: return@runCatching 0L
+                                        val items = dataArray.mapNotNull { it as? JsonObject }
+                                        val best = selectBestShikimoriCandidate(cleanedTitle, items)
+                                            ?: return@runCatching CACHE_MISS_SENTINEL
+
+                                        val airedOn = best["aired_on"]
+                                            ?.jsonPrimitive
+                                            ?.contentOrNull
+                                        val isoDate = airedOn?.let { parseIsoDateKey(it, maxPlausibleYear) } ?: 0L
+                                        if (isoDate > 0L) {
+                                            isoDate
+                                        } else {
+                                            CACHE_MISS_SENTINEL
+                                        }
+                                    }
+                                }.onFailure { e ->
+                                    logcat(LogPriority.DEBUG, e) { "Shikimori recency fallback lookup skipped" }
+                                }.getOrDefault(0L)
+                            }
+                        } ?: 0L
+
+                        if (dateKey > 0L) {
+                            shikimoriDateCache[key] = dateKey
+                            persistentAirDateCache[key] = dateKey
+                            result[key] = dateKey
+                        } else if (dateKey == CACHE_MISS_SENTINEL) {
+                            shikimoriDateCache[key] = CACHE_MISS_SENTINEL
+                        }
+                    }
+                }
+            }.awaitAll()
+        }
+        return result
+    }
+
+    private fun selectBestShikimoriCandidate(
+        targetTitle: String,
+        candidates: List<JsonObject>,
+    ): JsonObject? {
+        if (candidates.isEmpty()) return null
+        val expanded = buildList {
+            for (item in candidates) {
+                val variants = listOfNotNull(
+                    item["name"]?.jsonPrimitive?.contentOrNull,
+                    item["russian"]?.jsonPrimitive?.contentOrNull,
+                    item["japanese"]?.jsonPrimitive?.contentOrNull,
                 ).distinct()
                 for (variant in variants) {
                     add(item to variant)
@@ -469,6 +727,8 @@ class AnimeRecencyResolver(
         val titleKey: String,
         val needsAniList: Boolean,
         val needsJikanFallback: Boolean,
+        val needsKitsuFallback: Boolean,
+        val needsShikimoriFallback: Boolean,
         val dateKey: Long,
     )
 
@@ -477,12 +737,19 @@ class AnimeRecencyResolver(
         private const val CACHE_MISS_SENTINEL = -1L
         private const val MAX_ANILIST_LOOKUPS_PER_ROW = 48
         private const val MAX_JIKAN_FALLBACKS_PER_ROW = 15
+        private const val MAX_KITSU_FALLBACKS_PER_ROW = 15
+        private const val MAX_SHIKIMORI_FALLBACKS_PER_ROW = 15
         private const val ANILIST_BATCH_SIZE = 10
         private const val ANILIST_TIMEOUT_MS = 6_000L
         private const val JIKAN_TIMEOUT_MS = 4_500L
+        private const val KITSU_TIMEOUT_MS = 3_500L
+        private const val SHIKIMORI_TIMEOUT_MS = 3_500L
 
+        val persistentAirDateCache = ConcurrentHashMap<String, Long>()
         private val aniListDateCache = ConcurrentHashMap<String, Long>()
         private val jikanDateCache = ConcurrentHashMap<String, Long>()
+        private val kitsuDateCache = ConcurrentHashMap<String, Long>()
+        private val shikimoriDateCache = ConcurrentHashMap<String, Long>()
 
         private val SORT_CONTROL_NAME_REGEX = Regex(
             "\\b(?:sort(?:ed|ing)?(?:\\s*by|\\s*order)?|order(?:ing)?(?:\\s*by)?|arrange|ranking)\\b",

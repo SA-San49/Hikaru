@@ -516,24 +516,11 @@ class FeedScreenModel(
         state.value.categories.forEach { category ->
             val snapshot = latestSnapshotCache[category.id]
             if (snapshot != null) {
-                screenModelScope.launchIO {
-                    val emptySelectedFallbacks = rebuildGenreItemsFromSnapshot(
-                        categoryId = category.id,
-                        snapshot = snapshot,
-                        isStillLoading = false,
-                    )
-                    if (emptySelectedFallbacks.isNotEmpty()) {
-                        coroutineScope {
-                            emptySelectedFallbacks.forEach { genre ->
-                                launch {
-                                    genreRowLimiter.withPermit {
-                                        loadSingleGenreRow(category.id, genre)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+                rebuildGenreItemsFromSnapshot(
+                    categoryId = category.id,
+                    snapshot = snapshot,
+                    isStillLoading = false,
+                )
             } else if (state.value.displayMode == FeedDisplayMode.GENRES) {
                 val feeds = lastFeedSavedSearches[category.id]
                 loadGenresForCategory(category, feeds, forceRefresh = false, forceDiscovery = false)
@@ -639,18 +626,59 @@ class FeedScreenModel(
                     }.collectLatest { (feedSavedSearches, isInitialized) ->
                         if (!isInitialized) return@collectLatest
 
+                        val currentSources = feedSavedSearches.map { it.source }.toSet()
+                        val previousSources = lastFeedSavedSearches[category.id]?.map { it.source }?.toSet().orEmpty()
+                        val removedSources = previousSources - currentSources
+                        val feedsChanged = previousSources != currentSources || !lastFeedSavedSearches.containsKey(category.id)
                         val structuralKey = feedSavedSearches.map { "${it.id}:${it.type}:${it.savedSearch}" }
-                        val feedsChanged = lastFeedSavedSearches[category.id]?.map { it.source } !=
-                            feedSavedSearches.map { it.source }
                         val structureChanged = loadedSourceFeedKeys[category.id] != structuralKey
                         lastFeedSavedSearches[category.id] = feedSavedSearches
 
-                        if (feedsChanged) {
+                        if (removedSources.isNotEmpty()) {
+                            removedSources.forEach { sId ->
+                                latestGenreEngine.evictSource(sId)
+                            }
+                            loadedSourceFeedKeys.remove(category.id)
+                            tapResolutionCache.clear()
+                            genreCache.clear()
+                            genreDiscoveryCache.clear()
+                            latestSnapshotCache.remove(category.id)
+                            latestMatchesByCategory.remove(category.id)
+                        } else if (feedsChanged) {
                             loadedSourceFeedKeys.remove(category.id)
                             tapResolutionCache.clear()
                             genreDiscoveryCache.keys.filter { it.startsWith("${category.id}:") }.forEach {
                                 genreDiscoveryCache.remove(it)
                             }
+                        }
+
+                        // Automatically prune priority sources if any active priority was from a removed source
+                        val currentPriorities = uiPreferences.feedPrioritySourceIds().get()
+                        val cleanedPriorities = currentPriorities.filter { it in currentSources }
+                        if (cleanedPriorities != currentPriorities) {
+                            uiPreferences.feedPrioritySourceIds().set(cleanedPriorities)
+                            tapResolutionCache.clear()
+                            mutableState.update { it.copy(prioritySourceIds = cleanedPriorities.toImmutableList()) }
+                        }
+
+                        // If ALL sources were removed from this category, immediately clean state and exit
+                        if (currentSources.isEmpty()) {
+                            loadedSourceFeedKeys.remove(category.id)
+                            publishLiveFeedSources(category.id, emptyList())
+                            mutableState.update { state ->
+                                val newDiscoveredMap = state.discoveredGenres.toMutableMap()
+                                    .apply { put(category.id, persistentListOf()) }
+                                val newGenreMap = state.genreItems.toMutableMap()
+                                    .apply { put(category.id, persistentListOf()) }
+                                val newItemsMap = state.items.toMutableMap()
+                                    .apply { put(category.id, persistentListOf()) }
+                                state.copy(
+                                    discoveredGenres = newDiscoveredMap.toImmutableMap(),
+                                    genreItems = newGenreMap.toImmutableMap(),
+                                    items = newItemsMap.toImmutableMap(),
+                                )
+                            }
+                            return@collectLatest
                         }
 
                         // Publish live source list for this category right away (used by Genre Settings Priority picker)
@@ -748,8 +776,10 @@ class FeedScreenModel(
                                         }
                                         try {
                                             source.getSearchAnime(1, savedSearch.query ?: "", filters).animes
-                                        } catch (e: Exception) {
-                                            logcat(LogPriority.ERROR, e) { "Saved search failed for source: ${source.name} (ID: ${source.id})" }
+                                         } catch (e: Exception) {
+                                            logcat(LogPriority.ERROR, e) {
+                                                "Saved search failed for source: ${source.name} (ID: ${source.id})"
+                                            }
                                             emptyList()
                                         }
                                     } else {
@@ -776,7 +806,12 @@ class FeedScreenModel(
                                 }
 
                                 if (newItemsCount > 0) {
-                                    logActivity.await(source.id, ActivityLog.TYPE_FEED_UPDATE, feedId = feed.id, count = newItemsCount.toLong())
+                                    logActivity.await(
+                                        source.id,
+                                        ActivityLog.TYPE_FEED_UPDATE,
+                                        feedId = feed.id,
+                                        count = newItemsCount.toLong(),
+                                    )
                                 }
                                 updateFeedSavedSearch.await(
                                     FeedSavedSearchUpdate(
@@ -915,6 +950,15 @@ class FeedScreenModel(
             latestSnapshotCache[category.id] = finalSnapshot
             latestMatchesByCategory[category.id] = finalSnapshot.latestMatchesByTitle
 
+            // Prune dead selected genres that no longer exist in any active source
+            val survivingGenreKeys = finalSnapshot.discoveredGenres.map { it.key }.toSet()
+            val currentSelected = uiPreferences.feedSelectedGenres().get()
+            val cleanedSelected = currentSelected.filter { it in survivingGenreKeys }.toSet()
+            if (cleanedSelected != currentSelected) {
+                uiPreferences.feedSelectedGenres().set(cleanedSelected)
+                mutableState.update { it.copy(selectedGenres = cleanedSelected.toImmutableSet()) }
+            }
+
             if (state.value.displayMode != FeedDisplayMode.GENRES) {
                 mutableState.update { state ->
                     val newDiscoveredMap = state.discoveredGenres.toMutableMap()
@@ -924,25 +968,11 @@ class FeedScreenModel(
                 return@launchIO
             }
 
-            val emptySelectedFallbacks = rebuildGenreItemsFromSnapshot(
+            rebuildGenreItemsFromSnapshot(
                 categoryId = category.id,
                 snapshot = finalSnapshot,
                 isStillLoading = false,
             )
-
-            // Bonus fallback: if the user explicitly picked a genre with 0 latest-stream hits,
-            // fall back to source filter search for only those empty selected genres.
-            if (emptySelectedFallbacks.isNotEmpty()) {
-                coroutineScope {
-                    emptySelectedFallbacks.forEach { genre ->
-                        launch {
-                            genreRowLimiter.withPermit {
-                                loadSingleGenreRow(category.id, genre)
-                            }
-                        }
-                    }
-                }
-            }
         }
     }
 
@@ -1024,30 +1054,9 @@ class FeedScreenModel(
         categoryId: Long,
         categoryFeeds: List<FeedSavedSearch>,
     ): List<AnimeCatalogueSource> {
-        var feedSources = categoryFeeds
+        return categoryFeeds
             .mapNotNull { sourceManager.get(it.source) as? AnimeCatalogueSource }
             .distinctBy { it.id }
-
-        if (feedSources.isEmpty()) {
-            val allCategoryFeeds = state.value.categories.flatMap { cat ->
-                if (cat.id == categoryId) {
-                    categoryFeeds
-                } else {
-                    lastFeedSavedSearches[cat.id] ?: getFeedSavedSearchGlobal.await(cat.id)
-                }
-            }
-            feedSources = allCategoryFeeds
-                .mapNotNull { sourceManager.get(it.source) as? AnimeCatalogueSource }
-                .distinctBy { it.id }
-        }
-
-        return if (feedSources.isNotEmpty()) {
-            feedSources
-        } else {
-            sourceManager.getCatalogueSources()
-                .filterIsInstance<AnimeCatalogueSource>()
-                .filterNot { it.id == LocalAnimeSource.ID }
-        }
     }
 
     private fun publishLiveFeedSources(categoryId: Long, sourcePool: List<AnimeCatalogueSource>) {
@@ -1068,6 +1077,39 @@ class FeedScreenModel(
         }
     }
 
+    fun loadLazyGenreRow(categoryId: Long, genreKey: String) {
+        val currentItems = state.value.genreItems[categoryId] ?: return
+        val item = currentItems.find { it.key == genreKey } ?: return
+        if (item.animeList.isNotEmpty()) return
+
+        val cached = genreCache["${categoryId}_${genreKey}"]
+        if (cached != null && cached.second.isNotEmpty()) {
+            mutableState.update { state ->
+                val categoryRows = state.genreItems[categoryId] ?: return@update state
+                val updated = categoryRows.map {
+                    if (it.key == genreKey) {
+                        it.copy(animeList = cached.second.toImmutableList(), isLoading = false)
+                    } else {
+                        it
+                    }
+                }.toImmutableList()
+                val newMap = state.genreItems.toMutableMap()
+                newMap[categoryId] = updated
+                state.copy(genreItems = newMap.toImmutableMap())
+            }
+            return
+        }
+
+        val genre = state.value.discoveredGenres[categoryId]?.find { it.key == genreKey } ?: return
+        if (genre.sourceBindings.isEmpty()) return
+
+        screenModelScope.launchIO {
+            genreRowLimiter.withPermit {
+                loadSingleGenreRow(categoryId, genre)
+            }
+        }
+    }
+
     private suspend fun loadSingleGenreRow(categoryId: Long, genre: DiscoveredGenre) {
         val rankedCandidates = mutableListOf<RankedAnime>()
         try {
@@ -1085,18 +1127,7 @@ class FeedScreenModel(
                                     // Stage 1: Prefer source-native newest/latest/release sort filter
                                     AnimeRecencyResolver.applyLatestSortFilter(filters)
                                     val searchResult = source.getSearchAnime(1, query = "", filters)
-                                    val fetchedItems = if (searchResult.animes.size < 18 && searchResult.hasNextPage) {
-                                        val page2 = runCatching {
-                                            source.getSearchAnime(2, query = "", filters)
-                                        }.getOrNull()
-                                        if (page2 != null) {
-                                            (searchResult.animes + page2.animes).take(36)
-                                        } else {
-                                            searchResult.animes
-                                        }
-                                    } else {
-                                        searchResult.animes.take(36)
-                                    }
+                                    val fetchedItems = searchResult.animes.take(24)
                                     dbWriteMutex.withLock {
                                         fetchedItems.mapIndexed { idx, sAnime ->
                                             val domain = sAnime.toDomainAnime(source.id)

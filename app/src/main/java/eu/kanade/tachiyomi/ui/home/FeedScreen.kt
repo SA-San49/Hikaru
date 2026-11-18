@@ -385,12 +385,16 @@ fun FeedScreen(
                                         verticalAlignment = Alignment.CenterVertically,
                                     ) {
                                         Text(
-                                            text = "${genreItems.size} genre${if (genreItems.size == 1) "" else "s"} • $sourceCount source${if (sourceCount == 1) "" else "s"}",
+                                            text = "${genreItems.size} genres • $sourceCount sources",
                                             style = MaterialTheme.typography.labelSmall,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                                         )
                                         Text(
-                                            text = if (state.genreSelectionMode == FeedGenreSelectionMode.ALL) "All genres" else "Selected filter",
+                                            text = if (state.genreSelectionMode == FeedGenreSelectionMode.ALL) {
+                                                "All genres"
+                                            } else {
+                                                "Selected filter"
+                                            },
                                             style = MaterialTheme.typography.labelSmall,
                                             color = MaterialTheme.colorScheme.primary,
                                         )
@@ -402,6 +406,11 @@ fun FeedScreen(
                                     key = { _, it -> "genre-${it.key}" },
                                     contentType = { _, _ -> "genre_feed_island" },
                                 ) { _, item ->
+                                    LaunchedEffect(item.key, item.isLoading, item.animeList.isEmpty()) {
+                                        if (item.isLoading && item.animeList.isEmpty()) {
+                                            screenModel.loadLazyGenreRow(category.id, item.key)
+                                        }
+                                    }
                                     GenreFeedIsland(
                                         item = item,
                                         onAnimeClick = { anime ->
@@ -696,7 +705,7 @@ private fun EmptyOrSelectGenresView(
                                     fontWeight = FontWeight.Bold,
                                 )
                                 Text(
-                                    text = "${discoveredGenres.size} live genres from $sourceCount feed source${if (sourceCount == 1) "" else "s"} • None active yet",
+                                    text = "${discoveredGenres.size} live genres from $sourceCount sources • None active yet",
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
@@ -793,7 +802,7 @@ private fun EmptyOrSelectGenresView(
                         text = if (sourceCount == 0) {
                             "No sources in $categoryName feed yet. Add sources from Browse to discover live genres."
                         } else {
-                            "No genre or tag filters found yet for your $sourceCount source${if (sourceCount == 1) "" else "s"} in $categoryName."
+                            "No genre filters found for your $sourceCount sources in $categoryName."
                         },
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,

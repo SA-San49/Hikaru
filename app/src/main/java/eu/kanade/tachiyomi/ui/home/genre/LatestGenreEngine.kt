@@ -61,6 +61,11 @@ class LatestGenreEngine(
     fun clearCaches() {
         latestPageCache.clear()
         aniListMissKeys.clear()
+        titleTagsCache.clear()
+    }
+
+    fun evictSource(sourceId: Long) {
+        latestPageCache.remove(sourceId)
     }
 
     suspend fun buildLatestGenreFeed(
@@ -228,20 +233,7 @@ class LatestGenreEngine(
                     } else {
                         source.getPopularAnime(1)
                     }
-                    val combined = page1.animes.toMutableList()
-                    if (combined.size < TARGET_ITEMS_PER_SOURCE && page1.hasNextPage) {
-                        val page2 = runCatching {
-                            if (source.supportsLatest) {
-                                source.getLatestUpdates(2)
-                            } else {
-                                source.getPopularAnime(2)
-                            }
-                        }.getOrNull()
-                        if (page2 != null) {
-                            combined.addAll(page2.animes)
-                        }
-                    }
-                    combined.take(MAX_ITEMS_PER_SOURCE)
+                    page1.animes.take(MAX_ITEMS_PER_SOURCE)
                 }.onFailure { e ->
                     logcat(LogPriority.WARN, e) { "Latest fetch failed for ${source.name}" }
                 }.getOrDefault(emptyList())
@@ -509,14 +501,14 @@ class LatestGenreEngine(
 
     companion object {
         private const val LATEST_CACHE_TTL_MS = 5 * 60 * 1000L
-        private const val SOURCE_LATEST_TIMEOUT_MS = 12_000L
-        private const val ANILIST_TIMEOUT_MS = 6_000L
-        private const val DETAILS_TIMEOUT_MS = 4_000L
+        private const val SOURCE_LATEST_TIMEOUT_MS = 8_000L
+        private const val ANILIST_TIMEOUT_MS = 4_000L
+        private const val DETAILS_TIMEOUT_MS = 2_500L
         private const val TARGET_ITEMS_PER_SOURCE = 20
-        private const val MAX_ITEMS_PER_SOURCE = 32
+        private const val MAX_ITEMS_PER_SOURCE = 24
         private const val ANILIST_BATCH_SIZE = 10
-        private const val MAX_ANILIST_TITLES = 50
-        private const val MAX_SOURCE_DETAIL_FALLBACKS = 16
+        private const val MAX_ANILIST_TITLES = 40
+        private const val MAX_SOURCE_DETAIL_FALLBACKS = 4
         private const val MIN_TAG_RANK = 65
         private const val MAX_TAGS_PER_ANIME = 5
 
