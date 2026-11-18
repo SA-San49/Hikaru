@@ -1,11 +1,23 @@
 package eu.kanade.tachiyomi.ui.home.genre
 
+import android.net.Uri
 import eu.kanade.tachiyomi.animesource.model.AnimeFilter
 import eu.kanade.tachiyomi.animesource.model.AnimeFilterList
 import eu.kanade.tachiyomi.data.track.TrackerManager
+import eu.kanade.tachiyomi.network.NetworkHelper
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -33,64 +45,102 @@ data class RankedAnime(
 
 class AnimeRecencyResolver(
     private val trackerManager: TrackerManager = Injekt.get(),
+    private val networkHelper: NetworkHelper = Injekt.get(),
     private val json: Json = Injekt.get(),
 ) {
-    private val aniListDateCache = ConcurrentHashMap<String, Long>()
     private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
+    private val aniListLimiter = Semaphore(2)
+    private val jikanLimiter = Semaphore(2)
 
     suspend fun sortNewestFirst(candidates: List<RankedAnime>): List<Anime> {
         if (candidates.isEmpty()) return emptyList()
 
-        // Group by normalized title while preserving richest metadata & earliest source latest-update rank
+        // Group by normalized title while preserving richest metadata & earliest source order rank
         val mergedGroups = mergeByNormalizedTitle(candidates)
         val cachedAnnouncements = buildCachedAnnouncementDateMap()
 
-        val withLocalDates = mergedGroups.mapIndexed { index, group ->
+        val resolved = mergedGroups.mapIndexed { index, group ->
             val titleKey = TitleDeduplicator.normalizeTitle(group.primary.title)
             val announcementDate = cachedAnnouncements[titleKey] ?: 0L
-            val metadataDate = extractDateFromTexts(group.textsForDateParsing)
+            val metadataDate = extractDateFromMetadata(
+                titles = group.titlesForDateParsing,
+                descriptions = group.descriptionsForDateParsing,
+            )
             val bestLocalDate = maxOf(announcementDate, metadataDate)
-            val aniListCached = if (bestLocalDate > 0L || titleKey.isBlank()) {
+
+            val cachedInternetDate = if (bestLocalDate > 0L || titleKey.isBlank()) {
                 null
             } else {
-                aniListDateCache[titleKey]
+                aniListDateCache[titleKey] ?: jikanDateCache[titleKey]
             }
+
             val resolvedDate = when {
                 bestLocalDate > 0L -> bestLocalDate
-                aniListCached != null && aniListCached > 0L -> aniListCached
+                cachedInternetDate != null && cachedInternetDate > 0L -> cachedInternetDate
                 else -> 0L
             }
+
             ResolvedGroup(
                 anime = group.primary,
                 bestOrderRank = group.bestOrderRank,
                 originalIndex = index,
                 titleKey = titleKey,
-                needsAniList = bestLocalDate <= 0L && aniListCached == null && titleKey.isNotBlank(),
+                needsAniList = bestLocalDate <= 0L &&
+                    titleKey.isNotBlank() &&
+                    !aniListDateCache.containsKey(titleKey) &&
+                    resolvedDate <= 0L,
+                needsJikanFallback = bestLocalDate <= 0L &&
+                    titleKey.isNotBlank() &&
+                    resolvedDate <= 0L &&
+                    aniListDateCache[titleKey] == CACHE_MISS_SENTINEL &&
+                    !jikanDateCache.containsKey(titleKey),
                 dateKey = resolvedDate,
             )
         }.toMutableList()
 
-        // Stage 4: Only query AniList as last fallback for titles without any resolved date
-        val pendingAniListIndices = withLocalDates.indices
-            .filter { withLocalDates[it].needsAniList }
+        // Stage 3: Batched AniList GraphQL lookup with verified title matching
+        val pendingAniListIndices = resolved.indices
+            .filter { resolved[it].needsAniList }
             .take(MAX_ANILIST_LOOKUPS_PER_ROW)
 
         if (pendingAniListIndices.isNotEmpty()) {
             val queries = pendingAniListIndices
-                .map { idx -> withLocalDates[idx].titleKey to withLocalDates[idx].anime.title }
+                .map { idx -> resolved[idx].titleKey to resolved[idx].anime.title }
                 .distinctBy { it.first }
 
             val fetched = fetchAniListDatesBatched(queries)
             for (idx in pendingAniListIndices) {
-                val entry = withLocalDates[idx]
+                val entry = resolved[idx]
                 val fetchedDate = fetched[entry.titleKey]
                 if (fetchedDate != null && fetchedDate > 0L) {
-                    withLocalDates[idx] = entry.copy(dateKey = fetchedDate)
+                    resolved[idx] = entry.copy(dateKey = fetchedDate, needsJikanFallback = false)
+                } else if (aniListDateCache[entry.titleKey] == CACHE_MISS_SENTINEL && !jikanDateCache.containsKey(entry.titleKey)) {
+                    resolved[idx] = entry.copy(needsJikanFallback = true)
                 }
             }
         }
 
-        return withLocalDates
+        // Stage 4: Jikan (MyAnimeList) real aired-date internet fallback for titles AniList missed
+        val pendingJikanIndices = resolved.indices
+            .filter { resolved[it].dateKey <= 0L && resolved[it].needsJikanFallback }
+            .take(MAX_JIKAN_FALLBACKS_PER_ROW)
+
+        if (pendingJikanIndices.isNotEmpty()) {
+            val jikanQueries = pendingJikanIndices
+                .map { idx -> resolved[idx].titleKey to resolved[idx].anime.title }
+                .distinctBy { it.first }
+
+            val jikanFetched = fetchJikanDatesForMisses(jikanQueries)
+            for (idx in pendingJikanIndices) {
+                val entry = resolved[idx]
+                val fetchedDate = jikanFetched[entry.titleKey]
+                if (fetchedDate != null && fetchedDate > 0L) {
+                    resolved[idx] = entry.copy(dateKey = fetchedDate)
+                }
+            }
+        }
+
+        return resolved
             .sortedWith(
                 compareByDescending<ResolvedGroup> { it.dateKey > 0L }
                     .thenByDescending { it.dateKey }
@@ -116,22 +166,27 @@ class AnimeRecencyResolver(
             )?.anime ?: list.first().anime
 
             val bestOrderRank = list.minOf { it.sourceOrderRank }
-            val texts = buildList {
+            val titles = buildList {
                 add(bestPrimary.title)
-                bestPrimary.description?.let { add(it) }
                 list.forEach { ranked ->
                     if (ranked.anime.title != bestPrimary.title) {
                         add(ranked.anime.title)
                     }
-                    ranked.anime.description?.takeIf { it.isNotBlank() && it != bestPrimary.description }?.let {
-                        add(it)
-                    }
+                }
+            }
+            val descriptions = buildList {
+                bestPrimary.description?.takeIf { it.isNotBlank() }?.let { add(it) }
+                list.forEach { ranked ->
+                    ranked.anime.description
+                        ?.takeIf { it.isNotBlank() && it != bestPrimary.description }
+                        ?.let { add(it) }
                 }
             }
             MergedGroup(
                 primary = bestPrimary,
                 bestOrderRank = bestOrderRank,
-                textsForDateParsing = texts,
+                titlesForDateParsing = titles,
+                descriptionsForDateParsing = descriptions,
             )
         }
     }
@@ -170,86 +225,241 @@ class AnimeRecencyResolver(
     private suspend fun fetchAniListDatesBatched(
         queries: List<Pair<String, String>>,
     ): Map<String, Long> {
-        val result = mutableMapOf<String, Long>()
+        val result = ConcurrentHashMap<String, Long>()
         val maxPlausibleYear = Calendar.getInstance().get(Calendar.YEAR) + 2
 
-        for (chunk in queries.chunked(ANILIST_BATCH_SIZE)) {
-            val chunkResult = withTimeoutOrNull(ANILIST_TIMEOUT_MS) {
-                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                    runCatching {
-                        val varDefs = chunk.indices.joinToString(", ") { "\$q$it: String" }
-                        val aliasBlocks = chunk.indices.joinToString("\n") { i ->
-                            """
-                            m$i: Page(page: 1, perPage: 1) {
-                                media(search: ${'$'}q$i, type: ANIME, sort: [SEARCH_MATCH]) {
-                                    startDate { year month day }
-                                    seasonYear
-                                }
-                            }
-                            """.trimIndent()
-                        }
-                        val gqlQuery = "query ($varDefs) {\n$aliasBlocks\n}"
-                        val variables = buildJsonObject {
-                            chunk.forEachIndexed { idx, (_, rawTitle) ->
-                                put("q$idx", cleanSearchTitle(rawTitle))
-                            }
-                        }
-                        val bodyJson = buildJsonObject {
-                            put("query", gqlQuery)
-                            put("variables", variables)
-                        }.toString()
+        coroutineScope {
+            queries.chunked(ANILIST_BATCH_SIZE).map { chunk ->
+                async {
+                    aniListLimiter.withPermit {
+                        val chunkResult = withTimeoutOrNull(ANILIST_TIMEOUT_MS) {
+                            withContext(Dispatchers.IO) {
+                                runCatching {
+                                    val varDefs = chunk.indices.joinToString(", ") { "\$q$it: String" }
+                                    val aliasBlocks = chunk.indices.joinToString("\n") { i ->
+                                        """
+                                        m$i: Page(page: 1, perPage: 3) {
+                                            media(search: ${'$'}q$i, type: ANIME, sort: [SEARCH_MATCH]) {
+                                                title {
+                                                    english
+                                                    romaji
+                                                    userPreferred
+                                                    native
+                                                }
+                                                startDate { year month day }
+                                                seasonYear
+                                            }
+                                        }
+                                        """.trimIndent()
+                                    }
+                                    val gqlQuery = "query ($varDefs) {\n$aliasBlocks\n}"
+                                    val variables = buildJsonObject {
+                                        chunk.forEachIndexed { idx, (_, rawTitle) ->
+                                            put("q$idx", cleanSearchTitle(rawTitle))
+                                        }
+                                    }
+                                    val bodyJson = buildJsonObject {
+                                        put("query", gqlQuery)
+                                        put("variables", variables)
+                                    }.toString()
 
-                        val request = Request.Builder()
-                            .url("https://graphql.anilist.co")
-                            .header("Content-Type", "application/json")
-                            .header("Accept", "application/json")
-                            .post(bodyJson.toRequestBody(jsonMediaType))
-                            .build()
+                                    val request = Request.Builder()
+                                        .url("https://graphql.anilist.co")
+                                        .header("Content-Type", "application/json")
+                                        .header("Accept", "application/json")
+                                        .post(bodyJson.toRequestBody(jsonMediaType))
+                                        .build()
 
-                        trackerManager.aniList.api.newPublicCall(request).execute().use { response ->
-                            if (!response.isSuccessful) {
-                                return@runCatching emptyMap<String, Long>()
-                            }
-                            val root = json.parseToJsonElement(response.body.string()).jsonObject
-                            val dataObj = root["data"]?.jsonObject ?: return@runCatching emptyMap()
-                            val parsedMap = mutableMapOf<String, Long>()
-                            chunk.forEachIndexed { idx, (key, _) ->
-                                val mediaArray = dataObj["m$idx"]
-                                    ?.jsonObject
-                                    ?.get("media")
-                                    as? kotlinx.serialization.json.JsonArray
-                                val mediaObj = mediaArray?.firstOrNull()?.jsonObject
-                                val startDateObj = mediaObj?.get("startDate")?.jsonObject
-                                val year = startDateObj?.get("year")?.jsonPrimitive?.intOrNull
-                                    ?: mediaObj?.get("seasonYear")?.jsonPrimitive?.intOrNull
-                                val month = startDateObj?.get("month")?.jsonPrimitive?.intOrNull?.coerceIn(1, 12) ?: 0
-                                val day = startDateObj?.get("day")?.jsonPrimitive?.intOrNull?.coerceIn(1, 31) ?: 0
+                                    trackerManager.aniList.api.newPublicCall(request).execute().use { response ->
+                                        if (!response.isSuccessful) {
+                                            return@runCatching emptyMap<String, Long>()
+                                        }
+                                        val root = json.parseToJsonElement(response.body.string()).jsonObject
+                                        val dataObj = root["data"]?.jsonObject ?: return@runCatching emptyMap()
+                                        val parsedMap = mutableMapOf<String, Long>()
 
-                                if (year != null && year in MIN_PLAUSIBLE_YEAR..maxPlausibleYear) {
-                                    val dateKey = year * 10000L + month * 100L + day
-                                    aniListDateCache[key] = dateKey
-                                    parsedMap[key] = dateKey
-                                } else {
-                                    aniListDateCache[key] = CACHE_MISS_SENTINEL
-                                }
+                                        chunk.forEachIndexed { idx, (key, rawTitle) ->
+                                            val mediaArray = dataObj["m$idx"]
+                                                ?.jsonObject
+                                                ?.get("media")
+                                                as? JsonArray
+                                            val mediaCandidates = mediaArray
+                                                ?.mapNotNull { it as? JsonObject }
+                                                .orEmpty()
+
+                                            val mediaObj = selectBestAniListCandidate(
+                                                targetTitle = cleanSearchTitle(rawTitle),
+                                                candidates = mediaCandidates,
+                                            )
+                                            val startDateObj = mediaObj?.get("startDate")?.jsonObject
+                                            val year = startDateObj?.get("year")?.jsonPrimitive?.intOrNull
+                                                ?: mediaObj?.get("seasonYear")?.jsonPrimitive?.intOrNull
+                                            val month = startDateObj?.get("month")?.jsonPrimitive?.intOrNull?.coerceIn(1, 12) ?: 0
+                                            val day = startDateObj?.get("day")?.jsonPrimitive?.intOrNull?.coerceIn(1, 31) ?: 0
+
+                                            if (year != null && year in MIN_PLAUSIBLE_YEAR..maxPlausibleYear) {
+                                                val dateKey = year * 10000L + month * 100L + day
+                                                aniListDateCache[key] = dateKey
+                                                parsedMap[key] = dateKey
+                                            } else {
+                                                aniListDateCache[key] = CACHE_MISS_SENTINEL
+                                            }
+                                        }
+                                        parsedMap
+                                    }
+                                }.onFailure { e ->
+                                    logcat(LogPriority.DEBUG, e) { "AniList recency lookup skipped" }
+                                }.getOrDefault(emptyMap())
                             }
-                            parsedMap
-                        }
-                    }.onFailure { e ->
-                        logcat(LogPriority.DEBUG, e) { "AniList recency fallback lookup skipped" }
-                    }.getOrDefault(emptyMap())
+                        } ?: emptyMap()
+                        result.putAll(chunkResult)
+                    }
                 }
-            } ?: emptyMap()
-
-            result.putAll(chunkResult)
+            }.awaitAll()
         }
         return result
+    }
+
+    private fun selectBestAniListCandidate(
+        targetTitle: String,
+        candidates: List<JsonObject>,
+    ): JsonObject? {
+        if (candidates.isEmpty()) return null
+        if (candidates.size == 1) return candidates.first()
+
+        // Expand each media entry across its English / Romaji / Preferred titles so season/part matches accurately
+        val expanded = buildList {
+            for (media in candidates) {
+                val titleObj = media["title"]?.jsonObject ?: continue
+                val titleVariants = listOfNotNull(
+                    titleObj["english"]?.jsonPrimitive?.contentOrNull,
+                    titleObj["romaji"]?.jsonPrimitive?.contentOrNull,
+                    titleObj["userPreferred"]?.jsonPrimitive?.contentOrNull,
+                    titleObj["native"]?.jsonPrimitive?.contentOrNull,
+                ).distinct()
+                for (variant in titleVariants) {
+                    add(media to variant)
+                }
+            }
+        }
+
+        return TitleDeduplicator.selectBestMatch(
+            targetTitle = targetTitle,
+            candidates = expanded,
+            titleSelector = { it.second },
+        )?.first ?: candidates.firstOrNull()
+    }
+
+    private suspend fun fetchJikanDatesForMisses(
+        queries: List<Pair<String, String>>,
+    ): Map<String, Long> {
+        val result = ConcurrentHashMap<String, Long>()
+        val maxPlausibleYear = Calendar.getInstance().get(Calendar.YEAR) + 2
+
+        coroutineScope {
+            queries.map { (key, rawTitle) ->
+                async {
+                    jikanLimiter.withPermit {
+                        val dateKey = withTimeoutOrNull(JIKAN_TIMEOUT_MS) {
+                            withContext(Dispatchers.IO) {
+                                runCatching {
+                                    val cleanedTitle = cleanSearchTitle(rawTitle)
+                                    val url = Uri.parse("https://api.jikan.moe/v4/anime").buildUpon()
+                                        .appendQueryParameter("q", cleanedTitle)
+                                        .appendQueryParameter("limit", "3")
+                                        .build()
+                                    val request = Request.Builder()
+                                        .url(url.toString())
+                                        .header("Accept", "application/json")
+                                        .build()
+
+                                    networkHelper.client.newCall(request).execute().use { response ->
+                                        if (!response.isSuccessful) {
+                                            return@runCatching 0L
+                                        }
+                                        val root = json.parseToJsonElement(response.body.string()).jsonObject
+                                        val dataArray = root["data"] as? JsonArray ?: return@runCatching 0L
+                                        val items = dataArray.mapNotNull { it as? JsonObject }
+                                        val best = selectBestJikanCandidate(cleanedTitle, items)
+                                            ?: return@runCatching CACHE_MISS_SENTINEL
+
+                                        val airedFrom = best["aired"]
+                                            ?.jsonObject
+                                            ?.get("from")
+                                            ?.jsonPrimitive
+                                            ?.contentOrNull
+                                        val isoDate = airedFrom?.let { parseIsoDateKey(it, maxPlausibleYear) } ?: 0L
+                                        if (isoDate > 0L) {
+                                            isoDate
+                                        } else {
+                                            val fallbackYear = best["year"]?.jsonPrimitive?.intOrNull
+                                            if (fallbackYear != null && fallbackYear in MIN_PLAUSIBLE_YEAR..maxPlausibleYear) {
+                                                fallbackYear * 10000L
+                                            } else {
+                                                CACHE_MISS_SENTINEL
+                                            }
+                                        }
+                                    }
+                                }.onFailure { e ->
+                                    logcat(LogPriority.DEBUG, e) { "Jikan recency fallback lookup skipped" }
+                                }.getOrDefault(0L)
+                            }
+                        } ?: 0L
+
+                        if (dateKey > 0L) {
+                            jikanDateCache[key] = dateKey
+                            result[key] = dateKey
+                        } else if (dateKey == CACHE_MISS_SENTINEL) {
+                            jikanDateCache[key] = CACHE_MISS_SENTINEL
+                        }
+                    }
+                }
+            }.awaitAll()
+        }
+        return result
+    }
+
+    private fun selectBestJikanCandidate(
+        targetTitle: String,
+        candidates: List<JsonObject>,
+    ): JsonObject? {
+        if (candidates.isEmpty()) return null
+        val expanded = buildList {
+            for (item in candidates) {
+                val variants = listOfNotNull(
+                    item["title"]?.jsonPrimitive?.contentOrNull,
+                    item["title_english"]?.jsonPrimitive?.contentOrNull,
+                    item["title_japanese"]?.jsonPrimitive?.contentOrNull,
+                ).distinct()
+                for (variant in variants) {
+                    add(item to variant)
+                }
+            }
+        }
+        return TitleDeduplicator.selectBestMatch(
+            targetTitle = targetTitle,
+            candidates = expanded,
+            titleSelector = { it.second },
+        )?.first ?: candidates.firstOrNull()
+    }
+
+    private fun parseIsoDateKey(isoText: String, maxPlausibleYear: Int): Long {
+        val match = ISO_DATE_REGEX.find(isoText) ?: return 0L
+        val year = match.groupValues[1].toIntOrNull() ?: return 0L
+        val month = match.groupValues[2].toIntOrNull()?.coerceIn(1, 12) ?: 0
+        val day = match.groupValues[3].toIntOrNull()?.coerceIn(1, 31) ?: 0
+        return if (year in MIN_PLAUSIBLE_YEAR..maxPlausibleYear) {
+            year * 10000L + month * 100L + day
+        } else {
+            0L
+        }
     }
 
     private data class MergedGroup(
         val primary: Anime,
         val bestOrderRank: Int,
-        val textsForDateParsing: List<String>,
+        val titlesForDateParsing: List<String>,
+        val descriptionsForDateParsing: List<String>,
     )
 
     private data class ResolvedGroup(
@@ -258,18 +468,24 @@ class AnimeRecencyResolver(
         val originalIndex: Int,
         val titleKey: String,
         val needsAniList: Boolean,
+        val needsJikanFallback: Boolean,
         val dateKey: Long,
     )
 
     companion object {
         private const val MIN_PLAUSIBLE_YEAR = 1960
         private const val CACHE_MISS_SENTINEL = -1L
-        private const val MAX_ANILIST_LOOKUPS_PER_ROW = 24
+        private const val MAX_ANILIST_LOOKUPS_PER_ROW = 48
+        private const val MAX_JIKAN_FALLBACKS_PER_ROW = 15
         private const val ANILIST_BATCH_SIZE = 10
         private const val ANILIST_TIMEOUT_MS = 6_000L
+        private const val JIKAN_TIMEOUT_MS = 4_500L
+
+        private val aniListDateCache = ConcurrentHashMap<String, Long>()
+        private val jikanDateCache = ConcurrentHashMap<String, Long>()
 
         private val SORT_CONTROL_NAME_REGEX = Regex(
-            "\\b(?:sort(?:\\s*by|\\s*order)?|order(?:\\s*by)?|arrange|ranking)\\b",
+            "\\b(?:sort(?:ed|ing)?(?:\\s*by|\\s*order)?|order(?:ing)?(?:\\s*by)?|arrange|ranking)\\b",
             RegexOption.IGNORE_CASE,
         )
 
@@ -284,21 +500,57 @@ class AnimeRecencyResolver(
             "title",
             "name",
             "least",
+            "ascending",
+            "popular",
+            "popularity",
+            "rating",
+            "score",
+            "views",
+            "most viewed",
+            "trending",
+            "relevance",
         )
 
         private val PREFERRED_SORT_TIERS = listOf(
-            listOf("newest", "latest", "recently added", "recently updated", "recent", "just added", "new"),
-            listOf("release date", "release year", "released", "release", "air date", "aired", "year", "date"),
-            listOf("updated", "update", "last update"),
+            listOf(
+                "recently added",
+                "recently updated",
+                "latest update",
+                "newest",
+                "latest",
+                "recent",
+                "just added",
+                "new release",
+                "last updated",
+                "last update",
+                "update time",
+            ),
+            listOf(
+                "release date",
+                "release year",
+                "air date",
+                "aired",
+                "start date",
+                "premiered",
+                "released",
+                "release",
+                "year",
+                "date",
+            ),
+            listOf("updated", "update", "added", "new"),
         )
 
         private val ISO_DATE_REGEX = Regex("\\b(19[6-9]\\d|20[0-3]\\d)[-/](0?[1-9]|1[0-2])[-/](0?[1-9]|[12]\\d|3[01])\\b")
         private val MONTH_DAY_YEAR_REGEX = Regex(
-            "\\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\\s+(\\d{1,2}),?\\s+(19[6-9]\\d|20[0-3]\\d)\\b",
+            "\\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|" +
+                "jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)" +
+                "\\s+(\\d{1,2}),?\\s+(19[6-9]\\d|20[0-3]\\d)\\b",
             RegexOption.IGNORE_CASE,
         )
         private val MONTH_YEAR_REGEX = Regex(
-            "\\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\\s+(19[6-9]\\d|20[0-3]\\d)\\b",
+            "\\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|" +
+                "jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)" +
+                "\\s+(19[6-9]\\d|20[0-3]\\d)\\b",
             RegexOption.IGNORE_CASE,
         )
         private val SEASON_YEAR_REGEX = Regex(
@@ -312,7 +564,7 @@ class AnimeRecencyResolver(
         private val BRACKETED_YEAR_REGEX = Regex("(?:\\(|\\[)\\s*(19[6-9]\\d|20[0-3]\\d)\\s*(?:\\)|\\])")
         private val STANDALONE_YEAR_REGEX = Regex("\\b(19[7-9]\\d|20[0-3]\\d)\\b(?!(?:p|k|fps|mb|gb|ep|episodes?)\\b)")
         private val PAREN_CLEANUP_REGEX = Regex(
-            "\\s*(?:\\(|\\[)(?:tv|sub|dub|uncensored|censored|1080p|720p|480p|bd|ova|ona)(?:\\)|\\])\\s*",
+            "\\s*(?:\\(|\\[)(?:tv|sub|dub|subbed|dubbed|uncensored|censored|1080p|720p|480p|bd|ova|ona)(?:\\)|\\])\\s*",
             RegexOption.IGNORE_CASE,
         )
 
@@ -371,10 +623,17 @@ class AnimeRecencyResolver(
         }
 
         fun extractDateFromTexts(texts: List<String>): Long {
+            return extractDateFromMetadata(titles = texts, descriptions = emptyList())
+        }
+
+        fun extractDateFromMetadata(
+            titles: List<String>,
+            descriptions: List<String>,
+        ): Long {
             val maxYear = LocalDate.now().year + 2
             var bestDate = 0L
 
-            for (text in texts) {
+            for (text in titles + descriptions) {
                 if (text.isBlank()) continue
 
                 ISO_DATE_REGEX.findAll(text).forEach { m ->
@@ -417,8 +676,11 @@ class AnimeRecencyResolver(
                         bestDate = maxOf(bestDate, y * 10000L)
                     }
                 }
+            }
 
-                BRACKETED_YEAR_REGEX.findAll(text).forEach { m ->
+            for (title in titles) {
+                if (title.isBlank()) continue
+                BRACKETED_YEAR_REGEX.findAll(title).forEach { m ->
                     val y = m.groupValues[1].toIntOrNull() ?: return@forEach
                     if (y in MIN_PLAUSIBLE_YEAR..maxYear) {
                         bestDate = maxOf(bestDate, y * 10000L)
@@ -428,10 +690,10 @@ class AnimeRecencyResolver(
 
             if (bestDate > 0L) return bestDate
 
-            // Standalone plausible year in title or short metadata
-            for (text in texts) {
-                if (text.isBlank()) continue
-                STANDALONE_YEAR_REGEX.findAll(text).forEach { m ->
+            // Standalone year only from short title strings (never guess from plot synopses)
+            for (title in titles) {
+                if (title.isBlank() || title.length > 100) continue
+                STANDALONE_YEAR_REGEX.findAll(title).forEach { m ->
                     val y = m.groupValues[1].toIntOrNull() ?: return@forEach
                     if (y in MIN_PLAUSIBLE_YEAR..maxYear) {
                         bestDate = maxOf(bestDate, y * 10000L)

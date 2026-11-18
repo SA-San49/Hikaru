@@ -134,12 +134,6 @@ class AnimeScreen(
         val isHttpSource = remember { successState.source is HttpSource }
         val isConfigurableSource = remember { successState.source is ConfigurableAnimeSource }
 
-        LaunchedEffect(successState.isRefreshingData) {
-            if (successState.isRefreshingData) {
-                screenModel.fetchAllFromSource(manualFetch = false)
-            }
-        }
-
         LaunchedEffect(successState.anime, screenModel.source) {
             val connectionsPreferences: ConnectionsPreferences by injectLazy()
             if (connectionsPreferences.enableDiscordRPC().get()) {

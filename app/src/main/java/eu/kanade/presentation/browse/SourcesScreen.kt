@@ -140,6 +140,13 @@ fun SourcesScreen(
                 )
             }
             else -> {
+                val cardShape = MaterialTheme.shapes.large
+                val cardColor = MaterialTheme.colorScheme.surfaceVariant
+                val cardModifier = remember {
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 2.dp)
+                }
                 FastScrollLazyColumn(
                     state = lazyListState,
                     contentPadding = innerPadding,
@@ -175,11 +182,9 @@ fun SourcesScreen(
                                 }
                                 if (useContainer) {
                                     Surface(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(horizontal = 12.dp, vertical = 2.dp),
-                                        shape = MaterialTheme.shapes.large,
-                                        color = MaterialTheme.colorScheme.surfaceVariant,
+                                        modifier = cardModifier,
+                                        shape = cardShape,
+                                        color = cardColor,
                                         tonalElevation = 2.dp,
                                     ) {
                                         SourceItem(

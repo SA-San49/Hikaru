@@ -56,6 +56,7 @@ import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
@@ -80,6 +81,7 @@ import eu.kanade.tachiyomi.ui.home.genre.FeedDisplayMode
 import eu.kanade.tachiyomi.ui.home.genre.FeedGenreSelectionMode
 import eu.kanade.tachiyomi.ui.home.genre.GenreFeedItem
 import eu.kanade.tachiyomi.ui.home.genre.GenreFeedSettingsSheet
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import tachiyomi.domain.anime.model.Anime
 import tachiyomi.domain.source.model.FeedSavedSearch
@@ -152,7 +154,16 @@ fun FeedScreen(
     }
 
     val resolvingAnime = state.resolvingAnime
-    if (resolvingAnime != null) {
+    var showResolvingDialog by remember(resolvingAnime) { mutableStateOf(false) }
+    LaunchedEffect(resolvingAnime) {
+        if (resolvingAnime != null) {
+            delay(180L)
+            showResolvingDialog = true
+        } else {
+            showResolvingDialog = false
+        }
+    }
+    if (resolvingAnime != null && showResolvingDialog) {
         AlertDialog(
             onDismissRequest = {
                 screenModel.cancelTapResolution { fallback -> onAnimeClick(fallback, null) }

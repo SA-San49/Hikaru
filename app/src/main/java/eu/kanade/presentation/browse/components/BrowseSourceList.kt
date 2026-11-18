@@ -1,11 +1,9 @@
 package eu.kanade.presentation.browse.components
 
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -33,7 +31,7 @@ fun BrowseSourceList(
     onAnimeLongClick: (Anime, Int) -> Unit,
     selection: List<Anime>,
     favoriteIds: ImmutableSet<Long>,
-    onBatchIncrement: (Int) -> Unit = {},
+    @Suppress("UNUSED_PARAMETER") onBatchIncrement: (Int) -> Unit = {},
     usePanorama: Boolean = false,
     firstItemFocusRequester: FocusRequester? = null,
     selectedChipFocusRequester: FocusRequester? = null,
@@ -57,9 +55,6 @@ fun BrowseSourceList(
             contentType = { index -> if (animeList.peek(index) != null) "anime" else "placeholder" },
         ) { index ->
             val anime by animeList[index]?.collectAsState() ?: return@items
-            LaunchedEffect(index) {
-                onBatchIncrement(index)
-            }
 
             val currentOnAnimeClick = remember(onAnimeClick, anime, index) { 
                 { onAnimeClick(anime, index) } 

@@ -21,7 +21,7 @@ object GenreDiscoveryEngine {
     )
 
     private val SORT_CONTROL_REGEX = Regex(
-        "\\b(?:sort(?:\\s*by|\\s*order)?|order(?:\\s*by)?|arrange|ranking)\\b",
+        "\\b(?:sort(?:ed|ing)?(?:\\s*by|\\s*order)?|order(?:ing)?(?:\\s*by)?|arrange|ranking)\\b",
         RegexOption.IGNORE_CASE,
     )
 

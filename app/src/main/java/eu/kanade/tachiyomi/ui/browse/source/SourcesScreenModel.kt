@@ -30,7 +30,6 @@ import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.yield
 import logcat.LogPriority
 import tachiyomi.core.common.util.lang.launchIO
 import tachiyomi.core.common.util.system.logcat
@@ -95,27 +94,25 @@ class SourcesScreenModel(
         }
     }
 
-    private suspend fun collectLatestAnimeSources(
+    private fun collectLatestAnimeSources(
         sources: List<Source>,
         extensions: List<eu.kanade.tachiyomi.extension.model.Extension.Installed>,
         healthMap: Map<Long, NodeStatus>,
         query: String?,
         nsfwOnly: Boolean,
     ) {
-        // Map source IDs to their extension's NSFW status for reliable filtering
-        val nsfwSourceIds = extensions.flatMap { ext -> 
-            if (ext.isNsfw) ext.sources.map { it.id } else emptyList() 
-        }.toSet()
-        
-        yield()
+        val nsfwSourceIds = HashSet<Long>(extensions.size * 2)
+        for (ext in extensions) {
+            if (ext.isNsfw) {
+                for (src in ext.sources) {
+                    nsfwSourceIds.add(src.id)
+                }
+            }
+        }
 
-        val filteredSources = sources.filter { source ->
-            val matchesQuery = query.isNullOrBlank() || source.name.contains(query, ignoreCase = true)
-            val isNsfw = nsfwSourceIds.contains(source.id) || source.isNsfw
-            val matchesNsfw = !nsfwOnly || isNsfw
-            matchesQuery && matchesNsfw
-        }.distinctBy { it.key() }
-
+        val normalizedQuery = query?.trim().orEmpty()
+        val hasQuery = normalizedQuery.isNotEmpty()
+        val seenKeys = HashSet<String>(sources.size)
         val map = TreeMap<String, MutableList<Source>> { d1, d2 ->
             when {
                 d1 == LAST_USED_KEY && d2 != LAST_USED_KEY -> -1
@@ -127,34 +124,36 @@ class SourcesScreenModel(
                 else -> d1.compareTo(d2)
             }
         }
-        
-        val byLang = filteredSources.groupByTo(map) {
-            when {
-                it.isUsedLast -> LAST_USED_KEY
-                Pin.Actual in it.pin -> PINNED_KEY
-                else -> it.lang
-            }
-        }
-        
-        yield()
 
-        val items = byLang
-            .flatMap { (lang, langSources) ->
-                buildList<SourceUiModel> {
-                    add(mapper.mapHeader(lang))
-                    langSources.forEach { source ->
-                        add(
-                            mapper.map(
-                                source = source,
-                                headerKey = lang,
-                                isNsfw = nsfwSourceIds.contains(source.id) || source.isNsfw,
-                                status = healthMap[source.id],
-                            )
-                        )
-                    }
+        for (source in sources) {
+            if (hasQuery && !source.name.contains(normalizedQuery, ignoreCase = true)) continue
+            val isNsfw = source.id in nsfwSourceIds || source.isNsfw
+            if (nsfwOnly && !isNsfw) continue
+            if (!seenKeys.add(source.key())) continue
+
+            val bucketKey = when {
+                source.isUsedLast -> LAST_USED_KEY
+                Pin.Actual in source.pin -> PINNED_KEY
+                else -> source.lang
+            }
+            map.getOrPut(bucketKey) { mutableListOf() }.add(source)
+        }
+
+        val items = buildList<SourceUiModel>(seenKeys.size + map.size) {
+            for ((lang, langSources) in map) {
+                add(mapper.mapHeader(lang))
+                for (source in langSources) {
+                    add(
+                        mapper.map(
+                            source = source,
+                            headerKey = lang,
+                            isNsfw = source.id in nsfwSourceIds || source.isNsfw,
+                            status = healthMap[source.id],
+                        ),
+                    )
                 }
             }
-            .toImmutableList()
+        }.toImmutableList()
 
         mutableState.update { state ->
             if (!state.isLoading && state.items == items) {

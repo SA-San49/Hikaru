@@ -28,12 +28,12 @@ import kotlinx.collections.immutable.persistentSetOf
 import kotlinx.collections.immutable.toImmutableList
 import kotlinx.collections.immutable.toImmutableMap
 import kotlinx.collections.immutable.toImmutableSet
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -52,7 +52,6 @@ import kotlinx.coroutines.withTimeoutOrNull
 import logcat.LogPriority
 import tachiyomi.core.common.util.lang.launchIO
 import tachiyomi.core.common.util.system.logcat
-import tachiyomi.domain.anime.interactor.GetAnime
 import tachiyomi.domain.anime.interactor.NetworkToLocalAnime
 import tachiyomi.domain.anime.model.Anime
 import tachiyomi.domain.anime.model.toDomainAnime
@@ -78,7 +77,6 @@ class FeedScreenModel(
     private val getFeedSavedSearchGlobal: GetFeedSavedSearchGlobal = Injekt.get(),
     private val getSavedSearchGlobalFeed: GetSavedSearchGlobalFeed = Injekt.get(),
     private val networkToLocalAnime: NetworkToLocalAnime = Injekt.get(),
-    private val getAnime: GetAnime = Injekt.get(),
     private val getFeedSavedSearchCategories: GetFeedSavedSearchCategories = Injekt.get(),
     private val insertFeedSavedSearchCategory: InsertFeedSavedSearchCategory = Injekt.get(),
     private val updateFeedSavedSearch: UpdateFeedSavedSearch = Injekt.get(),
@@ -116,7 +114,9 @@ class FeedScreenModel(
     companion object {
         private const val GENRE_CACHE_TTL_MS = 5 * 60 * 1000L // 5 minutes
         private const val SOURCE_TIMEOUT_MS = 15000L
-        private const val TAP_RESOLVE_SOURCE_TIMEOUT_MS = 5000L
+        private const val TAP_RESOLVE_PRIORITY_TIMEOUT_MS = 2200L
+        private const val TAP_RESOLVE_RANDOM_TIMEOUT_MS = 1500L
+        private const val MAX_RANDOM_FALLBACK_SOURCES = 2
     }
 
     init {
@@ -323,6 +323,42 @@ class FeedScreenModel(
         mutableState.update { it.copy(prioritySourceIds = persistentListOf()) }
     }
 
+    private data class CandidateResolution(
+        val sourceId: Long,
+        val existingAnime: Anime? = null,
+        val sAnime: eu.kanade.tachiyomi.animesource.model.SAnime? = null,
+    )
+
+    private suspend fun resolveCandidateRaw(
+        candidateSourceId: Long,
+        targetTitle: String,
+        originalAnime: Anime,
+        knownLatestMatches: List<Anime>,
+    ): CandidateResolution? {
+        if (candidateSourceId == originalAnime.source) {
+            return CandidateResolution(sourceId = candidateSourceId, existingAnime = originalAnime)
+        }
+        knownLatestMatches.firstOrNull { it.source == candidateSourceId }?.let { preloaded ->
+            return CandidateResolution(sourceId = candidateSourceId, existingAnime = preloaded)
+        }
+        val source = sourceManager.get(candidateSourceId) as? AnimeCatalogueSource ?: return null
+        return withTimeoutOrNull(TAP_RESOLVE_PRIORITY_TIMEOUT_MS) {
+            runCatching {
+                val searchResult = source.getSearchAnime(
+                    page = 1,
+                    query = targetTitle,
+                    filters = source.getFilterList(),
+                )
+                val match = TitleDeduplicator.selectBestMatch(
+                    targetTitle = targetTitle,
+                    candidates = searchResult.animes,
+                    titleSelector = { it.title },
+                ) ?: return@runCatching null
+                CandidateResolution(sourceId = candidateSourceId, sAnime = match)
+            }.getOrNull()
+        }
+    }
+
     fun resolveGenreAnimeClick(
         anime: Anime,
         categoryId: Long?,
@@ -341,18 +377,13 @@ class FeedScreenModel(
         }
 
         val normTitle = TitleDeduplicator.normalizeTitle(anime.title)
-        // Fast path 2: instant open if Latest feed already collected this anime from Priority 1..N
+        // Fast path 2: instant open if Latest feed already collected this anime from Priority 1
         val knownLatestMatches = (categoryId?.let { latestMatchesByCategory[it]?.get(normTitle) }
             ?: latestMatchesByCategory.values.asSequence().mapNotNull { it[normTitle] }.firstOrNull())
             .orEmpty()
-        if (knownLatestMatches.isNotEmpty()) {
-            val highestKnown = activePriorities.firstNotNullOfOrNull { pId ->
-                knownLatestMatches.firstOrNull { it.source == pId }
-            }
-            if (highestKnown != null && highestKnown.source == activePriorities.first()) {
-                onResolved(highestKnown)
-                return
-            }
+        knownLatestMatches.firstOrNull { it.source == activePriorities.first() }?.let { topLatest ->
+            onResolved(topLatest)
+            return
         }
 
         val cacheKey = "$normTitle|${activePriorities.joinToString(",")}|${anime.source}"
@@ -362,59 +393,83 @@ class FeedScreenModel(
         }
 
         tapResolutionJob?.cancel()
-        mutableState.update { it.copy(resolvingAnime = anime, resolvingSourceName = null) }
+        val firstPriorityName = sourceManager.get(activePriorities.first())?.name
+        mutableState.update { it.copy(resolvingAnime = anime, resolvingSourceName = firstPriorityName) }
 
         tapResolutionJob = screenModelScope.launchIO {
-            val remainingRandom = availableIds
-                .filter { it !in activePriorities && it != anime.source }
-                .shuffled()
-            val searchOrder = activePriorities + remainingRandom
-
-            var resolvedAnime: Anime? = null
-            for (candidateSourceId in searchOrder) {
-                ensureActive()
-
-                if (candidateSourceId == anime.source) {
-                    // We reached the card's original source after higher priorities missed
-                    resolvedAnime = anime
-                    break
-                }
-
-                // Check in-memory Latest matches for this candidate source before hitting network
-                val preloadedMatch = knownLatestMatches.firstOrNull { it.source == candidateSourceId }
-                if (preloadedMatch != null) {
-                    resolvedAnime = preloadedMatch
-                    break
-                }
-
-                val source = sourceManager.get(candidateSourceId) as? AnimeCatalogueSource ?: continue
-                mutableState.update { it.copy(resolvingSourceName = source.name) }
-
-                val matched = withTimeoutOrNull(TAP_RESOLVE_SOURCE_TIMEOUT_MS) {
-                    runCatching {
-                        val searchResult = source.getSearchAnime(
-                            page = 1,
-                            query = anime.title,
-                            filters = source.getFilterList(),
-                        )
-                        val match = TitleDeduplicator.selectBestMatch(
+            // Race active priorities (1st, 2nd, 3rd) in parallel while enforcing strict priority precedence
+            val priorityWinner: CandidateResolution? = coroutineScope {
+                val priorityJobs = activePriorities.map { prioritySourceId ->
+                    async {
+                        resolveCandidateRaw(
+                            candidateSourceId = prioritySourceId,
                             targetTitle = anime.title,
-                            candidates = searchResult.animes,
-                            titleSelector = { it.title },
-                        ) ?: return@runCatching null
-
-                        val domain = match.toDomainAnime(candidateSourceId)
-                        networkToLocalAnime.await(domain)
-                    }.getOrNull()
+                            originalAnime = anime,
+                            knownLatestMatches = knownLatestMatches,
+                        )
+                    }
                 }
+                var selected: CandidateResolution? = null
+                for (i in priorityJobs.indices) {
+                    val result = priorityJobs[i].await()
+                    if (result != null) {
+                        selected = result
+                        for (j in (i + 1) until priorityJobs.size) {
+                            priorityJobs[j].cancel()
+                        }
+                        break
+                    }
+                }
+                selected
+            }
 
-                if (matched != null) {
-                    resolvedAnime = matched
-                    break
+            // Only if top 3 priorities all missed AND card's original source wasn't in priorities,
+            // briefly race up to 2 random remaining feed sources; otherwise fall back immediately to original card.
+            val winningCandidate: CandidateResolution? = priorityWinner ?: run {
+                val randomPool = availableIds
+                    .filter { it !in activePriorities && it != anime.source }
+                    .shuffled()
+                    .take(MAX_RANDOM_FALLBACK_SOURCES)
+                if (randomPool.isEmpty()) {
+                    null
+                } else {
+                    withTimeoutOrNull(TAP_RESOLVE_RANDOM_TIMEOUT_MS) {
+                        val winnerDeferred = CompletableDeferred<CandidateResolution?>()
+                        coroutineScope {
+                            val jobs = randomPool.map { sId ->
+                                launch {
+                                    val hit = resolveCandidateRaw(
+                                        candidateSourceId = sId,
+                                        targetTitle = anime.title,
+                                        originalAnime = anime,
+                                        knownLatestMatches = knownLatestMatches,
+                                    )
+                                    if (hit != null) {
+                                        winnerDeferred.complete(hit)
+                                    }
+                                }
+                            }
+                            val watcher = launch {
+                                jobs.forEach { it.join() }
+                                winnerDeferred.complete(null)
+                            }
+                            val found = winnerDeferred.await()
+                            watcher.cancel()
+                            jobs.forEach { it.cancel() }
+                            found
+                        }
+                    }
                 }
             }
 
-            val finalAnime = resolvedAnime ?: anime
+            val finalAnime = when {
+                winningCandidate?.existingAnime != null -> winningCandidate.existingAnime
+                winningCandidate?.sAnime != null -> dbWriteMutex.withLock {
+                    networkToLocalAnime.await(winningCandidate.sAnime.toDomainAnime(winningCandidate.sourceId))
+                }
+                else -> anime
+            }
+
             tapResolutionCache[cacheKey] = finalAnime
             mutableState.update { it.copy(resolvingAnime = null, resolvingSourceName = null) }
             withContext(Dispatchers.Main) {
@@ -490,6 +545,9 @@ class FeedScreenModel(
         latestGenreEngine.clearCaches()
         if (categoryId != null) {
             latestSnapshotCache.remove(categoryId)
+            genreCache.keys.filter { it.startsWith("${categoryId}_") }.forEach {
+                genreCache.remove(it)
+            }
             genreDiscoveryCache.keys.filter { it.startsWith("${categoryId}:") }.forEach {
                 genreDiscoveryCache.remove(it)
             }
@@ -499,6 +557,7 @@ class FeedScreenModel(
                 loadGenresForCategory(cat, feeds, forceRefresh = true, forceDiscovery = true)
             }
         } else {
+            genreCache.clear()
             latestSnapshotCache.clear()
             genreDiscoveryCache.clear()
             triggerGenreReloadForAllCategories(forceRefresh = true, forceDiscovery = true)
@@ -912,11 +971,16 @@ class FeedScreenModel(
         }
 
         val emptySelectedForFallback = mutableListOf<DiscoveredGenre>()
+        val now = System.currentTimeMillis()
 
         val genreFeedItems = genresToShow.map { genre ->
             val rowAnime = snapshot.rowsByGenreKey[genre.key].orEmpty()
             val cacheKey = "${categoryId}_${genre.key}"
-            val fallbackCached = if (rowAnime.isEmpty()) genreCache[cacheKey]?.second else null
+            val fallbackCached = if (rowAnime.isEmpty()) {
+                genreCache[cacheKey]?.takeIf { now - it.first < GENRE_CACHE_TTL_MS }?.second
+            } else {
+                null
+            }
             val effectiveAnime = if (rowAnime.isNotEmpty()) rowAnime else fallbackCached.orEmpty()
 
             val needsFallback = !isStillLoading &&
@@ -1021,8 +1085,20 @@ class FeedScreenModel(
                                     // Stage 1: Prefer source-native newest/latest/release sort filter
                                     AnimeRecencyResolver.applyLatestSortFilter(filters)
                                     val searchResult = source.getSearchAnime(1, query = "", filters)
+                                    val fetchedItems = if (searchResult.animes.size < 18 && searchResult.hasNextPage) {
+                                        val page2 = runCatching {
+                                            source.getSearchAnime(2, query = "", filters)
+                                        }.getOrNull()
+                                        if (page2 != null) {
+                                            (searchResult.animes + page2.animes).take(36)
+                                        } else {
+                                            searchResult.animes
+                                        }
+                                    } else {
+                                        searchResult.animes.take(36)
+                                    }
                                     dbWriteMutex.withLock {
-                                        searchResult.animes.mapIndexed { idx, sAnime ->
+                                        fetchedItems.mapIndexed { idx, sAnime ->
                                             val domain = sAnime.toDomainAnime(source.id)
                                             val local = networkToLocalAnime.await(domain)
                                             RankedAnime(

@@ -81,39 +81,34 @@ class ExtensionsScreenModel(
             }
         }
         val queryFilter: (String) -> ((Extension) -> Boolean) = { query ->
+            val parsedTokens = if (query.isBlank()) {
+                emptyList()
+            } else {
+                query.split(",").mapNotNull { part ->
+                    part.trim().takeIf { it.isNotEmpty() }?.let { token -> token to token.toLongOrNull() }
+                }
+            }
             filter@{ extension ->
-                if (query.isEmpty()) return@filter true
-                query.split(",").any { _input ->
-                    val input = _input.trim()
-                    if (input.isEmpty()) return@any false
+                if (parsedTokens.isEmpty()) return@filter true
+                parsedTokens.any { (input, inputId) ->
                     when (extension) {
                         is Extension.Available -> {
                             extension.sources.any {
                                 it.name.contains(input, ignoreCase = true) ||
                                     it.baseUrl.contains(input, ignoreCase = true) ||
-                                    it.id == input.toLongOrNull()
+                                    (inputId != null && it.id == inputId)
                             } ||
                                 extension.name.contains(input, ignoreCase = true)
                         }
                         is Extension.Installed -> {
                             extension.sources.any {
                                 it.name.contains(input, ignoreCase = true) ||
-                                    it.id == input.toLongOrNull() ||
-                                    if (it is HttpSource) {
-                                        it.baseUrl.contains(
-                                            input,
-                                            ignoreCase = true,
-                                        )
-                                    } else {
-                                        false
-                                    }
+                                    (inputId != null && it.id == inputId) ||
+                                    (it is HttpSource && it.baseUrl.contains(input, ignoreCase = true))
                             } ||
                                 extension.name.contains(input, ignoreCase = true)
                         }
-                        is Extension.Untrusted -> extension.name.contains(
-                            input,
-                            ignoreCase = true,
-                        )
+                        is Extension.Untrusted -> extension.name.contains(input, ignoreCase = true)
                     }
                 }
             }
@@ -125,7 +120,12 @@ class ExtensionsScreenModel(
                 state.map { it.nsfwOnly }.distinctUntilChanged(),
                 currentDownloads,
                 getExtensions.subscribe().distinctUntilChanged(),
-            ) { query: String?, nsfwOnly: Boolean, downloads: Map<String, InstallStep>, extensions: eu.kanade.domain.extension.model.Extensions ->
+            ) {
+                    query: String?,
+                    nsfwOnly: Boolean,
+                    downloads: Map<String, InstallStep>,
+                    extensions: eu.kanade.domain.extension.model.Extensions,
+                ->
                 withContext(Dispatchers.Default) {
                     val (_updates, _installed, _available, _untrusted) = extensions
                     val searchQuery = query ?: ""
