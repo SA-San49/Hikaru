@@ -13,6 +13,9 @@ import eu.kanade.tachiyomi.ui.home.genre.FeedGenreSelectionMode
 import eu.kanade.tachiyomi.ui.home.genre.FeedSourceOption
 import eu.kanade.tachiyomi.ui.home.genre.GenreDiscoveryEngine
 import eu.kanade.tachiyomi.ui.home.genre.GenreFeedItem
+import eu.kanade.tachiyomi.ui.home.genre.GenreNormalizer
+import eu.kanade.tachiyomi.ui.home.genre.LatestGenreEngine
+import eu.kanade.tachiyomi.ui.home.genre.LatestGenreSnapshot
 import eu.kanade.tachiyomi.ui.home.genre.RankedAnime
 import eu.kanade.tachiyomi.ui.home.genre.SourceGenreBinding
 import eu.kanade.tachiyomi.ui.home.genre.TitleDeduplicator
@@ -39,7 +42,9 @@ import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
@@ -97,11 +102,15 @@ class FeedScreenModel(
     // In-memory cache for genre rows with short TTL to prevent repeated network requests on tab switch
     private val genreCache = ConcurrentHashMap<String, Pair<Long, List<Anime>>>()
     private val genreDiscoveryCache = ConcurrentHashMap<String, List<DiscoveredGenre>>()
+    private val latestSnapshotCache = ConcurrentHashMap<Long, LatestGenreSnapshot>()
+    private val latestMatchesByCategory = ConcurrentHashMap<Long, Map<String, List<Anime>>>()
     private val tapResolutionCache = ConcurrentHashMap<String, Anime>()
     private val loadedSourceFeedKeys = ConcurrentHashMap<Long, List<String>>()
     private val sourceRequestLimiter = Semaphore(3)
     private val genreRowLimiter = Semaphore(3)
+    private val dbWriteMutex = Mutex()
     private val recencyResolver = AnimeRecencyResolver()
+    private val latestGenreEngine = LatestGenreEngine()
     private var tapResolutionJob: Job? = null
 
     companion object {
@@ -182,7 +191,7 @@ class FeedScreenModel(
 
     fun setDisplayMode(mode: FeedDisplayMode) {
         if (state.value.displayMode == mode &&
-            (mode != FeedDisplayMode.GENRES || state.value.discoveredGenres.isNotEmpty())
+            (mode != FeedDisplayMode.GENRES || state.value.genreItems.isNotEmpty())
         ) {
             return
         }
@@ -229,7 +238,7 @@ class FeedScreenModel(
         if (state.value.genreSelectionMode == mode) return
         uiPreferences.feedGenreSelectionMode().set(mode)
         mutableState.update { it.copy(genreSelectionMode = mode) }
-        triggerGenreReloadForAllCategories(forceDiscovery = false)
+        applyGenreFilterChangeFast()
     }
 
     fun toggleGenreSelected(genreKey: String) {
@@ -241,7 +250,7 @@ class FeedScreenModel(
         }
         uiPreferences.feedSelectedGenres().set(current)
         mutableState.update { it.copy(selectedGenres = current.toImmutableSet()) }
-        triggerGenreReloadForAllCategories(forceDiscovery = false)
+        applyGenreFilterChangeFast()
     }
 
     fun selectAllGenres(categoryId: Long) {
@@ -249,7 +258,7 @@ class FeedScreenModel(
         val allKeys = genres.map { it.key }.toSet()
         uiPreferences.feedSelectedGenres().set(allKeys)
         mutableState.update { it.copy(selectedGenres = allKeys.toImmutableSet()) }
-        triggerGenreReloadForAllCategories(forceDiscovery = false)
+        applyGenreFilterChangeFast()
     }
 
     fun getBindingsForGenre(genreKey: String, categoryId: Long? = null): List<SourceGenreBinding> {
@@ -269,6 +278,28 @@ class FeedScreenModel(
             bindings.firstOrNull { it.sourceId == priorityId }?.let { return it }
         }
         return bindings.randomOrNull()
+    }
+
+    fun getPreferredSourceForGenreSeeAll(
+        genreKey: String,
+        item: GenreFeedItem,
+        categoryId: Long? = null,
+    ): Long? {
+        val bindings = getBindingsForGenre(genreKey, categoryId)
+        val bindingSourceIds = bindings.map { it.sourceId }.distinct()
+        val itemSourceIds = item.animeList.map { it.source }.distinct()
+        val feedPoolIds = resolveAvailableFeedSourceIds(categoryId)
+        val candidatePool = when {
+            bindingSourceIds.isNotEmpty() -> bindingSourceIds
+            itemSourceIds.isNotEmpty() -> itemSourceIds
+            else -> feedPoolIds
+        }
+        if (candidatePool.isEmpty()) return null
+
+        for (priorityId in state.value.prioritySourceIds) {
+            if (priorityId in candidatePool) return priorityId
+        }
+        return candidatePool.randomOrNull()
     }
 
     fun togglePrioritySource(sourceId: Long) {
@@ -303,13 +334,27 @@ class FeedScreenModel(
             .distinct()
             .take(3)
 
-        // Instant open if no priorities configured or Priority 1 already owns this card
+        // Fast path 1: instant open if no priorities configured or Priority 1 already owns this card
         if (activePriorities.isEmpty() || activePriorities.first() == anime.source) {
             onResolved(anime)
             return
         }
 
         val normTitle = TitleDeduplicator.normalizeTitle(anime.title)
+        // Fast path 2: instant open if Latest feed already collected this anime from Priority 1..N
+        val knownLatestMatches = (categoryId?.let { latestMatchesByCategory[it]?.get(normTitle) }
+            ?: latestMatchesByCategory.values.asSequence().mapNotNull { it[normTitle] }.firstOrNull())
+            .orEmpty()
+        if (knownLatestMatches.isNotEmpty()) {
+            val highestKnown = activePriorities.firstNotNullOfOrNull { pId ->
+                knownLatestMatches.firstOrNull { it.source == pId }
+            }
+            if (highestKnown != null && highestKnown.source == activePriorities.first()) {
+                onResolved(highestKnown)
+                return
+            }
+        }
+
         val cacheKey = "$normTitle|${activePriorities.joinToString(",")}|${anime.source}"
         tapResolutionCache[cacheKey]?.let { cached ->
             onResolved(cached)
@@ -332,6 +377,13 @@ class FeedScreenModel(
                 if (candidateSourceId == anime.source) {
                     // We reached the card's original source after higher priorities missed
                     resolvedAnime = anime
+                    break
+                }
+
+                // Check in-memory Latest matches for this candidate source before hitting network
+                val preloadedMatch = knownLatestMatches.firstOrNull { it.source == candidateSourceId }
+                if (preloadedMatch != null) {
+                    resolvedAnime = preloadedMatch
                     break
                 }
 
@@ -402,22 +454,54 @@ class FeedScreenModel(
     fun deselectAllGenres() {
         uiPreferences.feedSelectedGenres().set(emptySet())
         mutableState.update { it.copy(selectedGenres = persistentSetOf()) }
-        triggerGenreReloadForAllCategories(forceDiscovery = false)
+        applyGenreFilterChangeFast()
+    }
+
+    private fun applyGenreFilterChangeFast() {
+        state.value.categories.forEach { category ->
+            val snapshot = latestSnapshotCache[category.id]
+            if (snapshot != null) {
+                screenModelScope.launchIO {
+                    val emptySelectedFallbacks = rebuildGenreItemsFromSnapshot(
+                        categoryId = category.id,
+                        snapshot = snapshot,
+                        isStillLoading = false,
+                    )
+                    if (emptySelectedFallbacks.isNotEmpty()) {
+                        coroutineScope {
+                            emptySelectedFallbacks.forEach { genre ->
+                                launch {
+                                    genreRowLimiter.withPermit {
+                                        loadSingleGenreRow(category.id, genre)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            } else if (state.value.displayMode == FeedDisplayMode.GENRES) {
+                val feeds = lastFeedSavedSearches[category.id]
+                loadGenresForCategory(category, feeds, forceRefresh = false, forceDiscovery = false)
+            }
+        }
     }
 
     fun fetchGenres(categoryId: Long? = null) {
+        latestGenreEngine.clearCaches()
         if (categoryId != null) {
+            latestSnapshotCache.remove(categoryId)
             genreDiscoveryCache.keys.filter { it.startsWith("${categoryId}:") }.forEach {
                 genreDiscoveryCache.remove(it)
             }
             val cat = state.value.categories.find { it.id == categoryId }
             if (cat != null) {
                 val feeds = lastFeedSavedSearches[cat.id]
-                loadGenresForCategory(cat, feeds, forceRefresh = false, forceDiscovery = true)
+                loadGenresForCategory(cat, feeds, forceRefresh = true, forceDiscovery = true)
             }
         } else {
+            latestSnapshotCache.clear()
             genreDiscoveryCache.clear()
-            triggerGenreReloadForAllCategories(forceRefresh = false, forceDiscovery = true)
+            triggerGenreReloadForAllCategories(forceRefresh = true, forceDiscovery = true)
         }
     }
 
@@ -438,13 +522,16 @@ class FeedScreenModel(
         } else {
             genreCache.clear()
             genreDiscoveryCache.clear()
+            latestGenreEngine.clearCaches()
             if (categoryId != null) {
+                latestSnapshotCache.remove(categoryId)
                 val cat = state.value.categories.find { it.id == categoryId }
                 if (cat != null) {
                     val feeds = lastFeedSavedSearches[cat.id]
                     loadGenresForCategory(cat, feeds, forceRefresh = true, forceDiscovery = true)
                 }
             } else {
+                latestSnapshotCache.clear()
                 triggerGenreReloadForAllCategories(forceRefresh = true, forceDiscovery = true)
             }
         }
@@ -611,11 +698,13 @@ class FeedScreenModel(
                                     }
                                 }
                             }
-                            // Resolve DB writes sequentially to avoid SQLite "database is locked" contention
-                            val animeList = results.mapNotNull {
-                                val domainAnime = it.toDomainAnime(source.id)
-                                networkToLocalAnime.await(domainAnime)
-                            }.distinctBy { it.id }.toImmutableList()
+                            // Resolve DB writes under Mutex to avoid SQLite "database is locked" contention
+                            val animeList = dbWriteMutex.withLock {
+                                results.map {
+                                    val domainAnime = it.toDomainAnime(source.id)
+                                    networkToLocalAnime.await(domainAnime)
+                                }.distinctBy { it.id }.toImmutableList()
+                            }
 
                             val currentTopUrl = results.firstOrNull()?.url
                             val previousTopUrl = feed.lastTopUrl
@@ -695,28 +784,67 @@ class FeedScreenModel(
             val sourcePool = resolveSourcePoolForCategory(category.id, categoryFeeds)
             publishLiveFeedSources(category.id, sourcePool)
 
+            // If we're in SOURCES mode and not explicitly fetching, only run lightweight filter discovery
+            if (state.value.displayMode != FeedDisplayMode.GENRES && !forceDiscovery) {
+                if (sourcePool.isNotEmpty()) {
+                    val discoveryKey = "${category.id}:${sourcePool.map { it.id }.sorted().joinToString(",")}"
+                    val found = genreDiscoveryCache[discoveryKey]
+                        ?: GenreDiscoveryEngine.discoverGenresForSourcesAsync(sourcePool).also {
+                            if (it.isNotEmpty()) genreDiscoveryCache[discoveryKey] = it
+                        }
+                    mutableState.update { state ->
+                        val newDiscoveredMap = state.discoveredGenres.toMutableMap()
+                        newDiscoveredMap[category.id] = found.toImmutableList()
+                        state.copy(discoveredGenres = newDiscoveredMap.toImmutableMap())
+                    }
+                }
+                return@launchIO
+            }
+
+            if (sourcePool.isEmpty()) {
+                mutableState.update { state ->
+                    val newDiscoveredMap = state.discoveredGenres.toMutableMap()
+                    newDiscoveredMap[category.id] = persistentListOf()
+                    val newGenreMap = state.genreItems.toMutableMap()
+                    newGenreMap[category.id] = persistentListOf()
+                    state.copy(
+                        discoveredGenres = newDiscoveredMap.toImmutableMap(),
+                        genreItems = newGenreMap.toImmutableMap(),
+                    )
+                }
+                return@launchIO
+            }
+
             mutableState.update { state ->
                 state.copy(
                     discoveringCategories = (state.discoveringCategories + category.id).toImmutableSet(),
                 )
             }
 
-            val discovered: List<DiscoveredGenre> = try {
-                if (sourcePool.isEmpty()) {
-                    emptyList()
-                } else {
-                    val discoveryKey = "${category.id}:${sourcePool.map { it.id }.sorted().joinToString(",")}"
-                    val cachedDiscovery = genreDiscoveryCache[discoveryKey]
-                    if (!forceRefresh && !forceDiscovery && !cachedDiscovery.isNullOrEmpty()) {
-                        cachedDiscovery
-                    } else {
-                        val found = GenreDiscoveryEngine.discoverGenresForSourcesAsync(sourcePool)
-                        if (found.isNotEmpty()) {
-                            genreDiscoveryCache[discoveryKey] = found
+            val finalSnapshot: LatestGenreSnapshot = try {
+                latestGenreEngine.buildLatestGenreFeed(
+                    sources = sourcePool,
+                    prioritySourceIds = state.value.prioritySourceIds,
+                    forceRefresh = forceRefresh || forceDiscovery,
+                    dbWriteMutex = dbWriteMutex,
+                    onProgress = { progressSnapshot ->
+                        latestSnapshotCache[category.id] = progressSnapshot
+                        latestMatchesByCategory[category.id] = progressSnapshot.latestMatchesByTitle
+                        if (state.value.displayMode == FeedDisplayMode.GENRES) {
+                            rebuildGenreItemsFromSnapshot(
+                                categoryId = category.id,
+                                snapshot = progressSnapshot,
+                                isStillLoading = true,
+                            )
+                        } else {
+                            mutableState.update { state ->
+                                val newDiscoveredMap = state.discoveredGenres.toMutableMap()
+                                newDiscoveredMap[category.id] = progressSnapshot.discoveredGenres.toImmutableList()
+                                state.copy(discoveredGenres = newDiscoveredMap.toImmutableMap())
+                            }
                         }
-                        found
-                    }
-                }
+                    },
+                )
             } finally {
                 mutableState.update { state ->
                     state.copy(
@@ -725,71 +853,29 @@ class FeedScreenModel(
                 }
             }
 
-            val currentSelectionMode = uiPreferences.feedGenreSelectionMode().get()
-            val currentSelectedKeys = uiPreferences.feedSelectedGenres().get()
+            latestSnapshotCache[category.id] = finalSnapshot
+            latestMatchesByCategory[category.id] = finalSnapshot.latestMatchesByTitle
 
-            mutableState.update { state ->
-                val newDiscoveredMap = state.discoveredGenres.toMutableMap()
-                newDiscoveredMap[category.id] = discovered.toImmutableList()
-                state.copy(discoveredGenres = newDiscoveredMap.toImmutableMap())
-            }
-
-            // Skip fetching anime rows while we're in SOURCES mode (we only needed live genre discovery)
             if (state.value.displayMode != FeedDisplayMode.GENRES) {
-                return@launchIO
-            }
-
-            val genresToShow = when (currentSelectionMode) {
-                FeedGenreSelectionMode.ALL -> discovered
-                FeedGenreSelectionMode.SELECTED -> discovered.filter { it.key in currentSelectedKeys }
-            }
-
-            if (genresToShow.isEmpty()) {
                 mutableState.update { state ->
-                    val newMap = state.genreItems.toMutableMap()
-                    newMap[category.id] = persistentListOf()
-                    state.copy(genreItems = newMap.toImmutableMap())
+                    val newDiscoveredMap = state.discoveredGenres.toMutableMap()
+                    newDiscoveredMap[category.id] = finalSnapshot.discoveredGenres.toImmutableList()
+                    state.copy(discoveredGenres = newDiscoveredMap.toImmutableMap())
                 }
                 return@launchIO
             }
 
-            val initialGenreItems = genresToShow.map { genre ->
-                val cacheKey = "${category.id}_${genre.key}"
-                val cached = genreCache[cacheKey]
-                val isCacheValid = cached != null && (System.currentTimeMillis() - cached.first < GENRE_CACHE_TTL_MS) && !forceRefresh
+            val emptySelectedFallbacks = rebuildGenreItemsFromSnapshot(
+                categoryId = category.id,
+                snapshot = finalSnapshot,
+                isStillLoading = false,
+            )
 
-                if (isCacheValid && cached != null) {
-                    GenreFeedItem(
-                        key = genre.key,
-                        title = genre.displayName,
-                        sourceCount = genre.sourceBindings.size,
-                        animeList = cached.second.toImmutableList(),
-                        isLoading = false,
-                    )
-                } else {
-                    GenreFeedItem(
-                        key = genre.key,
-                        title = genre.displayName,
-                        sourceCount = genre.sourceBindings.size,
-                        animeList = persistentListOf(),
-                        isLoading = true,
-                    )
-                }
-            }.toImmutableList()
-
-            mutableState.update { state ->
-                val newMap = state.genreItems.toMutableMap()
-                newMap[category.id] = initialGenreItems
-                state.copy(genreItems = newMap.toImmutableMap())
-            }
-
-            coroutineScope {
-                genresToShow.forEach { genre ->
-                    val cacheKey = "${category.id}_${genre.key}"
-                    val cached = genreCache[cacheKey]
-                    val isCacheValid = cached != null && (System.currentTimeMillis() - cached.first < GENRE_CACHE_TTL_MS) && !forceRefresh
-
-                    if (!isCacheValid) {
+            // Bonus fallback: if the user explicitly picked a genre with 0 latest-stream hits,
+            // fall back to source filter search for only those empty selected genres.
+            if (emptySelectedFallbacks.isNotEmpty()) {
+                coroutineScope {
+                    emptySelectedFallbacks.forEach { genre ->
                         launch {
                             genreRowLimiter.withPermit {
                                 loadSingleGenreRow(category.id, genre)
@@ -799,6 +885,75 @@ class FeedScreenModel(
                 }
             }
         }
+    }
+
+    private fun rebuildGenreItemsFromSnapshot(
+        categoryId: Long,
+        snapshot: LatestGenreSnapshot,
+        isStillLoading: Boolean,
+    ): List<DiscoveredGenre> {
+        val currentSelectionMode = uiPreferences.feedGenreSelectionMode().get()
+        val currentSelectedKeys = uiPreferences.feedSelectedGenres().get()
+
+        val genresByKey = snapshot.discoveredGenres.associateBy { it.key }
+        val genresToShow = when (currentSelectionMode) {
+            FeedGenreSelectionMode.ALL -> {
+                snapshot.discoveredGenres.filter { !snapshot.rowsByGenreKey[it.key].isNullOrEmpty() }
+            }
+            FeedGenreSelectionMode.SELECTED -> {
+                currentSelectedKeys.map { key ->
+                    genresByKey[key] ?: DiscoveredGenre(
+                        key = key,
+                        displayName = GenreNormalizer.toDisplayName(key),
+                        animeCount = snapshot.rowsByGenreKey[key]?.size ?: 0,
+                    )
+                }.sortedBy { it.displayName }
+            }
+        }
+
+        val emptySelectedForFallback = mutableListOf<DiscoveredGenre>()
+
+        val genreFeedItems = genresToShow.map { genre ->
+            val rowAnime = snapshot.rowsByGenreKey[genre.key].orEmpty()
+            val cacheKey = "${categoryId}_${genre.key}"
+            val fallbackCached = if (rowAnime.isEmpty()) genreCache[cacheKey]?.second else null
+            val effectiveAnime = if (rowAnime.isNotEmpty()) rowAnime else fallbackCached.orEmpty()
+
+            val needsFallback = !isStillLoading &&
+                currentSelectionMode == FeedGenreSelectionMode.SELECTED &&
+                effectiveAnime.isEmpty() &&
+                genre.sourceBindings.isNotEmpty()
+
+            if (needsFallback) {
+                emptySelectedForFallback.add(genre)
+            }
+
+            val rowSourceCount = maxOf(
+                genre.sourceBindings.size,
+                effectiveAnime.map { it.source }.distinct().size,
+            )
+
+            GenreFeedItem(
+                key = genre.key,
+                title = genre.displayName,
+                sourceCount = rowSourceCount,
+                animeList = effectiveAnime.toImmutableList(),
+                isLoading = (isStillLoading && effectiveAnime.isEmpty()) || needsFallback,
+            )
+        }.toImmutableList()
+
+        mutableState.update { state ->
+            val newDiscoveredMap = state.discoveredGenres.toMutableMap()
+            newDiscoveredMap[categoryId] = snapshot.discoveredGenres.toImmutableList()
+            val newGenreMap = state.genreItems.toMutableMap()
+            newGenreMap[categoryId] = genreFeedItems
+            state.copy(
+                discoveredGenres = newDiscoveredMap.toImmutableMap(),
+                genreItems = newGenreMap.toImmutableMap(),
+            )
+        }
+
+        return emptySelectedForFallback
     }
 
     private suspend fun resolveSourcePoolForCategory(
@@ -866,14 +1021,16 @@ class FeedScreenModel(
                                     // Stage 1: Prefer source-native newest/latest/release sort filter
                                     AnimeRecencyResolver.applyLatestSortFilter(filters)
                                     val searchResult = source.getSearchAnime(1, query = "", filters)
-                                    searchResult.animes.mapIndexed { idx, sAnime ->
-                                        val domain = sAnime.toDomainAnime(source.id)
-                                        val local = networkToLocalAnime.await(domain)
-                                        RankedAnime(
-                                            anime = local,
-                                            sourceOrderRank = idx,
-                                            sourceId = source.id,
-                                        )
+                                    dbWriteMutex.withLock {
+                                        searchResult.animes.mapIndexed { idx, sAnime ->
+                                            val domain = sAnime.toDomainAnime(source.id)
+                                            val local = networkToLocalAnime.await(domain)
+                                            RankedAnime(
+                                                anime = local,
+                                                sourceOrderRank = idx,
+                                                sourceId = source.id,
+                                            )
+                                        }
                                     }
                                 }
                             } catch (e: Exception) {

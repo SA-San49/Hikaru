@@ -121,7 +121,8 @@ data class SourceGenreBinding(
 data class DiscoveredGenre(
     val key: String,
     val displayName: String,
-    val sourceBindings: List<SourceGenreBinding>,
+    val sourceBindings: List<SourceGenreBinding> = emptyList(),
+    val animeCount: Int = 0,
 )
 
 @Immutable

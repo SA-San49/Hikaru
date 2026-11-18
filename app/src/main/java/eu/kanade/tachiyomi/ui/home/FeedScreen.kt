@@ -906,7 +906,11 @@ private fun GenreFeedIsland(
         ) {
             FuturisticRowHeader(
                 title = item.title,
-                badge = "${item.sourceCount} src",
+                badge = if (item.animeList.isNotEmpty()) {
+                    "${item.animeList.size} latest"
+                } else {
+                    "${item.sourceCount} src"
+                },
                 isLoading = item.isLoading,
                 onSeeAllClick = onSeeAllClick,
             )

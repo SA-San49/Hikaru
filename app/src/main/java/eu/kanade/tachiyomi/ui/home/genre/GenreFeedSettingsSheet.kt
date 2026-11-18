@@ -278,12 +278,23 @@ fun GenreFeedSettingsSheet(
                                 )
                                 Surface(
                                     shape = RoundedCornerShape(6.dp),
-                                    color = MaterialTheme.colorScheme.surfaceContainerHighest,
+                                    color = if (genre.animeCount > 0) {
+                                        MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
+                                    } else {
+                                        MaterialTheme.colorScheme.surfaceContainerHighest
+                                    },
                                 ) {
                                     Text(
-                                        text = "${genre.sourceBindings.size} src",
+                                        text = when {
+                                            genre.animeCount > 0 -> "${genre.animeCount} latest"
+                                            else -> "${genre.sourceBindings.size} src"
+                                        },
                                         style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        color = if (genre.animeCount > 0) {
+                                            MaterialTheme.colorScheme.primary
+                                        } else {
+                                            MaterialTheme.colorScheme.onSurfaceVariant
+                                        },
                                         modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
                                     )
                                 }
