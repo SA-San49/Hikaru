@@ -72,6 +72,39 @@ import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
 import java.util.concurrent.ConcurrentHashMap
 
+const val MAX_GENRE_ROW_TITLES = 30
+const val FILTER_SEARCH_TIMEOUT_MS = 6000L
+
+@Immutable
+data class CompactAnime(
+    val id: Long,
+    val source: Long,
+    val url: String,
+    val title: String,
+    val thumbnailUrl: String?,
+) {
+    fun toDomainAnime(): Anime = Anime.create().copy(
+        id = id,
+        source = source,
+        url = url,
+        ogTitle = title,
+        ogThumbnailUrl = thumbnailUrl,
+    )
+}
+
+fun Anime.toCompact(): CompactAnime = CompactAnime(
+    id = id,
+    source = source,
+    url = url,
+    title = title,
+    thumbnailUrl = thumbnailUrl,
+)
+
+data class CachedGenreRow(
+    val timestamp: Long,
+    val items: List<CompactAnime>,
+)
+
 class FeedScreenModel(
     private val sourceManager: SourceManager = Injekt.get(),
     private val getFeedSavedSearchGlobal: GetFeedSavedSearchGlobal = Injekt.get(),
@@ -97,8 +130,9 @@ class FeedScreenModel(
     private val genreJobs = ConcurrentHashMap<Long, Job>()
     private val lastFeedSavedSearches = ConcurrentHashMap<Long, List<FeedSavedSearch>>()
 
-    // In-memory cache for genre rows with short TTL to prevent repeated network requests on tab switch
-    private val genreCache = ConcurrentHashMap<String, Pair<Long, List<Anime>>>()
+    // In-memory compressed cache for genre rows with 30 titles cap
+    private val genreCache = ConcurrentHashMap<String, CachedGenreRow>()
+    private val activeRowLoads = ConcurrentHashMap<String, Boolean>()
     private val genreDiscoveryCache = ConcurrentHashMap<String, List<DiscoveredGenre>>()
     private val latestSnapshotCache = ConcurrentHashMap<Long, LatestGenreSnapshot>()
     private val latestMatchesByCategory = ConcurrentHashMap<Long, Map<String, List<Anime>>>()
@@ -372,7 +406,14 @@ class FeedScreenModel(
 
         // Fast path 1: instant open if no priorities configured or Priority 1 already owns this card
         if (activePriorities.isEmpty() || activePriorities.first() == anime.source) {
-            onResolved(anime)
+            screenModelScope.launchIO {
+                val targetAnime = if (anime.id <= 0L) {
+                    dbWriteMutex.withLock { networkToLocalAnime.await(anime) }
+                } else {
+                    anime
+                }
+                withContext(Dispatchers.Main) { onResolved(targetAnime) }
+            }
             return
         }
 
@@ -382,13 +423,27 @@ class FeedScreenModel(
             ?: latestMatchesByCategory.values.asSequence().mapNotNull { it[normTitle] }.firstOrNull())
             .orEmpty()
         knownLatestMatches.firstOrNull { it.source == activePriorities.first() }?.let { topLatest ->
-            onResolved(topLatest)
+            screenModelScope.launchIO {
+                val targetAnime = if (topLatest.id <= 0L) {
+                    dbWriteMutex.withLock { networkToLocalAnime.await(topLatest) }
+                } else {
+                    topLatest
+                }
+                withContext(Dispatchers.Main) { onResolved(targetAnime) }
+            }
             return
         }
 
         val cacheKey = "$normTitle|${activePriorities.joinToString(",")}|${anime.source}"
         tapResolutionCache[cacheKey]?.let { cached ->
-            onResolved(cached)
+            screenModelScope.launchIO {
+                val targetAnime = if (cached.id <= 0L) {
+                    dbWriteMutex.withLock { networkToLocalAnime.await(cached) }
+                } else {
+                    cached
+                }
+                withContext(Dispatchers.Main) { onResolved(targetAnime) }
+            }
             return
         }
 
@@ -462,12 +517,18 @@ class FeedScreenModel(
                 }
             }
 
-            val finalAnime = when {
+            val resolvedAnime = when {
                 winningCandidate?.existingAnime != null -> winningCandidate.existingAnime
                 winningCandidate?.sAnime != null -> dbWriteMutex.withLock {
                     networkToLocalAnime.await(winningCandidate.sAnime.toDomainAnime(winningCandidate.sourceId))
                 }
                 else -> anime
+            }
+
+            val finalAnime = if (resolvedAnime.id <= 0L) {
+                dbWriteMutex.withLock { networkToLocalAnime.await(resolvedAnime) }
+            } else {
+                resolvedAnime
             }
 
             tapResolutionCache[cacheKey] = finalAnime
@@ -484,7 +545,14 @@ class FeedScreenModel(
         tapResolutionJob = null
         mutableState.update { it.copy(resolvingAnime = null, resolvingSourceName = null) }
         if (fallback != null) {
-            onFallback(fallback)
+            screenModelScope.launchIO {
+                val targetAnime = if (fallback.id <= 0L) {
+                    dbWriteMutex.withLock { networkToLocalAnime.await(fallback) }
+                } else {
+                    fallback
+                }
+                withContext(Dispatchers.Main) { onFallback(targetAnime) }
+            }
         }
     }
 
@@ -532,9 +600,6 @@ class FeedScreenModel(
         latestGenreEngine.clearCaches()
         if (categoryId != null) {
             latestSnapshotCache.remove(categoryId)
-            genreCache.keys.filter { it.startsWith("${categoryId}_") }.forEach {
-                genreCache.remove(it)
-            }
             genreDiscoveryCache.keys.filter { it.startsWith("${categoryId}:") }.forEach {
                 genreDiscoveryCache.remove(it)
             }
@@ -544,7 +609,6 @@ class FeedScreenModel(
                 loadGenresForCategory(cat, feeds, forceRefresh = true, forceDiscovery = true)
             }
         } else {
-            genreCache.clear()
             latestSnapshotCache.clear()
             genreDiscoveryCache.clear()
             triggerGenreReloadForAllCategories(forceRefresh = true, forceDiscovery = true)
@@ -566,7 +630,6 @@ class FeedScreenModel(
                 }
             }
         } else {
-            genreCache.clear()
             genreDiscoveryCache.clear()
             latestGenreEngine.clearCaches()
             if (categoryId != null) {
@@ -638,9 +701,17 @@ class FeedScreenModel(
                             removedSources.forEach { sId ->
                                 latestGenreEngine.evictSource(sId)
                             }
+                            // Prune items belonging to removed sources from compressed cache
+                            genreCache.entries.forEach { (key, row) ->
+                                val remaining = row.items.filter { it.source !in removedSources }
+                                if (remaining.isEmpty()) {
+                                    genreCache.remove(key)
+                                } else {
+                                    genreCache[key] = row.copy(items = remaining)
+                                }
+                            }
                             loadedSourceFeedKeys.remove(category.id)
                             tapResolutionCache.clear()
-                            genreCache.clear()
                             genreDiscoveryCache.clear()
                             latestSnapshotCache.remove(category.id)
                             latestMatchesByCategory.remove(category.id)
@@ -1004,14 +1075,21 @@ class FeedScreenModel(
         val now = System.currentTimeMillis()
 
         val genreFeedItems = genresToShow.map { genre ->
-            val rowAnime = snapshot.rowsByGenreKey[genre.key].orEmpty()
+            val rowAnime = snapshot.rowsByGenreKey[genre.key].orEmpty().take(MAX_GENRE_ROW_TITLES)
             val cacheKey = "${categoryId}_${genre.key}"
             val fallbackCached = if (rowAnime.isEmpty()) {
-                genreCache[cacheKey]?.takeIf { now - it.first < GENRE_CACHE_TTL_MS }?.second
+                genreCache[cacheKey]?.items?.map { it.toDomainAnime() }?.take(MAX_GENRE_ROW_TITLES)
             } else {
                 null
             }
             val effectiveAnime = if (rowAnime.isNotEmpty()) rowAnime else fallbackCached.orEmpty()
+
+            if (rowAnime.isNotEmpty()) {
+                genreCache[cacheKey] = CachedGenreRow(
+                    timestamp = System.currentTimeMillis(),
+                    items = rowAnime.map { it.toCompact() },
+                )
+            }
 
             val needsFallback = !isStillLoading &&
                 currentSelectionMode == FeedGenreSelectionMode.SELECTED &&
@@ -1080,37 +1158,38 @@ class FeedScreenModel(
     fun loadLazyGenreRow(categoryId: Long, genreKey: String) {
         val currentItems = state.value.genreItems[categoryId] ?: return
         val item = currentItems.find { it.key == genreKey } ?: return
-        if (item.animeList.isNotEmpty()) return
 
-        val cached = genreCache["${categoryId}_${genreKey}"]
-        if (cached != null && cached.second.isNotEmpty()) {
-            mutableState.update { state ->
-                val categoryRows = state.genreItems[categoryId] ?: return@update state
-                val updated = categoryRows.map {
-                    if (it.key == genreKey) {
-                        it.copy(animeList = cached.second.toImmutableList(), isLoading = false)
-                    } else {
-                        it
-                    }
-                }.toImmutableList()
-                val newMap = state.genreItems.toMutableMap()
-                newMap[categoryId] = updated
-                state.copy(genreItems = newMap.toImmutableMap())
-            }
-            return
+        val cacheKey = "${categoryId}_${genreKey}"
+        val cached = genreCache[cacheKey]
+
+        if (item.animeList.isEmpty() && cached != null && cached.items.isNotEmpty()) {
+            val domainList = cached.items.map { it.toDomainAnime() }.take(MAX_GENRE_ROW_TITLES)
+            updateGenreRowAnime(categoryId, genreKey, domainList, isLoading = false)
         }
 
         val genre = state.value.discoveredGenres[categoryId]?.find { it.key == genreKey } ?: return
         if (genre.sourceBindings.isEmpty()) return
 
+        val loadJobKey = "$categoryId:$genreKey"
+        if (activeRowLoads.putIfAbsent(loadJobKey, true) != null) return
+
         screenModelScope.launchIO {
-            genreRowLimiter.withPermit {
-                loadSingleGenreRow(categoryId, genre)
+            try {
+                genreRowLimiter.withPermit {
+                    loadSingleGenreRowIncremental(categoryId, genre, cached?.items.orEmpty())
+                }
+            } finally {
+                activeRowLoads.remove(loadJobKey)
             }
         }
     }
 
-    private suspend fun loadSingleGenreRow(categoryId: Long, genre: DiscoveredGenre) {
+    private suspend fun loadSingleGenreRowIncremental(
+        categoryId: Long,
+        genre: DiscoveredGenre,
+        cachedItems: List<CompactAnime>,
+    ) {
+        val cacheKey = "${categoryId}_${genre.key}"
         val rankedCandidates = mutableListOf<RankedAnime>()
         try {
             coroutineScope {
@@ -1120,24 +1199,19 @@ class FeedScreenModel(
                             val source = sourceManager.get(binding.sourceId) as? AnimeCatalogueSource
                                 ?: return@withPermit emptyList<RankedAnime>()
                             try {
-                                withTimeout(SOURCE_TIMEOUT_MS) {
+                                withTimeout(FILTER_SEARCH_TIMEOUT_MS) {
                                     val filters = source.getFilterList()
                                     val applied = binding.applier.apply(filters)
                                     if (!applied) return@withTimeout emptyList<RankedAnime>()
-                                    // Stage 1: Prefer source-native newest/latest/release sort filter
                                     AnimeRecencyResolver.applyLatestSortFilter(filters)
                                     val searchResult = source.getSearchAnime(1, query = "", filters)
-                                    val fetchedItems = searchResult.animes.take(24)
-                                    dbWriteMutex.withLock {
-                                        fetchedItems.mapIndexed { idx, sAnime ->
-                                            val domain = sAnime.toDomainAnime(source.id)
-                                            val local = networkToLocalAnime.await(domain)
-                                            RankedAnime(
-                                                anime = local,
-                                                sourceOrderRank = idx,
-                                                sourceId = source.id,
-                                            )
-                                        }
+                                    val fetched = searchResult.animes.take(MAX_GENRE_ROW_TITLES)
+                                    fetched.mapIndexed { idx, sAnime ->
+                                        RankedAnime(
+                                            anime = sAnime.toDomainAnime(source.id),
+                                            sourceOrderRank = idx,
+                                            sourceId = source.id,
+                                        )
                                     }
                                 }
                             } catch (e: Exception) {
@@ -1155,45 +1229,92 @@ class FeedScreenModel(
                 }
             }
 
-            // Stages 2-4: Deduplicate and sort newest-to-oldest (metadata -> list rank -> AniList fallback)
-            val sortedNewestFirst = recencyResolver.sortNewestFirst(rankedCandidates).toImmutableList()
+            if (rankedCandidates.isEmpty() && cachedItems.isEmpty()) {
+                updateGenreRowAnime(categoryId, genre.key, emptyList(), isLoading = false)
+                return
+            }
 
-            val cacheKey = "${categoryId}_${genre.key}"
-            genreCache[cacheKey] = Pair(System.currentTimeMillis(), sortedNewestFirst)
+            val existingCachedDomain = cachedItems.map { it.toDomainAnime() }
+            val existingNormTitles = existingCachedDomain.map { TitleDeduplicator.normalizeTitle(it.title) }.toSet()
+            val existingUrls = existingCachedDomain.map { it.url }.toSet()
 
-            mutableState.update { state ->
-                val currentCategoryItems = state.genreItems[categoryId] ?: return@update state
-                val updatedItems = currentCategoryItems.map { item ->
-                    if (item.key == genre.key) {
-                        item.copy(
-                            animeList = sortedNewestFirst,
-                            isLoading = false,
-                        )
-                    } else {
-                        item
+            val newAnimeCandidates = rankedCandidates.filter { candidate ->
+                val norm = TitleDeduplicator.normalizeTitle(candidate.anime.title)
+                norm !in existingNormTitles && candidate.anime.url !in existingUrls
+            }
+
+            val finalAnimeList: List<Anime> = if (cachedItems.isEmpty()) {
+                recencyResolver.quickSortNewestFirst(rankedCandidates).take(MAX_GENRE_ROW_TITLES)
+            } else if (newAnimeCandidates.isEmpty()) {
+                existingCachedDomain.take(MAX_GENRE_ROW_TITLES)
+            } else {
+                val cachedRanked = existingCachedDomain.mapIndexed { idx, anime ->
+                    RankedAnime(
+                        anime = anime,
+                        sourceOrderRank = 1000 + idx,
+                        sourceId = anime.source,
+                    )
+                }
+                recencyResolver.quickSortNewestFirst(newAnimeCandidates + cachedRanked).take(MAX_GENRE_ROW_TITLES)
+            }
+
+            val compactList = finalAnimeList.map { it.toCompact() }
+            genreCache[cacheKey] = CachedGenreRow(System.currentTimeMillis(), compactList)
+
+            updateGenreRowAnime(categoryId, genre.key, finalAnimeList, isLoading = false)
+
+            val unrankedForAsyncSort = finalAnimeList.mapIndexed { idx, anime ->
+                RankedAnime(anime = anime, sourceOrderRank = idx, sourceId = anime.source)
+            }
+            screenModelScope.launchIO {
+                try {
+                    val fullySorted = recencyResolver.sortNewestFirst(unrankedForAsyncSort).take(MAX_GENRE_ROW_TITLES)
+                    if (fullySorted != finalAnimeList) {
+                        val updatedCompact = fullySorted.map { it.toCompact() }
+                        genreCache[cacheKey] = CachedGenreRow(System.currentTimeMillis(), updatedCompact)
+                        updateGenreRowAnime(categoryId, genre.key, fullySorted, isLoading = false)
                     }
-                }.toImmutableList()
-
-                val newMap = state.genreItems.toMutableMap()
-                newMap[categoryId] = updatedItems
-                state.copy(genreItems = newMap.toImmutableMap())
+                } catch (e: Exception) {
+                    // Non-blocking enrichment
+                }
             }
         } catch (e: Exception) {
             logcat(LogPriority.ERROR, e) { "Failed to load genre row for ${genre.displayName}" }
-            mutableState.update { state ->
-                val currentCategoryItems = state.genreItems[categoryId] ?: return@update state
-                val updatedItems = currentCategoryItems.map { item ->
-                    if (item.key == genre.key) {
-                        item.copy(isLoading = false, errorMessage = "Failed to load")
-                    } else {
-                        item
-                    }
-                }.toImmutableList()
+            val fallback = cachedItems.map { it.toDomainAnime() }
+            updateGenreRowAnime(
+                categoryId = categoryId,
+                genreKey = genre.key,
+                animeList = fallback,
+                isLoading = false,
+                errorMessage = if (fallback.isEmpty()) "Failed to load" else null,
+            )
+        }
+    }
 
-                val newMap = state.genreItems.toMutableMap()
-                newMap[categoryId] = updatedItems
-                state.copy(genreItems = newMap.toImmutableMap())
-            }
+    private fun updateGenreRowAnime(
+        categoryId: Long,
+        genreKey: String,
+        animeList: List<Anime>,
+        isLoading: Boolean,
+        errorMessage: String? = null,
+    ) {
+        mutableState.update { state ->
+            val currentCategoryItems = state.genreItems[categoryId] ?: return@update state
+            val updatedItems = currentCategoryItems.map { item ->
+                if (item.key == genreKey) {
+                    item.copy(
+                        animeList = animeList.toImmutableList(),
+                        isLoading = isLoading,
+                        errorMessage = errorMessage,
+                    )
+                } else {
+                    item
+                }
+            }.toImmutableList()
+
+            val newMap = state.genreItems.toMutableMap()
+            newMap[categoryId] = updatedItems
+            state.copy(genreItems = newMap.toImmutableMap())
         }
     }
 

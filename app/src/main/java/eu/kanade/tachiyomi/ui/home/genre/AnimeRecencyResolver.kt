@@ -54,6 +54,34 @@ class AnimeRecencyResolver(
     private val kitsuLimiter = Semaphore(2)
     private val shikimoriLimiter = Semaphore(2)
 
+    fun quickSortNewestFirst(candidates: List<RankedAnime>): List<Anime> {
+        if (candidates.isEmpty()) return emptyList()
+        val mergedGroups = mergeByNormalizedTitle(candidates)
+        val cachedAnnouncements = buildCachedAnnouncementDateMap()
+
+        return mergedGroups.mapIndexed { index, group ->
+            val titleKey = TitleDeduplicator.normalizeTitle(group.primary.title)
+            val announcementDate = cachedAnnouncements[titleKey] ?: 0L
+            val metadataDate = extractDateFromMetadata(
+                titles = group.titlesForDateParsing,
+                descriptions = group.descriptionsForDateParsing,
+            )
+            val bestLocalDate = maxOf(announcementDate, metadataDate)
+            val persistentAirDate = persistentAirDateCache[titleKey]?.takeIf { it > 0L }
+            val resolvedDate = when {
+                bestLocalDate > 0L -> bestLocalDate
+                persistentAirDate != null -> persistentAirDate
+                else -> 0L
+            }
+            Pair(group, resolvedDate to index)
+        }.sortedWith(
+            compareByDescending<Pair<MergedGroup, Pair<Long, Int>>> { it.second.first > 0L }
+                .thenByDescending { it.second.first }
+                .thenBy { it.first.bestOrderRank }
+                .thenBy { it.second.second },
+        ).map { it.first.primary }
+    }
+
     suspend fun sortNewestFirst(candidates: List<RankedAnime>): List<Anime> {
         if (candidates.isEmpty()) return emptyList()
 

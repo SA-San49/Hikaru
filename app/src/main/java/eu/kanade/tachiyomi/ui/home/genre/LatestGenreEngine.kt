@@ -472,9 +472,11 @@ class LatestGenreEngine(
                 .thenBy { it.displayName },
         )
 
+        val cappedRowsMap = rowsMap.mapValues { it.value.take(MAX_GENRE_ROW_TITLES) }
+
         return LatestGenreSnapshot(
             discoveredGenres = discovered,
-            rowsByGenreKey = rowsMap,
+            rowsByGenreKey = cappedRowsMap,
             latestMatchesByTitle = latestMatchesByTitle,
         )
     }
@@ -500,6 +502,7 @@ class LatestGenreEngine(
     )
 
     companion object {
+        private const val MAX_GENRE_ROW_TITLES = 30
         private const val LATEST_CACHE_TTL_MS = 5 * 60 * 1000L
         private const val SOURCE_LATEST_TIMEOUT_MS = 8_000L
         private const val ANILIST_TIMEOUT_MS = 4_000L

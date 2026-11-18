@@ -406,8 +406,8 @@ fun FeedScreen(
                                     key = { _, it -> "genre-${it.key}" },
                                     contentType = { _, _ -> "genre_feed_island" },
                                 ) { _, item ->
-                                    LaunchedEffect(item.key, item.isLoading, item.animeList.isEmpty()) {
-                                        if (item.isLoading && item.animeList.isEmpty()) {
+                                    LaunchedEffect(item.key, item.isLoading) {
+                                        if (item.isLoading) {
                                             screenModel.loadLazyGenreRow(category.id, item.key)
                                         }
                                     }
@@ -965,7 +965,9 @@ private fun GenreFeedIsland(
                 ) {
                     itemsIndexed(
                         items = item.animeList,
-                        key = { _, anime -> "genre-anime-${item.key}-${anime.id}" },
+                        key = { index, anime ->
+                            "genre-anime-${item.key}-${anime.source}-${if (anime.id > 0L) anime.id else anime.url.ifBlank { index }}"
+                        },
                         contentType = { _, _ -> "anime_card" },
                     ) { _, anime ->
                         val itemClick = remember(anime.id, onAnimeClick) { { onAnimeClick(anime) } }
