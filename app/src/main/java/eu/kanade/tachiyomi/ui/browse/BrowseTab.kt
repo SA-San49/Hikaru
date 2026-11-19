@@ -20,6 +20,7 @@ import cafe.adriel.voyager.navigator.currentOrThrow
 import cafe.adriel.voyager.navigator.tab.TabOptions
 import eu.kanade.domain.ui.UiPreferences
 import eu.kanade.domain.ui.model.PanoramaMode
+import eu.kanade.presentation.anime.components.LocalPanoramaCover
 import eu.kanade.presentation.components.AppBar
 import eu.kanade.presentation.components.TabbedScreen
 import eu.kanade.presentation.util.Tab
@@ -39,6 +40,8 @@ import mihon.feature.announcements.AnnouncementsScreenModel
 import kotlinx.collections.immutable.persistentListOf
 import kotlinx.collections.immutable.toPersistentList
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.receiveAsFlow
 import tachiyomi.i18n.MR
 import tachiyomi.i18n.sy.SYMR
@@ -80,13 +83,16 @@ data object BrowseTab : Tab {
 
         // Hoisted for extensions tab's search bar
         val extensionsScreenModel = rememberScreenModel { ExtensionsScreenModel() }
-        val animeExtensionsState by extensionsScreenModel.state.collectAsStateFlow()
+        val extensionSearchQuery by remember(extensionsScreenModel) {
+            extensionsScreenModel.state.map { it.searchQuery }.distinctUntilChanged()
+        }.collectAsStateFlow(initial = extensionsScreenModel.state.value.searchQuery)
         val announcementsScreenModel = rememberScreenModel { AnnouncementsScreenModel() }
-        val announcementsState by announcementsScreenModel.state.collectAsStateFlow()
-        val hasAnnouncementsFilters = remember(announcementsState) {
-            val s = announcementsState as? AnnouncementsScreenModel.State.Success
-            s != null && (s.selectedCategory != null || s.selectedYear != null || s.includeAdult || s.sort != AnnouncementSort.AIRING_SOON)
-        }
+        val hasAnnouncementsFilters by remember(announcementsScreenModel) {
+            announcementsScreenModel.state.map { state ->
+                val s = state as? AnnouncementsScreenModel.State.Success
+                s != null && (s.selectedCategory != null || s.selectedYear != null || s.includeAdult || s.sort != AnnouncementSort.AIRING_SOON)
+            }.distinctUntilChanged()
+        }.collectAsStateFlow(initial = false)
         val activeFilterTint = MaterialTheme.colorScheme.active
         val filterTitle = stringResource(MR.strings.action_filter)
 
@@ -94,7 +100,7 @@ data object BrowseTab : Tab {
         val extensionsTab = extensionsTab(extensionsScreenModel)
         val migrateSourceTab = migrateSourceTab()
 
-        val globalPanorama by uiPreferences.panoramaCover().collectAsStatePref() as State<Boolean>
+        val globalPanorama = LocalPanoramaCover.current
         val feedMode by uiPreferences.feedPanoramaMode().collectAsStatePref() as State<PanoramaMode>
         val effectivePanorama = remember(globalPanorama, feedMode) { feedMode.resolve(globalPanorama) }
 
@@ -177,7 +183,7 @@ data object BrowseTab : Tab {
             titleRes = MR.strings.browse,
             tabs = tabs,
             state = state,
-            searchQuery = animeExtensionsState.searchQuery,
+            searchQuery = extensionSearchQuery,
             onChangeSearchQuery = extensionsScreenModel::search,
             scrollable = false,
             testTagPrefix = "browse",

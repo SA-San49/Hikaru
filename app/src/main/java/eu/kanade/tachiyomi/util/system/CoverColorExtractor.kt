@@ -25,19 +25,18 @@ object CoverColorExtractor {
     ) {
         if (!extractColor && !updateRatio) return
 
+        val image = state.result.image
+        if (updateRatio && image.height > 0) {
+            val ratio = image.width.toFloat() / image.height.toFloat()
+            cover.ratio = ratio
+            CoverColorObserver.updateRatio(cover.animeId, ratio)
+        }
+
+        if (!extractColor || cover.vibrantCoverColor != null || CoverColorObserver.get(cover.animeId) != null) {
+            return
+        }
+
         withContext(Dispatchers.Default) {
-            val image = state.result.image
-
-            if (updateRatio) {
-                // Fast ratio extraction without bitmap conversion.
-                val ratio = image.width.toFloat() / image.height.toFloat()
-                cover.ratio = ratio
-                CoverColorObserver.updateRatio(cover.animeId, ratio)
-            }
-
-            if (!extractColor || cover.vibrantCoverColor != null || CoverColorObserver.get(cover.animeId) != null) {
-                return@withContext
-            }
 
             val context = Injekt.get<Application>()
             val originalBitmap = when (image) {

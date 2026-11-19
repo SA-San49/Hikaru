@@ -71,6 +71,9 @@ import eu.kanade.presentation.components.IndexingBannerBackgroundColor
 import eu.kanade.presentation.more.settings.screen.NavigationSettingsScreen
 import eu.kanade.presentation.more.settings.screen.browse.ExtensionReposScreen
 import eu.kanade.presentation.more.settings.screen.data.RestoreBackupScreen
+import eu.kanade.domain.ui.UiPreferences
+import eu.kanade.presentation.anime.components.LocalAnimatedTransitions
+import eu.kanade.presentation.anime.components.LocalPanoramaCover
 import eu.kanade.presentation.util.AssistContentScreen
 import eu.kanade.presentation.util.DefaultNavigatorScreenTransition
 import eu.kanade.presentation.util.LocalBackPress
@@ -146,6 +149,7 @@ class MainActivity : BaseActivity() {
     // AM (CONNECTIONS) -->
     private val connectionsPreferences: ConnectionsPreferences by injectLazy()
     // <-- AM (CONNECTIONS)
+    private val uiPreferences: UiPreferences by injectLazy()
 
     init {
         registerSecureActivity(this)
@@ -250,7 +254,13 @@ class MainActivity : BaseActivity() {
                     }
 
                     val scaffoldInsets = WindowInsets.navigationBars.only(WindowInsetsSides.Horizontal)
-                    CompositionLocalProvider(LocalBackPress provides navigator::pop) {
+                    val animatedTransitions by uiPreferences.animatedTransitions().collectAsState()
+                    val panoramaCover by uiPreferences.panoramaCover().collectAsState()
+                    CompositionLocalProvider(
+                        LocalBackPress provides navigator::pop,
+                        LocalAnimatedTransitions provides animatedTransitions,
+                        LocalPanoramaCover provides panoramaCover,
+                    ) {
                         Scaffold(
                             topBar = {
                                 AppStateBanners(

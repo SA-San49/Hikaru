@@ -33,7 +33,7 @@ fun BrowseSourceComfortableGrid(
     onAnimeLongClick: (Anime, Int) -> Unit,
     selection: List<Anime>,
     favoriteIds: ImmutableSet<Long>,
-    onBatchIncrement: (Int) -> Unit = {},
+    @Suppress("UNUSED_PARAMETER") onBatchIncrement: (Int) -> Unit = {},
     usePanorama: Boolean? = null,
     firstItemFocusRequester: FocusRequester? = null,
     selectedChipFocusRequester: FocusRequester? = null,
@@ -55,12 +55,11 @@ fun BrowseSourceComfortableGrid(
 
         items(
             count = animeList.itemCount,
-            key = { index -> "source-comfortable-grid-${animeList.peek(index)?.value?.id ?: "placeholder"}-$index" },
+            key = { index -> "source-comfortable-grid-$index" },
             contentType = { index -> if (animeList.peek(index) != null) "anime" else "placeholder" },
         ) { index ->
             val anime by animeList[index]?.collectAsState() ?: return@items
-            onBatchIncrement(index)
-            
+
             val currentOnAnimeClick = remember(onAnimeClick, anime, index) { 
                 { onAnimeClick(anime, index) } 
             }
@@ -122,6 +121,7 @@ internal fun BrowseSourceComfortableGridItem(
         onLongClick = onLongClick,
         onClick = onClick,
         isSelected = isSelected,
+        shouldExtractColor = false,
         usePanorama = usePanorama,
     )
 }

@@ -8,5 +8,7 @@ expect class LocalAnimeSourceCoverManager {
 
     fun find(animeUrl: String): UniFile?
 
+    fun findInDirectory(animeDir: UniFile): UniFile?
+
     fun update(anime: SAnime, inputStream: InputStream): UniFile?
 }

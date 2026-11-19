@@ -54,14 +54,10 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import eu.kanade.presentation.anime.components.AnimeCover
+import eu.kanade.presentation.anime.components.LocalAnimatedTransitions
 import eu.kanade.presentation.browse.components.SourceIcon
 import tachiyomi.i18n.MR
 import tachiyomi.presentation.core.components.BadgeGroup
-import tachiyomi.presentation.core.util.collectAsState as collectAsStatePref
-import uy.kohesive.injekt.Injekt
-import uy.kohesive.injekt.api.get
-import eu.kanade.domain.ui.UiPreferences
-import androidx.compose.runtime.collectAsState
 import tachiyomi.presentation.core.i18n.stringResource
 import tachiyomi.presentation.core.util.selectedBackground
 import tachiyomi.presentation.core.util.tvFocusHighlight
@@ -350,12 +346,16 @@ internal fun GridItemSelectable(
     modifier: Modifier = Modifier,
     content: @Composable () -> Unit,
 ) {
-    val uiPreferences = remember { Injekt.get<UiPreferences>() }
-    val animatedTransitions by uiPreferences.animatedTransitions().collectAsStatePref()
-    val scale by animateFloatAsState(
-        if (isSelected && animatedTransitions) 0.95f else 1f,
-        label = "selection_scale",
-    )
+    val animatedTransitions = LocalAnimatedTransitions.current
+    val scale = if (animatedTransitions && isSelected) {
+        val animatedScale by animateFloatAsState(
+            targetValue = 0.95f,
+            label = "selection_scale",
+        )
+        animatedScale
+    } else {
+        1f
+    }
     val shape = MaterialTheme.shapes.medium
     val borderColor = MaterialTheme.colorScheme.primary
     val surfaceColor = MaterialTheme.colorScheme.surface

@@ -1,0 +1,1035 @@
+package eu.kanade.tachiyomi.ui.home.genre
+
+import android.net.Uri
+import eu.kanade.tachiyomi.animesource.model.AnimeFilter
+import eu.kanade.tachiyomi.animesource.model.AnimeFilterList
+import eu.kanade.tachiyomi.data.track.TrackerManager
+import eu.kanade.tachiyomi.network.NetworkHelper
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
+import logcat.LogPriority
+import mihon.feature.announcements.AnnouncementsRepository
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import tachiyomi.core.common.util.system.logcat
+import tachiyomi.domain.anime.model.Anime
+import uy.kohesive.injekt.Injekt
+import uy.kohesive.injekt.api.get
+import java.time.Instant
+import java.time.LocalDate
+import java.time.ZoneOffset
+import java.util.Calendar
+import java.util.concurrent.ConcurrentHashMap
+
+data class RankedAnime(
+    val anime: Anime,
+    val sourceOrderRank: Int,
+    val sourceId: Long,
+)
+
+class AnimeRecencyResolver(
+    private val trackerManager: TrackerManager = Injekt.get(),
+    private val networkHelper: NetworkHelper = Injekt.get(),
+    private val json: Json = Injekt.get(),
+) {
+    private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
+    private val aniListLimiter = Semaphore(2)
+    private val jikanLimiter = Semaphore(2)
+    private val kitsuLimiter = Semaphore(2)
+    private val shikimoriLimiter = Semaphore(2)
+
+    fun quickSortNewestFirst(candidates: List<RankedAnime>): List<Anime> {
+        if (candidates.isEmpty()) return emptyList()
+        val mergedGroups = mergeByNormalizedTitle(candidates)
+        val cachedAnnouncements = buildCachedAnnouncementDateMap()
+
+        return mergedGroups.mapIndexed { index, group ->
+            val titleKey = TitleDeduplicator.normalizeTitle(group.primary.title)
+            val announcementDate = cachedAnnouncements[titleKey] ?: 0L
+            val metadataDate = extractDateFromMetadata(
+                titles = group.titlesForDateParsing,
+                descriptions = group.descriptionsForDateParsing,
+            )
+            val bestLocalDate = maxOf(announcementDate, metadataDate)
+            val persistentAirDate = persistentAirDateCache[titleKey]?.takeIf { it > 0L }
+            val resolvedDate = when {
+                bestLocalDate > 0L -> bestLocalDate
+                persistentAirDate != null -> persistentAirDate
+                else -> 0L
+            }
+            Pair(group, resolvedDate to index)
+        }.sortedWith(
+            compareByDescending<Pair<MergedGroup, Pair<Long, Int>>> { it.second.first > 0L }
+                .thenByDescending { it.second.first }
+                .thenBy { it.first.bestOrderRank }
+                .thenBy { it.second.second },
+        ).map { it.first.primary }
+    }
+
+    suspend fun sortNewestFirst(candidates: List<RankedAnime>): List<Anime> {
+        if (candidates.isEmpty()) return emptyList()
+
+        // Group by normalized title while preserving richest metadata & earliest source order rank
+        val mergedGroups = mergeByNormalizedTitle(candidates)
+        val cachedAnnouncements = buildCachedAnnouncementDateMap()
+
+        val resolved = mergedGroups.mapIndexed { index, group ->
+            val titleKey = TitleDeduplicator.normalizeTitle(group.primary.title)
+            val announcementDate = cachedAnnouncements[titleKey] ?: 0L
+            val metadataDate = extractDateFromMetadata(
+                titles = group.titlesForDateParsing,
+                descriptions = group.descriptionsForDateParsing,
+            )
+            val bestLocalDate = maxOf(announcementDate, metadataDate)
+
+            val persistentAirDate = persistentAirDateCache[titleKey]?.takeIf { it > 0L }
+            val cachedInternetDate = if (bestLocalDate > 0L || titleKey.isBlank()) {
+                null
+            } else {
+                persistentAirDate
+                    ?: aniListDateCache[titleKey]?.takeIf { it > 0L }
+                    ?: jikanDateCache[titleKey]?.takeIf { it > 0L }
+                    ?: kitsuDateCache[titleKey]?.takeIf { it > 0L }
+                    ?: shikimoriDateCache[titleKey]?.takeIf { it > 0L }
+            }
+
+            val resolvedDate = when {
+                bestLocalDate > 0L -> bestLocalDate
+                cachedInternetDate != null && cachedInternetDate > 0L -> cachedInternetDate
+                else -> 0L
+            }
+
+            val hasMissOnAniList = aniListDateCache[titleKey] == CACHE_MISS_SENTINEL
+            val hasMissOnJikan = jikanDateCache[titleKey] == CACHE_MISS_SENTINEL
+            val hasMissOnKitsu = kitsuDateCache[titleKey] == CACHE_MISS_SENTINEL
+
+            ResolvedGroup(
+                anime = group.primary,
+                bestOrderRank = group.bestOrderRank,
+                originalIndex = index,
+                titleKey = titleKey,
+                needsAniList = bestLocalDate <= 0L &&
+                    titleKey.isNotBlank() &&
+                    !aniListDateCache.containsKey(titleKey) &&
+                    resolvedDate <= 0L,
+                needsJikanFallback = bestLocalDate <= 0L &&
+                    titleKey.isNotBlank() &&
+                    resolvedDate <= 0L &&
+                    hasMissOnAniList &&
+                    !jikanDateCache.containsKey(titleKey),
+                needsKitsuFallback = bestLocalDate <= 0L &&
+                    titleKey.isNotBlank() &&
+                    resolvedDate <= 0L &&
+                    hasMissOnAniList &&
+                    hasMissOnJikan &&
+                    !kitsuDateCache.containsKey(titleKey),
+                needsShikimoriFallback = bestLocalDate <= 0L &&
+                    titleKey.isNotBlank() &&
+                    resolvedDate <= 0L &&
+                    hasMissOnAniList &&
+                    hasMissOnJikan &&
+                    hasMissOnKitsu &&
+                    !shikimoriDateCache.containsKey(titleKey),
+                dateKey = resolvedDate,
+            )
+        }.toMutableList()
+
+        // Stage 3: Batched AniList GraphQL lookup with verified title matching
+        val pendingAniListIndices = resolved.indices
+            .filter { resolved[it].needsAniList }
+            .take(MAX_ANILIST_LOOKUPS_PER_ROW)
+
+        if (pendingAniListIndices.isNotEmpty()) {
+            val queries = pendingAniListIndices
+                .map { idx -> resolved[idx].titleKey to resolved[idx].anime.title }
+                .distinctBy { it.first }
+
+            val fetched = fetchAniListDatesBatched(queries)
+            for (idx in pendingAniListIndices) {
+                val entry = resolved[idx]
+                val fetchedDate = fetched[entry.titleKey]
+                if (fetchedDate != null && fetchedDate > 0L) {
+                    resolved[idx] = entry.copy(
+                        dateKey = fetchedDate,
+                        needsJikanFallback = false,
+                        needsKitsuFallback = false,
+                        needsShikimoriFallback = false,
+                    )
+                } else if (aniListDateCache[entry.titleKey] == CACHE_MISS_SENTINEL && !jikanDateCache.containsKey(entry.titleKey)) {
+                    resolved[idx] = entry.copy(needsJikanFallback = true)
+                }
+            }
+        }
+
+        // Stage 4: Jikan (MyAnimeList) real aired-date internet fallback for titles AniList missed
+        val pendingJikanIndices = resolved.indices
+            .filter { resolved[it].dateKey <= 0L && resolved[it].needsJikanFallback }
+            .take(MAX_JIKAN_FALLBACKS_PER_ROW)
+
+        if (pendingJikanIndices.isNotEmpty()) {
+            val jikanQueries = pendingJikanIndices
+                .map { idx -> resolved[idx].titleKey to resolved[idx].anime.title }
+                .distinctBy { it.first }
+
+            val jikanFetched = fetchJikanDatesForMisses(jikanQueries)
+            for (idx in pendingJikanIndices) {
+                val entry = resolved[idx]
+                val fetchedDate = jikanFetched[entry.titleKey]
+                if (fetchedDate != null && fetchedDate > 0L) {
+                    resolved[idx] = entry.copy(
+                        dateKey = fetchedDate,
+                        needsKitsuFallback = false,
+                        needsShikimoriFallback = false,
+                    )
+                } else if (jikanDateCache[entry.titleKey] == CACHE_MISS_SENTINEL && !kitsuDateCache.containsKey(entry.titleKey)) {
+                    resolved[idx] = entry.copy(needsKitsuFallback = true)
+                }
+            }
+        }
+
+        // Stage 5: Kitsu REST API fallback for titles AniList and Jikan missed
+        val pendingKitsuIndices = resolved.indices
+            .filter { resolved[it].dateKey <= 0L && resolved[it].needsKitsuFallback }
+            .take(MAX_KITSU_FALLBACKS_PER_ROW)
+
+        if (pendingKitsuIndices.isNotEmpty()) {
+            val kitsuQueries = pendingKitsuIndices
+                .map { idx -> resolved[idx].titleKey to resolved[idx].anime.title }
+                .distinctBy { it.first }
+
+            val kitsuFetched = fetchKitsuDatesForMisses(kitsuQueries)
+            for (idx in pendingKitsuIndices) {
+                val entry = resolved[idx]
+                val fetchedDate = kitsuFetched[entry.titleKey]
+                if (fetchedDate != null && fetchedDate > 0L) {
+                    resolved[idx] = entry.copy(dateKey = fetchedDate, needsShikimoriFallback = false)
+                } else if (kitsuDateCache[entry.titleKey] == CACHE_MISS_SENTINEL && !shikimoriDateCache.containsKey(entry.titleKey)) {
+                    resolved[idx] = entry.copy(needsShikimoriFallback = true)
+                }
+            }
+        }
+
+        // Stage 6: Shikimori REST API fallback for titles still missing an air date
+        val pendingShikimoriIndices = resolved.indices
+            .filter { resolved[it].dateKey <= 0L && resolved[it].needsShikimoriFallback }
+            .take(MAX_SHIKIMORI_FALLBACKS_PER_ROW)
+
+        if (pendingShikimoriIndices.isNotEmpty()) {
+            val shikimoriQueries = pendingShikimoriIndices
+                .map { idx -> resolved[idx].titleKey to resolved[idx].anime.title }
+                .distinctBy { it.first }
+
+            val shikimoriFetched = fetchShikimoriDatesForMisses(shikimoriQueries)
+            for (idx in pendingShikimoriIndices) {
+                val entry = resolved[idx]
+                val fetchedDate = shikimoriFetched[entry.titleKey]
+                if (fetchedDate != null && fetchedDate > 0L) {
+                    resolved[idx] = entry.copy(dateKey = fetchedDate)
+                }
+            }
+        }
+
+        return resolved
+            .sortedWith(
+                compareByDescending<ResolvedGroup> { it.dateKey > 0L }
+                    .thenByDescending { it.dateKey }
+                    .thenBy { it.bestOrderRank }
+                    .thenBy { it.originalIndex },
+            )
+            .map { it.anime }
+    }
+
+    private fun mergeByNormalizedTitle(candidates: List<RankedAnime>): List<MergedGroup> {
+        val grouped = LinkedHashMap<String, MutableList<RankedAnime>>()
+        for (item in candidates) {
+            val normalized = TitleDeduplicator.normalizeTitle(item.anime.title)
+            val key = if (normalized.isBlank()) item.anime.title.trim().lowercase() else normalized
+            grouped.getOrPut(key) { mutableListOf() }.add(item)
+        }
+
+        return grouped.values.map { list ->
+            val bestPrimary = list.maxWithOrNull(
+                compareBy<RankedAnime> { !it.anime.description.isNullOrBlank() }
+                    .thenBy { !it.anime.thumbnailUrl.isNullOrBlank() }
+                    .thenByDescending { -it.sourceOrderRank },
+            )?.anime ?: list.first().anime
+
+            val bestOrderRank = list.minOf { it.sourceOrderRank }
+            val titles = buildList {
+                add(bestPrimary.title)
+                list.forEach { ranked ->
+                    if (ranked.anime.title != bestPrimary.title) {
+                        add(ranked.anime.title)
+                    }
+                }
+            }
+            val descriptions = buildList {
+                bestPrimary.description?.takeIf { it.isNotBlank() }?.let { add(it) }
+                list.forEach { ranked ->
+                    ranked.anime.description
+                        ?.takeIf { it.isNotBlank() && it != bestPrimary.description }
+                        ?.let { add(it) }
+                }
+            }
+            MergedGroup(
+                primary = bestPrimary,
+                bestOrderRank = bestOrderRank,
+                titlesForDateParsing = titles,
+                descriptionsForDateParsing = descriptions,
+            )
+        }
+    }
+
+    private fun buildCachedAnnouncementDateMap(): Map<String, Long> {
+        val cached = try {
+            AnnouncementsRepository().getCached().orEmpty()
+        } catch (_: Exception) {
+            emptyList()
+        }
+        if (cached.isEmpty()) return emptyMap()
+
+        val map = HashMap<String, Long>(cached.size)
+        for (entry in cached) {
+            val key = TitleDeduplicator.normalizeTitle(entry.title)
+            if (key.isBlank()) continue
+            val dateKey = when {
+                entry.exactReleaseDate != null -> {
+                    runCatching {
+                        val date = Instant.ofEpochMilli(entry.exactReleaseDate)
+                            .atZone(ZoneOffset.UTC)
+                            .toLocalDate()
+                        date.year * 10000L + date.monthValue * 100L + date.dayOfMonth
+                    }.getOrDefault(0L)
+                }
+                entry.expectedYear != null -> entry.expectedYear * 10000L
+                else -> 0L
+            }
+            if (dateKey > 0L) {
+                map[key] = maxOf(map[key] ?: 0L, dateKey)
+            }
+        }
+        return map
+    }
+
+    private suspend fun fetchAniListDatesBatched(
+        queries: List<Pair<String, String>>,
+    ): Map<String, Long> {
+        val result = ConcurrentHashMap<String, Long>()
+        val maxPlausibleYear = Calendar.getInstance().get(Calendar.YEAR) + 2
+
+        coroutineScope {
+            queries.chunked(ANILIST_BATCH_SIZE).map { chunk ->
+                async {
+                    aniListLimiter.withPermit {
+                        val chunkResult = withTimeoutOrNull(ANILIST_TIMEOUT_MS) {
+                            withContext(Dispatchers.IO) {
+                                runCatching {
+                                    val varDefs = chunk.indices.joinToString(", ") { "\$q$it: String" }
+                                    val aliasBlocks = chunk.indices.joinToString("\n") { i ->
+                                        """
+                                        m$i: Page(page: 1, perPage: 3) {
+                                            media(search: ${'$'}q$i, type: ANIME, sort: [SEARCH_MATCH]) {
+                                                title {
+                                                    english
+                                                    romaji
+                                                    userPreferred
+                                                    native
+                                                }
+                                                startDate { year month day }
+                                                seasonYear
+                                            }
+                                        }
+                                        """.trimIndent()
+                                    }
+                                    val gqlQuery = "query ($varDefs) {\n$aliasBlocks\n}"
+                                    val variables = buildJsonObject {
+                                        chunk.forEachIndexed { idx, (_, rawTitle) ->
+                                            put("q$idx", cleanSearchTitle(rawTitle))
+                                        }
+                                    }
+                                    val bodyJson = buildJsonObject {
+                                        put("query", gqlQuery)
+                                        put("variables", variables)
+                                    }.toString()
+
+                                    val request = Request.Builder()
+                                        .url("https://graphql.anilist.co")
+                                        .header("Content-Type", "application/json")
+                                        .header("Accept", "application/json")
+                                        .post(bodyJson.toRequestBody(jsonMediaType))
+                                        .build()
+
+                                    trackerManager.aniList.api.newPublicCall(request).execute().use { response ->
+                                        if (!response.isSuccessful) {
+                                            return@runCatching emptyMap<String, Long>()
+                                        }
+                                        val root = json.parseToJsonElement(response.body.string()).jsonObject
+                                        val dataObj = root["data"]?.jsonObject ?: return@runCatching emptyMap()
+                                        val parsedMap = mutableMapOf<String, Long>()
+
+                                        chunk.forEachIndexed { idx, (key, rawTitle) ->
+                                            val mediaArray = dataObj["m$idx"]
+                                                ?.jsonObject
+                                                ?.get("media")
+                                                as? JsonArray
+                                            val mediaCandidates = mediaArray
+                                                ?.mapNotNull { it as? JsonObject }
+                                                .orEmpty()
+
+                                            val mediaObj = selectBestAniListCandidate(
+                                                targetTitle = cleanSearchTitle(rawTitle),
+                                                candidates = mediaCandidates,
+                                            )
+                                            val startDateObj = mediaObj?.get("startDate")?.jsonObject
+                                            val year = startDateObj?.get("year")?.jsonPrimitive?.intOrNull
+                                                ?: mediaObj?.get("seasonYear")?.jsonPrimitive?.intOrNull
+                                            val month = startDateObj?.get("month")?.jsonPrimitive?.intOrNull?.coerceIn(1, 12) ?: 0
+                                            val day = startDateObj?.get("day")?.jsonPrimitive?.intOrNull?.coerceIn(1, 31) ?: 0
+
+                                            if (year != null && year in MIN_PLAUSIBLE_YEAR..maxPlausibleYear) {
+                                                val dateKey = year * 10000L + month * 100L + day
+                                                aniListDateCache[key] = dateKey
+                                                parsedMap[key] = dateKey
+                                            } else {
+                                                aniListDateCache[key] = CACHE_MISS_SENTINEL
+                                            }
+                                        }
+                                        parsedMap
+                                    }
+                                }.onFailure { e ->
+                                    logcat(LogPriority.DEBUG, e) { "AniList recency lookup skipped" }
+                                }.getOrDefault(emptyMap())
+                            }
+                        } ?: emptyMap()
+                        result.putAll(chunkResult)
+                    }
+                }
+            }.awaitAll()
+        }
+        return result
+    }
+
+    private fun selectBestAniListCandidate(
+        targetTitle: String,
+        candidates: List<JsonObject>,
+    ): JsonObject? {
+        if (candidates.isEmpty()) return null
+        if (candidates.size == 1) return candidates.first()
+
+        // Expand each media entry across its English / Romaji / Preferred titles so season/part matches accurately
+        val expanded = buildList {
+            for (media in candidates) {
+                val titleObj = media["title"]?.jsonObject ?: continue
+                val titleVariants = listOfNotNull(
+                    titleObj["english"]?.jsonPrimitive?.contentOrNull,
+                    titleObj["romaji"]?.jsonPrimitive?.contentOrNull,
+                    titleObj["userPreferred"]?.jsonPrimitive?.contentOrNull,
+                    titleObj["native"]?.jsonPrimitive?.contentOrNull,
+                ).distinct()
+                for (variant in titleVariants) {
+                    add(media to variant)
+                }
+            }
+        }
+
+        return TitleDeduplicator.selectBestMatch(
+            targetTitle = targetTitle,
+            candidates = expanded,
+            titleSelector = { it.second },
+        )?.first ?: candidates.firstOrNull()
+    }
+
+    private suspend fun fetchJikanDatesForMisses(
+        queries: List<Pair<String, String>>,
+    ): Map<String, Long> {
+        val result = ConcurrentHashMap<String, Long>()
+        val maxPlausibleYear = Calendar.getInstance().get(Calendar.YEAR) + 2
+
+        coroutineScope {
+            queries.map { (key, rawTitle) ->
+                async {
+                    jikanLimiter.withPermit {
+                        val dateKey = withTimeoutOrNull(JIKAN_TIMEOUT_MS) {
+                            withContext(Dispatchers.IO) {
+                                runCatching {
+                                    val cleanedTitle = cleanSearchTitle(rawTitle)
+                                    val url = Uri.parse("https://api.jikan.moe/v4/anime").buildUpon()
+                                        .appendQueryParameter("q", cleanedTitle)
+                                        .appendQueryParameter("limit", "3")
+                                        .build()
+                                    val request = Request.Builder()
+                                        .url(url.toString())
+                                        .header("Accept", "application/json")
+                                        .build()
+
+                                    networkHelper.client.newCall(request).execute().use { response ->
+                                        if (!response.isSuccessful) {
+                                            return@runCatching 0L
+                                        }
+                                        val root = json.parseToJsonElement(response.body.string()).jsonObject
+                                        val dataArray = root["data"] as? JsonArray ?: return@runCatching 0L
+                                        val items = dataArray.mapNotNull { it as? JsonObject }
+                                        val best = selectBestJikanCandidate(cleanedTitle, items)
+                                            ?: return@runCatching CACHE_MISS_SENTINEL
+
+                                        val airedFrom = best["aired"]
+                                            ?.jsonObject
+                                            ?.get("from")
+                                            ?.jsonPrimitive
+                                            ?.contentOrNull
+                                        val isoDate = airedFrom?.let { parseIsoDateKey(it, maxPlausibleYear) } ?: 0L
+                                        if (isoDate > 0L) {
+                                            isoDate
+                                        } else {
+                                            val fallbackYear = best["year"]?.jsonPrimitive?.intOrNull
+                                            if (fallbackYear != null && fallbackYear in MIN_PLAUSIBLE_YEAR..maxPlausibleYear) {
+                                                fallbackYear * 10000L
+                                            } else {
+                                                CACHE_MISS_SENTINEL
+                                            }
+                                        }
+                                    }
+                                }.onFailure { e ->
+                                    logcat(LogPriority.DEBUG, e) { "Jikan recency fallback lookup skipped" }
+                                }.getOrDefault(0L)
+                            }
+                        } ?: 0L
+
+                        if (dateKey > 0L) {
+                            jikanDateCache[key] = dateKey
+                            persistentAirDateCache[key] = dateKey
+                            result[key] = dateKey
+                        } else if (dateKey == CACHE_MISS_SENTINEL) {
+                            jikanDateCache[key] = CACHE_MISS_SENTINEL
+                        }
+                    }
+                }
+            }.awaitAll()
+        }
+        return result
+    }
+
+    private fun selectBestJikanCandidate(
+        targetTitle: String,
+        candidates: List<JsonObject>,
+    ): JsonObject? {
+        if (candidates.isEmpty()) return null
+        val expanded = buildList {
+            for (item in candidates) {
+                val variants = listOfNotNull(
+                    item["title"]?.jsonPrimitive?.contentOrNull,
+                    item["title_english"]?.jsonPrimitive?.contentOrNull,
+                    item["title_japanese"]?.jsonPrimitive?.contentOrNull,
+                ).distinct()
+                for (variant in variants) {
+                    add(item to variant)
+                }
+            }
+        }
+        return TitleDeduplicator.selectBestMatch(
+            targetTitle = targetTitle,
+            candidates = expanded,
+            titleSelector = { it.second },
+        )?.first ?: candidates.firstOrNull()
+    }
+
+    private suspend fun fetchKitsuDatesForMisses(
+        queries: List<Pair<String, String>>,
+    ): Map<String, Long> {
+        val result = ConcurrentHashMap<String, Long>()
+        val maxPlausibleYear = Calendar.getInstance().get(Calendar.YEAR) + 2
+
+        coroutineScope {
+            queries.map { (key, rawTitle) ->
+                async {
+                    kitsuLimiter.withPermit {
+                        val dateKey = withTimeoutOrNull(KITSU_TIMEOUT_MS) {
+                            withContext(Dispatchers.IO) {
+                                runCatching {
+                                    val cleanedTitle = cleanSearchTitle(rawTitle)
+                                    val url = Uri.parse("https://kitsu.io/api/edge/anime").buildUpon()
+                                        .appendQueryParameter("filter[text]", cleanedTitle)
+                                        .appendQueryParameter("page[limit]", "3")
+                                        .build()
+                                    val request = Request.Builder()
+                                        .url(url.toString())
+                                        .header("Accept", "application/vnd.api+json")
+                                        .build()
+
+                                    networkHelper.client.newCall(request).execute().use { response ->
+                                        if (!response.isSuccessful) {
+                                            return@runCatching 0L
+                                        }
+                                        val root = json.parseToJsonElement(response.body.string()).jsonObject
+                                        val dataArray = root["data"] as? JsonArray ?: return@runCatching 0L
+                                        val items = dataArray.mapNotNull { it as? JsonObject }
+                                        val best = selectBestKitsuCandidate(cleanedTitle, items)
+                                            ?: return@runCatching CACHE_MISS_SENTINEL
+
+                                        val startDate = best["attributes"]
+                                            ?.jsonObject
+                                            ?.get("startDate")
+                                            ?.jsonPrimitive
+                                            ?.contentOrNull
+                                        val isoDate = startDate?.let { parseIsoDateKey(it, maxPlausibleYear) } ?: 0L
+                                        if (isoDate > 0L) {
+                                            isoDate
+                                        } else {
+                                            CACHE_MISS_SENTINEL
+                                        }
+                                    }
+                                }.onFailure { e ->
+                                    logcat(LogPriority.DEBUG, e) { "Kitsu recency fallback lookup skipped" }
+                                }.getOrDefault(0L)
+                            }
+                        } ?: 0L
+
+                        if (dateKey > 0L) {
+                            kitsuDateCache[key] = dateKey
+                            persistentAirDateCache[key] = dateKey
+                            result[key] = dateKey
+                        } else if (dateKey == CACHE_MISS_SENTINEL) {
+                            kitsuDateCache[key] = CACHE_MISS_SENTINEL
+                        }
+                    }
+                }
+            }.awaitAll()
+        }
+        return result
+    }
+
+    private fun selectBestKitsuCandidate(
+        targetTitle: String,
+        candidates: List<JsonObject>,
+    ): JsonObject? {
+        if (candidates.isEmpty()) return null
+        val expanded = buildList {
+            for (item in candidates) {
+                val attr = item["attributes"]?.jsonObject ?: continue
+                val titlesObj = attr["titles"]?.jsonObject
+                val variants = listOfNotNull(
+                    attr["canonicalTitle"]?.jsonPrimitive?.contentOrNull,
+                    titlesObj?.get("en")?.jsonPrimitive?.contentOrNull,
+                    titlesObj?.get("en_jp")?.jsonPrimitive?.contentOrNull,
+                    titlesObj?.get("ja_jp")?.jsonPrimitive?.contentOrNull,
+                ).distinct()
+                for (variant in variants) {
+                    add(item to variant)
+                }
+            }
+        }
+        return TitleDeduplicator.selectBestMatch(
+            targetTitle = targetTitle,
+            candidates = expanded,
+            titleSelector = { it.second },
+        )?.first ?: candidates.firstOrNull()
+    }
+
+    private suspend fun fetchShikimoriDatesForMisses(
+        queries: List<Pair<String, String>>,
+    ): Map<String, Long> {
+        val result = ConcurrentHashMap<String, Long>()
+        val maxPlausibleYear = Calendar.getInstance().get(Calendar.YEAR) + 2
+
+        coroutineScope {
+            queries.map { (key, rawTitle) ->
+                async {
+                    shikimoriLimiter.withPermit {
+                        val dateKey = withTimeoutOrNull(SHIKIMORI_TIMEOUT_MS) {
+                            withContext(Dispatchers.IO) {
+                                runCatching {
+                                    val cleanedTitle = cleanSearchTitle(rawTitle)
+                                    val url = Uri.parse("https://shikimori.one/api/animes").buildUpon()
+                                        .appendQueryParameter("search", cleanedTitle)
+                                        .appendQueryParameter("limit", "3")
+                                        .build()
+                                    val request = Request.Builder()
+                                        .url(url.toString())
+                                        .header("Accept", "application/json")
+                                        .header("User-Agent", "Hikaru/1.0")
+                                        .build()
+
+                                    networkHelper.client.newCall(request).execute().use { response ->
+                                        if (!response.isSuccessful) {
+                                            return@runCatching 0L
+                                        }
+                                        val root = json.parseToJsonElement(response.body.string())
+                                        val dataArray = root as? JsonArray ?: return@runCatching 0L
+                                        val items = dataArray.mapNotNull { it as? JsonObject }
+                                        val best = selectBestShikimoriCandidate(cleanedTitle, items)
+                                            ?: return@runCatching CACHE_MISS_SENTINEL
+
+                                        val airedOn = best["aired_on"]
+                                            ?.jsonPrimitive
+                                            ?.contentOrNull
+                                        val isoDate = airedOn?.let { parseIsoDateKey(it, maxPlausibleYear) } ?: 0L
+                                        if (isoDate > 0L) {
+                                            isoDate
+                                        } else {
+                                            CACHE_MISS_SENTINEL
+                                        }
+                                    }
+                                }.onFailure { e ->
+                                    logcat(LogPriority.DEBUG, e) { "Shikimori recency fallback lookup skipped" }
+                                }.getOrDefault(0L)
+                            }
+                        } ?: 0L
+
+                        if (dateKey > 0L) {
+                            shikimoriDateCache[key] = dateKey
+                            persistentAirDateCache[key] = dateKey
+                            result[key] = dateKey
+                        } else if (dateKey == CACHE_MISS_SENTINEL) {
+                            shikimoriDateCache[key] = CACHE_MISS_SENTINEL
+                        }
+                    }
+                }
+            }.awaitAll()
+        }
+        return result
+    }
+
+    private fun selectBestShikimoriCandidate(
+        targetTitle: String,
+        candidates: List<JsonObject>,
+    ): JsonObject? {
+        if (candidates.isEmpty()) return null
+        val expanded = buildList {
+            for (item in candidates) {
+                val variants = listOfNotNull(
+                    item["name"]?.jsonPrimitive?.contentOrNull,
+                    item["russian"]?.jsonPrimitive?.contentOrNull,
+                    item["japanese"]?.jsonPrimitive?.contentOrNull,
+                ).distinct()
+                for (variant in variants) {
+                    add(item to variant)
+                }
+            }
+        }
+        return TitleDeduplicator.selectBestMatch(
+            targetTitle = targetTitle,
+            candidates = expanded,
+            titleSelector = { it.second },
+        )?.first ?: candidates.firstOrNull()
+    }
+
+    private fun parseIsoDateKey(isoText: String, maxPlausibleYear: Int): Long {
+        val match = ISO_DATE_REGEX.find(isoText) ?: return 0L
+        val year = match.groupValues[1].toIntOrNull() ?: return 0L
+        val month = match.groupValues[2].toIntOrNull()?.coerceIn(1, 12) ?: 0
+        val day = match.groupValues[3].toIntOrNull()?.coerceIn(1, 31) ?: 0
+        return if (year in MIN_PLAUSIBLE_YEAR..maxPlausibleYear) {
+            year * 10000L + month * 100L + day
+        } else {
+            0L
+        }
+    }
+
+    private data class MergedGroup(
+        val primary: Anime,
+        val bestOrderRank: Int,
+        val titlesForDateParsing: List<String>,
+        val descriptionsForDateParsing: List<String>,
+    )
+
+    private data class ResolvedGroup(
+        val anime: Anime,
+        val bestOrderRank: Int,
+        val originalIndex: Int,
+        val titleKey: String,
+        val needsAniList: Boolean,
+        val needsJikanFallback: Boolean,
+        val needsKitsuFallback: Boolean,
+        val needsShikimoriFallback: Boolean,
+        val dateKey: Long,
+    )
+
+    companion object {
+        private const val MIN_PLAUSIBLE_YEAR = 1960
+        private const val CACHE_MISS_SENTINEL = -1L
+        private const val MAX_ANILIST_LOOKUPS_PER_ROW = 48
+        private const val MAX_JIKAN_FALLBACKS_PER_ROW = 15
+        private const val MAX_KITSU_FALLBACKS_PER_ROW = 15
+        private const val MAX_SHIKIMORI_FALLBACKS_PER_ROW = 15
+        private const val ANILIST_BATCH_SIZE = 10
+        private const val ANILIST_TIMEOUT_MS = 6_000L
+        private const val JIKAN_TIMEOUT_MS = 4_500L
+        private const val KITSU_TIMEOUT_MS = 3_500L
+        private const val SHIKIMORI_TIMEOUT_MS = 3_500L
+
+        val persistentAirDateCache = ConcurrentHashMap<String, Long>()
+        private val aniListDateCache = ConcurrentHashMap<String, Long>()
+        private val jikanDateCache = ConcurrentHashMap<String, Long>()
+        private val kitsuDateCache = ConcurrentHashMap<String, Long>()
+        private val shikimoriDateCache = ConcurrentHashMap<String, Long>()
+
+        private val SORT_CONTROL_NAME_REGEX = Regex(
+            "\\b(?:sort(?:ed|ing)?(?:\\s*by|\\s*order)?|order(?:ing)?(?:\\s*by)?|arrange|ranking)\\b",
+            RegexOption.IGNORE_CASE,
+        )
+
+        private val DISALLOWED_SORT_OPTIONS = setOf(
+            "oldest",
+            "a-z",
+            "a - z",
+            "z-a",
+            "z - a",
+            "alphabet",
+            "alphabetical",
+            "title",
+            "name",
+            "least",
+            "ascending",
+            "popular",
+            "popularity",
+            "rating",
+            "score",
+            "views",
+            "most viewed",
+            "trending",
+            "relevance",
+        )
+
+        private val PREFERRED_SORT_TIERS = listOf(
+            listOf(
+                "recently added",
+                "recently updated",
+                "latest update",
+                "newest",
+                "latest",
+                "recent",
+                "just added",
+                "new release",
+                "last updated",
+                "last update",
+                "update time",
+            ),
+            listOf(
+                "release date",
+                "release year",
+                "air date",
+                "aired",
+                "start date",
+                "premiered",
+                "released",
+                "release",
+                "year",
+                "date",
+            ),
+            listOf("updated", "update", "added", "new"),
+        )
+
+        private val ISO_DATE_REGEX = Regex("\\b(19[6-9]\\d|20[0-3]\\d)[-/](0?[1-9]|1[0-2])[-/](0?[1-9]|[12]\\d|3[01])\\b")
+        private val MONTH_DAY_YEAR_REGEX = Regex(
+            "\\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|" +
+                "jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)" +
+                "\\s+(\\d{1,2}),?\\s+(19[6-9]\\d|20[0-3]\\d)\\b",
+            RegexOption.IGNORE_CASE,
+        )
+        private val MONTH_YEAR_REGEX = Regex(
+            "\\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|" +
+                "jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)" +
+                "\\s+(19[6-9]\\d|20[0-3]\\d)\\b",
+            RegexOption.IGNORE_CASE,
+        )
+        private val SEASON_YEAR_REGEX = Regex(
+            "\\b(winter|spring|summer|fall|autumn)\\s+(19[6-9]\\d|20[0-3]\\d)\\b",
+            RegexOption.IGNORE_CASE,
+        )
+        private val LABELED_YEAR_REGEX = Regex(
+            "\\b(?:released?|aired|premiered|broadcast|year|started|release\\s*date)\\s*[:\\-]?\\s*(19[6-9]\\d|20[0-3]\\d)\\b",
+            RegexOption.IGNORE_CASE,
+        )
+        private val BRACKETED_YEAR_REGEX = Regex("(?:\\(|\\[)\\s*(19[6-9]\\d|20[0-3]\\d)\\s*(?:\\)|\\])")
+        private val STANDALONE_YEAR_REGEX = Regex("\\b(19[7-9]\\d|20[0-3]\\d)\\b(?!(?:p|k|fps|mb|gb|ep|episodes?)\\b)")
+        private val PAREN_CLEANUP_REGEX = Regex(
+            "\\s*(?:\\(|\\[)(?:tv|sub|dub|subbed|dubbed|uncensored|censored|1080p|720p|480p|bd|ova|ona)(?:\\)|\\])\\s*",
+            RegexOption.IGNORE_CASE,
+        )
+
+        fun isSortControlName(name: String): Boolean {
+            return SORT_CONTROL_NAME_REGEX.containsMatchIn(name.trim())
+        }
+
+        /**
+         * Stage 1: Mutates any Sort / sort-Select filters on [filters] toward newest/latest/release date
+         * descending without touching genre/category/theme filters.
+         */
+        fun applyLatestSortFilter(filters: AnimeFilterList) {
+            applySortRecursive(filters)
+        }
+
+        private fun applySortRecursive(items: List<*>) {
+            for (item in items) {
+                when (item) {
+                    is AnimeFilter.Sort -> {
+                        val bestIdx = findBestLatestOptionIndex(item.values)
+                        if (bestIdx >= 0) {
+                            item.state = AnimeFilter.Sort.Selection(
+                                index = bestIdx,
+                                ascending = false,
+                            )
+                        }
+                    }
+                    is AnimeFilter.Select<*> -> {
+                        if (isSortControlName(item.name)) {
+                            val bestIdx = findBestLatestOptionIndex(item.values)
+                            if (bestIdx >= 0) {
+                                item.state = bestIdx
+                            }
+                        }
+                    }
+                    is AnimeFilter.Group<*> -> {
+                        applySortRecursive(item.state)
+                    }
+                    else -> {}
+                }
+            }
+        }
+
+        private fun findBestLatestOptionIndex(values: Array<*>): Int {
+            for (keywords in PREFERRED_SORT_TIERS) {
+                val idx = values.indexOfFirst { option ->
+                    val label = option?.toString()?.trim()?.lowercase() ?: return@indexOfFirst false
+                    if (DISALLOWED_SORT_OPTIONS.any { bad -> label.contains(bad) }) {
+                        return@indexOfFirst false
+                    }
+                    keywords.any { kw -> label.contains(kw) }
+                }
+                if (idx >= 0) return idx
+            }
+            return -1
+        }
+
+        fun extractDateFromTexts(texts: List<String>): Long {
+            return extractDateFromMetadata(titles = texts, descriptions = emptyList())
+        }
+
+        fun extractDateFromMetadata(
+            titles: List<String>,
+            descriptions: List<String>,
+        ): Long {
+            val maxYear = LocalDate.now().year + 2
+            var bestDate = 0L
+
+            for (text in titles + descriptions) {
+                if (text.isBlank()) continue
+
+                ISO_DATE_REGEX.findAll(text).forEach { m ->
+                    val y = m.groupValues[1].toIntOrNull() ?: return@forEach
+                    val mo = m.groupValues[2].toIntOrNull() ?: 0
+                    val d = m.groupValues[3].toIntOrNull() ?: 0
+                    if (y in MIN_PLAUSIBLE_YEAR..maxYear) {
+                        bestDate = maxOf(bestDate, y * 10000L + mo * 100L + d)
+                    }
+                }
+
+                MONTH_DAY_YEAR_REGEX.findAll(text).forEach { m ->
+                    val mo = monthToNumber(m.groupValues[1])
+                    val d = m.groupValues[2].toIntOrNull()?.coerceIn(1, 31) ?: 0
+                    val y = m.groupValues[3].toIntOrNull() ?: return@forEach
+                    if (y in MIN_PLAUSIBLE_YEAR..maxYear) {
+                        bestDate = maxOf(bestDate, y * 10000L + mo * 100L + d)
+                    }
+                }
+
+                MONTH_YEAR_REGEX.findAll(text).forEach { m ->
+                    val mo = monthToNumber(m.groupValues[1])
+                    val y = m.groupValues[2].toIntOrNull() ?: return@forEach
+                    if (y in MIN_PLAUSIBLE_YEAR..maxYear) {
+                        bestDate = maxOf(bestDate, y * 10000L + mo * 100L)
+                    }
+                }
+
+                SEASON_YEAR_REGEX.findAll(text).forEach { m ->
+                    val mo = seasonToMonth(m.groupValues[1])
+                    val y = m.groupValues[2].toIntOrNull() ?: return@forEach
+                    if (y in MIN_PLAUSIBLE_YEAR..maxYear) {
+                        bestDate = maxOf(bestDate, y * 10000L + mo * 100L)
+                    }
+                }
+
+                LABELED_YEAR_REGEX.findAll(text).forEach { m ->
+                    val y = m.groupValues[1].toIntOrNull() ?: return@forEach
+                    if (y in MIN_PLAUSIBLE_YEAR..maxYear) {
+                        bestDate = maxOf(bestDate, y * 10000L)
+                    }
+                }
+            }
+
+            for (title in titles) {
+                if (title.isBlank()) continue
+                BRACKETED_YEAR_REGEX.findAll(title).forEach { m ->
+                    val y = m.groupValues[1].toIntOrNull() ?: return@forEach
+                    if (y in MIN_PLAUSIBLE_YEAR..maxYear) {
+                        bestDate = maxOf(bestDate, y * 10000L)
+                    }
+                }
+            }
+
+            if (bestDate > 0L) return bestDate
+
+            // Standalone year only from short title strings (never guess from plot synopses)
+            for (title in titles) {
+                if (title.isBlank() || title.length > 100) continue
+                STANDALONE_YEAR_REGEX.findAll(title).forEach { m ->
+                    val y = m.groupValues[1].toIntOrNull() ?: return@forEach
+                    if (y in MIN_PLAUSIBLE_YEAR..maxYear) {
+                        bestDate = maxOf(bestDate, y * 10000L)
+                    }
+                }
+            }
+
+            return bestDate
+        }
+
+        private fun cleanSearchTitle(title: String): String {
+            val cleaned = title.replace(PAREN_CLEANUP_REGEX, " ").trim()
+            return cleaned.ifBlank { title.trim() }.take(80)
+        }
+
+        private fun monthToNumber(month: String): Int {
+            return when (month.lowercase().take(3)) {
+                "jan" -> 1
+                "feb" -> 2
+                "mar" -> 3
+                "apr" -> 4
+                "may" -> 5
+                "jun" -> 6
+                "jul" -> 7
+                "aug" -> 8
+                "sep" -> 9
+                "oct" -> 10
+                "nov" -> 11
+                "dec" -> 12
+                else -> 0
+            }
+        }
+
+        private fun seasonToMonth(season: String): Int {
+            return when (season.lowercase()) {
+                "winter" -> 1
+                "spring" -> 4
+                "summer" -> 7
+                "fall", "autumn" -> 10
+                else -> 0
+            }
+        }
+    }
+}

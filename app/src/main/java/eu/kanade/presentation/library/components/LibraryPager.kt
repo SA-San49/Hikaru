@@ -9,12 +9,11 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.PagerState
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import eu.kanade.domain.ui.UiPreferences
+import eu.kanade.presentation.anime.components.LocalPanoramaCover
 import tachiyomi.presentation.core.util.collectAsState as collectAsStatePref
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
@@ -55,7 +54,7 @@ fun LibraryPager(
     val columns by remember(isLandscape) { getColumnsForOrientation(isLandscape) }
 
     val uiPreferences = remember { Injekt.get<UiPreferences>() }
-    val globalPanorama by uiPreferences.panoramaCover().collectAsStatePref()
+    val globalPanorama = LocalPanoramaCover.current
     val libraryMode by uiPreferences.libraryPanoramaMode().collectAsStatePref()
     val effectivePanorama = remember(globalPanorama, libraryMode) { libraryMode.resolve(globalPanorama) }
 
@@ -155,8 +154,7 @@ private fun LibraryPagerEmptyScreen(
     Column(
         modifier = Modifier
             .padding(contentPadding + PaddingValues(8.dp))
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState()),
+            .fillMaxSize(),
     ) {
         if (!searchQuery.isNullOrEmpty()) {
             GlobalSearchItem(

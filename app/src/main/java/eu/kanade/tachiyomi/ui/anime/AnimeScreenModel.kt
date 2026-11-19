@@ -620,19 +620,9 @@ class AnimeScreenModel(
                 emptyList()
             }
 
-            if (!anime.favorite) {
-                setAnimeDefaultEpisodeFlags.await(anime)
-                setAnimeDefaultSeasonFlags.await(anime)
-            }
-
             val animeSource = Injekt.get<SourceManager>().getOrStub(anime.source)
-            if (animeSource.isSourceForTorrents()) {
-                TorrentServerService.start()
-                TorrentServerService.wait(10)
-                TorrentServerUtils.setTrackersList()
-            }
 
-            // Set initial state from database
+            // Emit Success state from database immediately so the anime screen opens without delay
             val savedSeason = libraryPreferences.lastSelectedSeason(animeId).get().takeIf { it.isNotEmpty() }
             mutableState.update {
                 State.Success.create(
@@ -646,6 +636,21 @@ class AnimeScreenModel(
                     skipDupeEpisodes = libraryPreferences.skipDupeEpisodes().get(),
                     hideMissingEpisodes = libraryPreferences.hideMissingEpisodes().get(),
                 )
+            }
+
+            if (!anime.favorite) {
+                screenModelScope.launchIO {
+                    setAnimeDefaultEpisodeFlags.await(anime)
+                    setAnimeDefaultSeasonFlags.await(anime)
+                }
+            }
+
+            if (animeSource.isSourceForTorrents()) {
+                screenModelScope.launchIO {
+                    TorrentServerService.start()
+                    TorrentServerService.wait(10)
+                    TorrentServerUtils.setTrackersList()
+                }
             }
 
             // Reactive stream for all subsequent updates (DB changes, downloads, etc.)
@@ -764,8 +769,16 @@ class AnimeScreenModel(
     fun fetchAllFromSource(manualFetch: Boolean = true) {
         screenModelScope.launch {
             updateSuccessState { it.copySuccess(isRefreshingData = true) }
-            fetchAnimeFromSource(manualFetch)
-            fetchEpisodesFromSource(manualFetch)
+            val current = successState?.anime
+            if (current != null && current.initialized && current.fetchType != FetchType.Seasons) {
+                kotlinx.coroutines.coroutineScope {
+                    launch { fetchAnimeFromSource(manualFetch) }
+                    launch { fetchEpisodesFromSource(manualFetch) }
+                }
+            } else {
+                fetchAnimeFromSource(manualFetch)
+                fetchEpisodesFromSource(manualFetch)
+            }
             updateSuccessState { it.copySuccess(isRefreshingData = false) }
             successState?.let { updateAiringTime(it.anime, it.trackItems, manualFetch) }
         }

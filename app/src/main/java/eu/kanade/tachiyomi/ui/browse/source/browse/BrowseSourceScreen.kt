@@ -181,11 +181,15 @@ data class BrowseSourceScreen(
         val pagingFlow by screenModel.animePagerFlowFlow.collectAsState()
         val animeList = pagingFlow.collectAsLazyPagingItems()
 
+        val orientation = LocalConfiguration.current.orientation
+        val columns = remember(orientation) { screenModel.getColumnsPreference(orientation) }
+        val entries = remember(orientation) { screenModel.getColumnsPreferenceForCurrentOrientation(orientation) }
+
         if (screenModel.source is StubSource) {
             eu.kanade.presentation.browse.BrowseSourceScreen(
                 source = screenModel.source,
                 animeList = animeList,
-                columns = screenModel.getColumnsPreference(LocalConfiguration.current.orientation),
+                columns = columns,
                 displayMode = screenModel.displayMode,
                 snackbarHostState = snackbarHostState,
                 contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp), // Not used for stub
@@ -197,12 +201,11 @@ data class BrowseSourceScreen(
                 onBatchIncrement = {},
                 selection = persistentListOf(),
                 favoriteIds = persistentSetOf(),
-                entries = screenModel.getColumnsPreferenceForCurrentOrientation(LocalConfiguration.current.orientation),
+                entries = entries,
             )
             return
         }
 
-        val entries = screenModel.getColumnsPreferenceForCurrentOrientation(LocalConfiguration.current.orientation)
         val hazeEnabled by uiPreferences.hazeEnabled().collectAsStatePref()
         val focusManager = LocalFocusManager.current
         val firstItemFocusRequester = remember { FocusRequester() }
@@ -453,8 +456,8 @@ data class BrowseSourceScreen(
             BrowseSourceContent(
                 source = screenModel.source,
                 animeList = animeList,
-                columns = screenModel.getColumnsPreference(LocalConfiguration.current.orientation),
-                entries = screenModel.getColumnsPreferenceForCurrentOrientation(LocalConfiguration.current.orientation),
+                columns = columns,
+                entries = entries,
                 displayMode = screenModel.displayMode,
                 snackbarHostState = snackbarHostState,
                 contentPadding = paddingValues,

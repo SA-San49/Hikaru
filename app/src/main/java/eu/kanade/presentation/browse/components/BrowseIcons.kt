@@ -1,6 +1,7 @@
 package eu.kanade.presentation.browse.components
 
 import android.util.DisplayMetrics
+import android.util.LruCache
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.aspectRatio
@@ -13,6 +14,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
@@ -39,12 +41,22 @@ private val defaultModifier = Modifier
     .height(40.dp)
     .aspectRatio(1f)
 
+private val sourceIconCache = LruCache<Long, ImageBitmap>(128)
+private val extensionIconCache = LruCache<String, ImageBitmap>(128)
+
 @Composable
 fun SourceIcon(
     source: Source,
     modifier: Modifier = Modifier,
 ) {
-    val icon = source.icon
+    val cachedIcon = remember(source.id) { sourceIconCache.get(source.id) }
+    val icon by produceState<ImageBitmap?>(initialValue = cachedIcon, source.id) {
+        if (value == null && !source.isLocal()) {
+            value = withIOContext {
+                source.icon?.also { sourceIconCache.put(source.id, it) }
+            }
+        }
+    }
 
     when {
         source.isStub && icon == null -> {
@@ -57,7 +69,7 @@ fun SourceIcon(
         }
         icon != null -> {
             Image(
-                bitmap = icon,
+                bitmap = icon!!,
                 contentDescription = null,
                 modifier = modifier.then(defaultModifier),
             )
@@ -124,16 +136,21 @@ fun ExtensionIcon(
 @Composable
 private fun Extension.getIcon(density: Int = DisplayMetrics.DENSITY_DEFAULT): State<Result<ImageBitmap>> {
     val context = LocalContext.current
-    return produceState<Result<ImageBitmap>>(initialValue = Result.Loading, this) {
+    val cacheKey = remember(pkgName, density) { "${pkgName}_$density" }
+    val initialResult = remember(cacheKey) {
+        extensionIconCache.get(cacheKey)?.let { Result.Success(it) } ?: Result.Loading
+    }
+    return produceState<Result<ImageBitmap>>(initialValue = initialResult, cacheKey) {
+        if (value is Result.Success) return@produceState
         withIOContext {
             value = try {
                 val appInfo = ExtensionLoader.getExtensionPackageInfoFromPkgName(context, pkgName)!!.applicationInfo!!
                 val appResources = context.packageManager.getResourcesForApplication(appInfo)
-                Result.Success(
-                    appResources.getDrawableForDensity(appInfo.icon, density, null)!!
-                        .toBitmap()
-                        .asImageBitmap(),
-                )
+                val bitmap = appResources.getDrawableForDensity(appInfo.icon, density, null)!!
+                    .toBitmap()
+                    .asImageBitmap()
+                extensionIconCache.put(cacheKey, bitmap)
+                Result.Success(bitmap)
             } catch (e: Exception) {
                 Result.Error
             }

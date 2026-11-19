@@ -1,6 +1,7 @@
 package eu.kanade.presentation.browse
 
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
@@ -27,8 +28,8 @@ import androidx.compose.ui.unit.dp
 import androidx.paging.LoadState
 import androidx.paging.compose.LazyPagingItems
 import eu.kanade.domain.ui.UiPreferences
-import eu.kanade.domain.ui.model.PanoramaMode
 import eu.kanade.presentation.anime.components.AnimeCover
+import eu.kanade.presentation.anime.components.LocalPanoramaCover
 import eu.kanade.presentation.browse.components.BrowseSourceComfortableGrid
 import eu.kanade.presentation.browse.components.BrowseSourceCompactGrid
 import eu.kanade.presentation.browse.components.BrowseSourceList
@@ -101,6 +102,12 @@ fun BrowseSourceContent(
         }
     }
 
+    val uiPreferences = remember { Injekt.get<UiPreferences>() }
+    val globalPanorama = LocalPanoramaCover.current
+    val browseModeState = uiPreferences.browsePanoramaMode().collectAsStatePref()
+    val browseMode = browseModeState.value
+    val effectivePanorama = remember(globalPanorama, browseMode) { browseMode.resolve(globalPanorama) }
+
     val screenState = when {
         animeList.itemCount <= 0 && errorState != null -> "Error"
         animeList.itemCount == 0 && animeList.loadState.refresh is LoadState.Loading -> "Loading"
@@ -110,7 +117,7 @@ fun BrowseSourceContent(
     AnimatedContent(
         targetState = screenState,
         transitionSpec = {
-            fadeIn().togetherWith(fadeOut())
+            fadeIn(animationSpec = tween(150)).togetherWith(fadeOut(animationSpec = tween(100)))
         },
         label = "browse_source_content",
     ) { state ->
@@ -138,14 +145,6 @@ fun BrowseSourceContent(
                 )
             }
             "Loading" -> {
-                val uiPreferences = remember { Injekt.get<UiPreferences>() }
-                val globalPanoramaState = uiPreferences.panoramaCover().collectAsStatePref()
-                val browseModeState = uiPreferences.browsePanoramaMode().collectAsStatePref()
-                
-                val globalPanorama = globalPanoramaState.value
-                val browseMode = browseModeState.value
-                val effectivePanorama = remember(globalPanorama, browseMode) { browseMode.resolve(globalPanorama) }
-
                 BrowseSourceSkeleton(
                     columns = columns,
                     contentPadding = contentPadding,
@@ -153,14 +152,6 @@ fun BrowseSourceContent(
                 )
             }
             "Content" -> {
-                val uiPreferences = remember { Injekt.get<UiPreferences>() }
-                val globalPanoramaState = uiPreferences.panoramaCover().collectAsStatePref()
-                val browseModeState = uiPreferences.browsePanoramaMode().collectAsStatePref()
-                
-                val globalPanorama = globalPanoramaState.value
-                val browseMode = browseModeState.value
-                val effectivePanorama = remember(globalPanorama, browseMode) { browseMode.resolve(globalPanorama) }
-
                 val mode = displayMode ?: LibraryDisplayMode.default
                 when (mode) {
                     LibraryDisplayMode.ComfortableGrid -> {

@@ -188,6 +188,16 @@ class UiPreferences(
 
     fun feedPanoramaMode() = getPanoramaMode("pref_feed_panorama_mode", "pref_feed_panorama")
 
+    fun feedDisplayMode() = preferenceStore.getEnum("pref_feed_display_mode", eu.kanade.tachiyomi.ui.home.genre.FeedDisplayMode.SOURCES)
+    fun feedGenreSelectionMode() = preferenceStore.getEnum("pref_feed_genre_selection_mode_v2", eu.kanade.tachiyomi.ui.home.genre.FeedGenreSelectionMode.SELECTED)
+    fun feedSelectedGenres() = preferenceStore.getStringSet("pref_feed_selected_genres", emptySet())
+    fun feedPrioritySourceIds() = preferenceStore.getObject(
+        "pref_feed_priority_sources_v1",
+        emptyList<Long>(),
+        { list -> list.distinct().take(3).joinToString(",") },
+        { raw -> raw.split(",").mapNotNull { it.trim().toLongOrNull() }.distinct().take(3) },
+    )
+
     fun updatesPanoramaMode() = getPanoramaMode("pref_updates_panorama_mode", "pref_updates_panorama")
 
     fun historyPanoramaMode() = getPanoramaMode("pref_history_panorama_mode", "pref_history_panorama")

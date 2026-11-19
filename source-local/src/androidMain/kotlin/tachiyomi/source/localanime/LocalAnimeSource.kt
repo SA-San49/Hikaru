@@ -19,6 +19,10 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.decodeFromStream
 import kotlinx.serialization.json.encodeToStream
@@ -43,6 +47,7 @@ import uy.kohesive.injekt.injectLazy
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import kotlin.math.abs
 import tachiyomi.domain.source.model.Source as DomainSource
@@ -54,9 +59,26 @@ actual class LocalAnimeSource(
     private val thumbnailManager: LocalAnimeSourceEpisodeThumbnailManager,
 ) : CatalogueSource, UnmeteredSource {
 
+    private class CachedAnimeEntry(
+        val dir: UniFile,
+        val name: String,
+    ) {
+        val lastModified: Long by lazy { dir.lastModified() }
+    }
+
     private val json: Json by injectLazy()
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private val dirCacheMutex = Mutex()
+    private val coverFetchSemaphore = Semaphore(4)
+
+    @Volatile
+    private var cachedDirEntries: List<CachedAnimeEntry> = emptyList()
+
+    @Volatile
+    private var cachedDirTimestamp: Long = 0L
+
+    private val coverUriCache = ConcurrentHashMap<String, String>()
 
     @Suppress("PrivatePropertyName")
     private val PopularFilters = FilterList(OrderBy.Popular(context))
@@ -74,6 +96,33 @@ actual class LocalAnimeSource(
 
     override val supportsLatest = true
 
+    private suspend fun getCachedAnimeEntries(): List<CachedAnimeEntry> {
+        val now = System.currentTimeMillis()
+        if (cachedDirEntries.isNotEmpty() && (now - cachedDirTimestamp) < DIR_CACHE_TTL_MS) {
+            return cachedDirEntries
+        }
+        return dirCacheMutex.withLock {
+            val currentNow = System.currentTimeMillis()
+            if (cachedDirEntries.isNotEmpty() && (currentNow - cachedDirTimestamp) < DIR_CACHE_TTL_MS) {
+                return@withLock cachedDirEntries
+            }
+            val entries = fileSystem.getFilesInBaseDirectory()
+                .filter { it.isDirectory && !it.name.orEmpty().startsWith('.') }
+                .distinctBy { it.name }
+                .map { dir ->
+                    CachedAnimeEntry(
+                        dir = dir,
+                        name = dir.name.orEmpty(),
+                    )
+                }
+            val validNames = entries.mapTo(HashSet(entries.size * 2)) { it.name }
+            coverUriCache.keys.retainAll(validNames)
+            cachedDirEntries = entries
+            cachedDirTimestamp = System.currentTimeMillis()
+            entries
+        }
+    }
+
     // Browse related
     override suspend fun getPopularAnime(page: Int) = getSearchAnime(page, "", PopularFilters)
 
@@ -90,37 +139,34 @@ actual class LocalAnimeSource(
             0L
         }
 
-        var animeDirs = fileSystem.getFilesInBaseDirectory()
-            // Filter out files that are hidden and is not a folder
-            .filter { it.isDirectory && !it.name.orEmpty().startsWith('.') }
-            .distinctBy { it.name }
-            .filter {
-                if (lastModifiedLimit == 0L && query.isBlank()) {
-                    true
-                } else if (lastModifiedLimit == 0L) {
-                    it.name.orEmpty().contains(query, ignoreCase = true)
-                } else {
-                    it.lastModified() >= lastModifiedLimit
-                }
+        val allEntries = getCachedAnimeEntries()
+        var filteredEntries = allEntries.filter { entry ->
+            if (lastModifiedLimit == 0L && query.isBlank()) {
+                true
+            } else if (lastModifiedLimit == 0L) {
+                entry.name.contains(query, ignoreCase = true)
+            } else {
+                entry.lastModified >= lastModifiedLimit
             }
+        }
 
         filters.forEach { filter ->
             when (filter) {
                 is OrderBy.Popular -> {
-                    animeDirs = if (filter.state!!.ascending) {
-                        animeDirs.sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.name.orEmpty() })
+                    filteredEntries = if (filter.state?.ascending != false) {
+                        filteredEntries.sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.name })
                     } else {
-                        animeDirs.sortedWith(
-                            compareByDescending(String.CASE_INSENSITIVE_ORDER) { it.name.orEmpty() },
+                        filteredEntries.sortedWith(
+                            compareByDescending(String.CASE_INSENSITIVE_ORDER) { it.name },
                         )
                     }
                 }
 
                 is OrderBy.Latest -> {
-                    animeDirs = if (filter.state!!.ascending) {
-                        animeDirs.sortedBy(UniFile::lastModified)
+                    filteredEntries = if (filter.state?.ascending == true) {
+                        filteredEntries.sortedBy { it.lastModified }
                     } else {
-                        animeDirs.sortedByDescending(UniFile::lastModified)
+                        filteredEntries.sortedByDescending { it.lastModified }
                     }
                 }
 
@@ -130,24 +176,40 @@ actual class LocalAnimeSource(
             }
         }
 
-        // Transform animeDirs to list of SAnime
-        val animes = animeDirs
-            .map { animeDir ->
-                async {
-                    SAnime.create().apply {
-                        title = animeDir.name.orEmpty()
-                        url = animeDir.name.orEmpty()
+        // Paginate results lazily so 1000+ local anime load incrementally without blocking SAF/IO threads
+        val safePage = page.coerceAtLeast(1)
+        val fromIndex = (safePage - 1) * PAGE_SIZE
+        if (fromIndex >= filteredEntries.size) {
+            return@withIOContext AnimesPage(emptyList(), false)
+        }
+        val toIndex = minOf(fromIndex + PAGE_SIZE, filteredEntries.size)
+        val pageSlice = filteredEntries.subList(fromIndex, toIndex)
+        val hasNextPage = toIndex < filteredEntries.size
 
-                        // Try to find the cover
-                        coverManager.find(animeDir.name.orEmpty())?.let {
-                            thumbnail_url = it.uri.toString()
+        // Resolve covers only for the active page slice with bounded concurrency
+        val animes = pageSlice
+            .map { entry ->
+                async {
+                    val coverUri = coverUriCache[entry.name] ?: coverFetchSemaphore.withPermit {
+                        coverUriCache[entry.name] ?: run {
+                            val foundUri = coverManager.findInDirectory(entry.dir)?.uri?.toString().orEmpty()
+                            coverUriCache[entry.name] = foundUri
+                            foundUri
+                        }
+                    }
+
+                    SAnime.create().apply {
+                        title = entry.name
+                        url = entry.name
+                        if (coverUri.isNotEmpty()) {
+                            thumbnail_url = coverUri
                         }
                     }
                 }
             }
             .awaitAll()
 
-        AnimesPage(animes.toList(), false)
+        AnimesPage(animes, hasNextPage)
     }
 
     // Old fetch functions
@@ -350,6 +412,9 @@ actual class LocalAnimeSource(
     companion object {
         const val ID = 0L
         const val HELP_URL = "https://aniyomi.org/help/guides/local-anime/"
+
+        private const val PAGE_SIZE = 30
+        private const val DIR_CACHE_TTL_MS = 30_000L
 
         private const val DEFAULT_COVER_NAME = "cover.jpg"
         private const val DEFAULT_THUMBNAIL_NAME = "thumbnail.jpg"

@@ -20,10 +20,7 @@ import tachiyomi.domain.anime.model.toDomainAnime
 import eu.kanade.domain.base.BasePreferences
 import eu.kanade.domain.source.service.SourcePreferences
 import eu.kanade.domain.track.interactor.AddTracks
-import eu.kanade.presentation.util.ioCoroutineScope
 import eu.kanade.tachiyomi.data.cache.CoverCache
-import eu.kanade.tachiyomi.animesource.AnimeCatalogueSource
-import eu.kanade.tachiyomi.animesource.model.AnimeFilter
 import eu.kanade.tachiyomi.source.CatalogueSource
 import eu.kanade.tachiyomi.source.model.FilterList
 import eu.kanade.tachiyomi.util.removeCovers
@@ -35,15 +32,14 @@ import kotlinx.collections.immutable.persistentListOf
 import kotlinx.collections.immutable.persistentSetOf
 import kotlinx.collections.immutable.toImmutableList
 import kotlinx.collections.immutable.toImmutableSet
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
-import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.filter
-import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.map
@@ -56,7 +52,6 @@ import kotlinx.coroutines.launch
 import tachiyomi.core.common.preference.CheckboxState
 import tachiyomi.core.common.preference.mapAsCheckboxState
 import tachiyomi.core.common.util.lang.launchIO
-import tachiyomi.domain.anime.interactor.GetAnime
 import tachiyomi.domain.anime.interactor.GetDuplicateLibraryAnime
 import tachiyomi.domain.anime.interactor.NetworkToLocalAnime
 import tachiyomi.domain.anime.model.Anime
@@ -92,7 +87,6 @@ class BrowseSourceScreenModel(
     private val getCategories: GetCategories = Injekt.get(),
     private val setAnimeCategories: SetAnimeCategories = Injekt.get(),
     private val setAnimeDefaultEpisodeFlags: SetAnimeDefaultEpisodeFlags = Injekt.get(),
-    private val getAnime: GetAnime = Injekt.get(),
     private val networkToLocalAnime: NetworkToLocalAnime = Injekt.get(),
     private val updateAnime: UpdateAnime = Injekt.get(),
     private val addTracks: AddTracks = Injekt.get(),
@@ -120,20 +114,24 @@ class BrowseSourceScreenModel(
         }
 
         if (source is CatalogueSource) {
-            mutableState.update {
-                var query: String? = null
-                var listing = it.listing
-
-                if (listing is Listing.Search) {
-                    query = listing.query
-                    listing = Listing.Search(query, source.getFilterList())
+            val currentListing = state.value.listing
+            if (currentListing is Listing.Search) {
+                val initialFilters = source.getFilterList()
+                val query = currentListing.query
+                mutableState.update {
+                    it.copy(
+                        listing = Listing.Search(query, initialFilters),
+                        filters = initialFilters,
+                        toolbarQuery = query,
+                    )
                 }
-
-                it.copy(
-                    listing = listing,
-                    filters = source.getFilterList(),
-                    toolbarQuery = query,
-                )
+            } else {
+                screenModelScope.launchIO {
+                    val initialFilters = source.getFilterList()
+                    mutableState.update {
+                        if (it.filters.isEmpty()) it.copy(filters = initialFilters) else it
+                    }
+                }
             }
         }
 
@@ -189,23 +187,24 @@ class BrowseSourceScreenModel(
         .map { listing ->
             Pager(
                 PagingConfig(
-                    pageSize = 20,
-                    prefetchDistance = 5,
-                    initialLoadSize = 40,
+                    pageSize = 30,
+                    prefetchDistance = 10,
+                    initialLoadSize = 30,
+                    enablePlaceholders = false,
                 ),
             ) {
                 getRemoteAnime.subscribe(sourceId, listing.query ?: "", listing.filters)
             }.flow.map { pagingData ->
-                pagingData.map {
+                val filtered = pagingData.map {
                     val localAnime = networkToLocalAnime.getLocal(it.toDomainAnime(sourceId))
-                    getAnime.subscribe(localAnime.url, localAnime.source)
-                        .filterNotNull()
-                        .distinctUntilChanged()
-                        .stateIn(ioCoroutineScope, SharingStarted.WhileSubscribed(5000), localAnime)
+                    MutableStateFlow(localAnime).asStateFlow()
                 }
-                    .filter { !hideInLibraryItems || !it.value.favorite }
-            }.cachedIn(ioCoroutineScope)
-                .cachedIn(screenModelScope)
+                if (hideInLibraryItems) {
+                    filtered.filter { !it.value.favorite }
+                } else {
+                    filtered
+                }
+            }.cachedIn(screenModelScope)
         }
         .stateIn(screenModelScope, SharingStarted.Lazily, emptyFlow())
 

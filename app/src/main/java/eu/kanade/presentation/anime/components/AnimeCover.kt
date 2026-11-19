@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -35,7 +36,6 @@ import coil3.compose.AsyncImage
 import coil3.compose.AsyncImagePainter
 import coil3.request.ImageRequest
 import coil3.request.crossfade
-import eu.kanade.domain.ui.UiPreferences
 import eu.kanade.tachiyomi.R
 import eu.kanade.tachiyomi.util.system.CoverColorObserver
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -43,10 +43,10 @@ import kotlinx.coroutines.flow.map
 import tachiyomi.domain.anime.model.Anime
 import tachiyomi.domain.anime.model.asAnimeCover
 import tachiyomi.presentation.core.components.SkeletonItem
-import tachiyomi.presentation.core.util.collectAsState as collectAsStatePref
-import uy.kohesive.injekt.Injekt
-import uy.kohesive.injekt.api.get
 import tachiyomi.domain.anime.model.AnimeCover as DomainMangaCover
+
+val LocalAnimatedTransitions = compositionLocalOf { true }
+val LocalPanoramaCover = compositionLocalOf { false }
 
 enum class AnimeCover(val ratio: Float) {
     Square(1f / 1f),
@@ -84,32 +84,30 @@ enum class AnimeCover(val ratio: Float) {
         // KMK <--
     ) {
         val context = LocalContext.current
-        val uiPreferences = remember { Injekt.get<UiPreferences>() }
-        val animatedTransitions by uiPreferences.animatedTransitions().collectAsStatePref()
-        
-        var state by remember(data) { mutableStateOf<AsyncImagePainter.State>(AsyncImagePainter.State.Empty) }
-        val isSuccess = state is AsyncImagePainter.State.Success
-        val isError = state is AsyncImagePainter.State.Error
+        val animatedTransitions = LocalAnimatedTransitions.current
 
-        LaunchedEffect(state, data, shouldExtractColor, shouldUpdateRatio) {
-            val currentState = state
-            if (currentState is AsyncImagePainter.State.Success) {
-                val cover = when (data) {
-                    is Anime -> data.asAnimeCover()
-                    is DomainMangaCover -> data
-                    else -> null
-                }
-                if (cover != null && (shouldExtractColor || shouldUpdateRatio)) {
-                    eu.kanade.tachiyomi.util.system.CoverColorExtractor.extract(
-                        cover = cover,
-                        state = currentState,
-                        extractColor = shouldExtractColor,
-                        updateRatio = shouldUpdateRatio,
-                    )
-                }
-                if (data is Anime) onCoverLoaded?.invoke(data.asAnimeCover(), currentState)
-                if (data is DomainMangaCover) onCoverLoaded?.invoke(data, currentState)
+        var isSuccess by remember(data) { mutableStateOf(false) }
+        var isError by remember(data) { mutableStateOf(false) }
+        var pendingSuccess by remember(data) { mutableStateOf<AsyncImagePainter.State.Success?>(null) }
+
+        val needsPostProcess = shouldExtractColor || shouldUpdateRatio || onCoverLoaded != null
+        LaunchedEffect(pendingSuccess, data, shouldExtractColor, shouldUpdateRatio) {
+            val currentState = pendingSuccess ?: return@LaunchedEffect
+            val cover = when (data) {
+                is Anime -> data.asAnimeCover()
+                is DomainMangaCover -> data
+                else -> null
             }
+            if (cover != null && (shouldExtractColor || shouldUpdateRatio)) {
+                eu.kanade.tachiyomi.util.system.CoverColorExtractor.extract(
+                    cover = cover,
+                    state = currentState,
+                    extractColor = shouldExtractColor,
+                    updateRatio = shouldUpdateRatio,
+                )
+            }
+            if (data is Anime) onCoverLoaded?.invoke(data.asAnimeCover(), currentState)
+            if (data is DomainMangaCover) onCoverLoaded?.invoke(data, currentState)
         }
 
         Box(
@@ -143,15 +141,35 @@ enum class AnimeCover(val ratio: Float) {
                     },
                 ),
         ) {
-            // Pulsing background
-            if (animatedTransitions && !isSuccess) {
+            // Static subtle placeholder while loading (avoid heavy per-card overlays when settled)
+            if (animatedTransitions && !isSuccess && !isError) {
                 CoverLoading(shape, bgColor)
             }
 
+            val targetWidthPx = when {
+                size == Size.Big -> null
+                size == Size.Medium && ratio > RatioSwitchToPanorama -> 768
+                size == Size.Medium -> 512
+                ratio > RatioSwitchToPanorama -> 540
+                else -> 360
+            }
+            val targetHeightPx = when {
+                size == Size.Big -> null
+                size == Size.Medium && ratio > RatioSwitchToPanorama -> 512
+                size == Size.Medium -> 768
+                ratio > RatioSwitchToPanorama -> 360
+                else -> 540
+            }
+
             AsyncImage(
-                model = remember(data, animatedTransitions) {
+                model = remember(data, animatedTransitions, targetWidthPx, targetHeightPx) {
                     ImageRequest.Builder(context)
                         .data(data)
+                        .apply {
+                            if (targetWidthPx != null && targetHeightPx != null) {
+                                size(targetWidthPx, targetHeightPx)
+                            }
+                        }
                         .precision(coil3.size.Precision.INEXACT)
                         .crossfade(animatedTransitions)
                         .build()
@@ -167,7 +185,17 @@ enum class AnimeCover(val ratio: Float) {
                         },
                     ),
                 contentScale = scale,
-                onState = { state = it },
+                onSuccess = { result ->
+                    if (!isSuccess) isSuccess = true
+                    if (isError) isError = false
+                    if (needsPostProcess) {
+                        pendingSuccess = result
+                    }
+                },
+                onError = {
+                    if (isSuccess) isSuccess = false
+                    if (!isError) isError = true
+                },
             )
 
             if (isError) {
@@ -212,9 +240,8 @@ enum class AnimeCover(val ratio: Float) {
 
         @Composable
         fun getRatio(animeId: Long): Float {
-            val uiPreferences = remember { Injekt.get<UiPreferences>() }
-            val usePanorama by uiPreferences.panoramaCover().collectAsStatePref()
-            
+            val usePanorama = LocalPanoramaCover.current
+
             if (!usePanorama) return Book.ratio
 
             val ratio by androidx.compose.runtime.produceState(
@@ -231,10 +258,9 @@ enum class AnimeCover(val ratio: Float) {
 
         @Composable
         fun getEntry(animeId: Long, usePanoramaOverride: Boolean? = null): Pair<AnimeCover, Float> {
-            val uiPreferences = remember { Injekt.get<UiPreferences>() }
-            val globalUsePanorama by uiPreferences.panoramaCover().collectAsStatePref()
+            val globalUsePanorama = LocalPanoramaCover.current
             val usePanorama = usePanoramaOverride ?: globalUsePanorama
-            
+
             if (!usePanorama) return Book to Book.ratio
 
             val ratio by androidx.compose.runtime.produceState(

@@ -115,68 +115,88 @@ fun SourcesScreen(
     Box(
         modifier = Modifier.fillMaxSize(),
     ) {
-        FastScrollLazyColumn(
-            state = lazyListState,
-            contentPadding = PaddingValues(
-                start = contentPadding.calculateStartPadding(LocalLayoutDirection.current),
-                top = searchBoxHeight,
-                end = contentPadding.calculateEndPadding(LocalLayoutDirection.current),
-                bottom = contentPadding.calculateBottomPadding() + 8.dp
-            ),
-        ) {
-            if (state.isLoading) {
-                item(key = "loading") {
-                    LoadingScreen(modifier = Modifier.fillParentMaxSize())
+        val layoutDirection = LocalLayoutDirection.current
+        val innerPadding = PaddingValues(
+            start = contentPadding.calculateStartPadding(layoutDirection),
+            top = searchBoxHeight,
+            end = contentPadding.calculateEndPadding(layoutDirection),
+            bottom = contentPadding.calculateBottomPadding() + 8.dp,
+        )
+
+        when {
+            state.isLoading -> {
+                LoadingScreen(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(innerPadding),
+                )
+            }
+            state.isEmpty -> {
+                EmptyScreen(
+                    stringRes = if (state.searchQuery.isNullOrEmpty()) MR.strings.source_empty_screen else MR.strings.no_results_found,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(innerPadding),
+                )
+            }
+            else -> {
+                val cardShape = MaterialTheme.shapes.large
+                val cardColor = MaterialTheme.colorScheme.surfaceVariant
+                val cardModifier = remember {
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 2.dp)
                 }
-            } else if (state.isEmpty) {
-                item(key = "empty") {
-                    EmptyScreen(
-                        stringRes = if (state.searchQuery.isNullOrEmpty()) MR.strings.source_empty_screen else MR.strings.no_results_found,
-                        modifier = Modifier.fillParentMaxSize()
-                    )
-                }
-            } else {
-                itemsIndexed(
-                    items = state.items,
-                    key = { _, model ->
-                        when (model) {
-                            is SourceUiModel.Header -> "header-${model.language}-${model.displayName}"
-                            is SourceUiModel.Item -> "source-${model.headerKey}-${model.source.id}"
-                        }
-                    },
-                    contentType = { _, model ->
-                        when (model) {
-                            is SourceUiModel.Header -> "header"
-                            is SourceUiModel.Item -> "item"
-                        }
-                    },
-                ) { _, model ->
-                    when (model) {
-                        is SourceUiModel.Header -> {
-                            val headerModifier = remember { Modifier.animateItem() }
-                            SourceHeader(
-                                displayName = model.displayName,
-                                modifier = headerModifier
-                            )
-                        }
-                        is SourceUiModel.Item -> {
-                            val itemModifier = remember { Modifier.animateItem() }
-                            val sourceModifier = if (model.source.id == firstSourceId) {
-                                itemModifier
-                                    .semantics { testTagsAsResourceId = true }
-                                    .testTag("benchmark_source_item")
-                            } else {
-                                itemModifier
+                FastScrollLazyColumn(
+                    state = lazyListState,
+                    contentPadding = innerPadding,
+                ) {
+                    itemsIndexed(
+                        items = state.items,
+                        key = { _, model ->
+                            when (model) {
+                                is SourceUiModel.Header -> "header-${model.language}-${model.displayName}"
+                                is SourceUiModel.Item -> "source-${model.headerKey}-${model.source.id}"
                             }
-                            if (useContainer) {
-                                Surface(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(horizontal = 12.dp, vertical = 2.dp),
-                                    shape = MaterialTheme.shapes.large,
-                                    color = MaterialTheme.colorScheme.surfaceVariant,
-                                    tonalElevation = 2.dp,
-                                ) {
+                        },
+                        contentType = { _, model ->
+                            when (model) {
+                                is SourceUiModel.Header -> "header"
+                                is SourceUiModel.Item -> "item"
+                            }
+                        },
+                    ) { _, model ->
+                        when (model) {
+                            is SourceUiModel.Header -> {
+                                SourceHeader(
+                                    displayName = model.displayName,
+                                )
+                            }
+                            is SourceUiModel.Item -> {
+                                val sourceModifier = if (model.source.id == firstSourceId) {
+                                    Modifier
+                                        .semantics { testTagsAsResourceId = true }
+                                        .testTag("benchmark_source_item")
+                                } else {
+                                    Modifier
+                                }
+                                if (useContainer) {
+                                    Surface(
+                                        modifier = cardModifier,
+                                        shape = cardShape,
+                                        color = cardColor,
+                                        tonalElevation = 2.dp,
+                                    ) {
+                                        SourceItem(
+                                            item = model,
+                                            onClickItem = onClickItem,
+                                            onLongClickItem = onLongClickItem,
+                                            onClickPin = onClickPin,
+                                            hideLatest = state.hideLatest,
+                                            modifier = sourceModifier,
+                                        )
+                                    }
+                                } else {
                                     SourceItem(
                                         item = model,
                                         onClickItem = onClickItem,
@@ -186,15 +206,6 @@ fun SourcesScreen(
                                         modifier = sourceModifier,
                                     )
                                 }
-                            } else {
-                                SourceItem(
-                                    item = model,
-                                    onClickItem = onClickItem,
-                                    onLongClickItem = onLongClickItem,
-                                    onClickPin = onClickPin,
-                                    hideLatest = state.hideLatest,
-                                    modifier = sourceModifier,
-                                )
                             }
                         }
                     }

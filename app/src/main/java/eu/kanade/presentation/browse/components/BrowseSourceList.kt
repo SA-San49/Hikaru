@@ -1,6 +1,5 @@
 package eu.kanade.presentation.browse.components
 
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.lazy.LazyColumn
@@ -32,7 +31,7 @@ fun BrowseSourceList(
     onAnimeLongClick: (Anime, Int) -> Unit,
     selection: List<Anime>,
     favoriteIds: ImmutableSet<Long>,
-    onBatchIncrement: (Int) -> Unit = {},
+    @Suppress("UNUSED_PARAMETER") onBatchIncrement: (Int) -> Unit = {},
     usePanorama: Boolean = false,
     firstItemFocusRequester: FocusRequester? = null,
     selectedChipFocusRequester: FocusRequester? = null,
@@ -52,11 +51,10 @@ fun BrowseSourceList(
 
         items(
             count = animeList.itemCount,
-            key = { index -> "source-list-${animeList.peek(index)?.value?.id ?: "placeholder"}-$index" },
+            key = { index -> "source-list-$index" },
             contentType = { index -> if (animeList.peek(index) != null) "anime" else "placeholder" },
         ) { index ->
             val anime by animeList[index]?.collectAsState() ?: return@items
-            onBatchIncrement(index)
 
             val currentOnAnimeClick = remember(onAnimeClick, anime, index) { 
                 { onAnimeClick(anime, index) } 
@@ -130,6 +128,7 @@ internal fun BrowseSourceListItem(
         onClick = onClick,
         entries = entries,
         containerHeight = containerHeight,
+        shouldExtractColor = false,
         usePanorama = usePanorama,
     )
 }
