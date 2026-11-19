@@ -84,7 +84,7 @@ android {
 
     buildTypes {
         val debug by getting {
-            applicationIdSuffix = ".preview"
+            applicationIdSuffix = ".dev"
             versionNameSuffix = "-${getCommitCount()}"
             isPseudoLocalesEnabled = true
             // Every build is signed with the Hikaru key (app/hikaru.jks).
@@ -163,8 +163,6 @@ android {
 
     sourceSets {
         getByName("preview").res.srcDirs("src/beta/res")
-        getByName("debug").res.srcDirs("src/beta/res")
-        maybeCreate("r8Debug").res.srcDirs("src/beta/res")
         getByName("benchmark").res.srcDirs("src/debug/res")
     }
 
