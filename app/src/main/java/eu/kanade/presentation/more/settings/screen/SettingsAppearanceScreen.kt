@@ -20,11 +20,11 @@ import eu.kanade.domain.ui.model.ThemeMode
 import eu.kanade.domain.ui.model.setAppCompatDelegateThemeMode
 import eu.kanade.presentation.more.settings.Preference
 import eu.kanade.presentation.more.settings.screen.appearance.AppCustomThemeColorPickerScreen
+import eu.kanade.presentation.more.settings.screen.appearance.AppIconScreen
 import eu.kanade.presentation.more.settings.screen.appearance.AppLanguageScreen
-import eu.kanade.presentation.more.settings.widget.AppThemeModePreferenceWidget
 import eu.kanade.presentation.more.settings.widget.AppIconPreferenceWidget
+import eu.kanade.presentation.more.settings.widget.AppThemeModePreferenceWidget
 import eu.kanade.presentation.more.settings.widget.AppThemePreferenceWidget
-import eu.kanade.tachiyomi.util.system.AppIconManager
 import tachiyomi.i18n.ank.AMR
 import eu.kanade.tachiyomi.util.system.toast
 import kotlinx.collections.immutable.persistentListOf
@@ -123,13 +123,7 @@ object SettingsAppearanceScreen : SearchableSettings {
                 ) {
                     AppIconPreferenceWidget(
                         value = appIcon,
-                        onItemClick = { newIcon ->
-                            if (newIcon != appIcon) {
-                                appIconPref.set(newIcon)
-                                AppIconManager.setAppIcon(context, newIcon)
-                                context.toast(MR.strings.requires_app_restart)
-                            }
-                        },
+                        onClick = { navigator.push(AppIconScreen()) },
                     )
                 },
             ),
