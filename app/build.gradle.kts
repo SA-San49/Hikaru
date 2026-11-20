@@ -199,6 +199,9 @@ android {
                 "org/apache/commons/codec/language/**/*.txt",
                 "org/apache/commons/codec/language/*.txt",
                 "DebugProbesKt.bin",
+                "**/*.properties",
+                "com/google/api/client/googleapis/*.p12",
+                "com/google/api/client/googleapis/*.jks",
             )
         }
     }
