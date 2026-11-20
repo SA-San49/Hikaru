@@ -22,7 +22,10 @@ import eu.kanade.presentation.more.settings.Preference
 import eu.kanade.presentation.more.settings.screen.appearance.AppCustomThemeColorPickerScreen
 import eu.kanade.presentation.more.settings.screen.appearance.AppLanguageScreen
 import eu.kanade.presentation.more.settings.widget.AppThemeModePreferenceWidget
+import eu.kanade.presentation.more.settings.widget.AppIconPreferenceWidget
 import eu.kanade.presentation.more.settings.widget.AppThemePreferenceWidget
+import eu.kanade.tachiyomi.util.system.AppIconManager
+import tachiyomi.i18n.ank.AMR
 import eu.kanade.tachiyomi.util.system.toast
 import kotlinx.collections.immutable.persistentListOf
 import kotlinx.collections.immutable.toImmutableMap
@@ -68,6 +71,9 @@ object SettingsAppearanceScreen : SearchableSettings {
         val amoledPref = uiPreferences.themeDarkAmoled()
         val amoled by amoledPref.collectAsState()
 
+        val appIconPref = uiPreferences.appIcon()
+        val appIcon by appIconPref.collectAsState()
+
         val customPreferenceItem = if (appTheme == AppTheme.CUSTOM) {
             listOf(
                 Preference.PreferenceItem.TextPreference(
@@ -112,6 +118,20 @@ object SettingsAppearanceScreen : SearchableSettings {
                         true
                     },
                 ),
+                Preference.PreferenceItem.CustomPreference(
+                    title = stringResource(AMR.strings.pref_app_icon),
+                ) {
+                    AppIconPreferenceWidget(
+                        value = appIcon,
+                        onItemClick = { newIcon ->
+                            if (newIcon != appIcon) {
+                                appIconPref.set(newIcon)
+                                AppIconManager.setAppIcon(context, newIcon)
+                                context.toast(MR.strings.requires_app_restart)
+                            }
+                        },
+                    )
+                },
             ),
         )
     }
