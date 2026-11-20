@@ -1,0 +1,103 @@
+name: Hikaru Preview v8a
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  build-preview-v8a:
+    name: Build Preview arm64-v8a APK
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Clone repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          java-version: 17
+          distribution: temurin
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: false
+
+      - name: Run Code Analysis (Detekt)
+        run: ./gradlew detekt --no-daemon
+
+      - name: Compute Preview Revision Tag
+        run: |
+          COMMIT_COUNT=$(($(git rev-list --count HEAD) + 957))
+          TAG="r$COMMIT_COUNT"
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          echo "COMMIT_COUNT=$COMMIT_COUNT" >> "$GITHUB_ENV"
+          echo "Building Hikaru-Preview-${TAG}-arm64-v8a.apk"
+
+      - name: Decode signing keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          test -n "$KEYSTORE_BASE64"
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > app/hikaru.jks
+          test -s app/hikaru.jks
+
+      - name: Build Preview arm64-v8a APK
+        run: |
+          set +e
+          ./gradlew assemblePreview -PabiList=arm64-v8a -Pinclude-telemetry=false -Penable-updater=true --no-daemon --stacktrace 2>&1 | tee preview-v8a-build.log
+          BUILD_STATUS=${PIPESTATUS[0]}
+          if [ "$BUILD_STATUS" -ne 0 ]; then
+            {
+              grep -E '^e: ' preview-v8a-build.log | tail -n 15 || true
+              grep -E '^> Task .* FAILED|^Execution failed for task|^FAILURE:|^Caused by:' preview-v8a-build.log | tail -n 15 || true
+              tail -n 10 preview-v8a-build.log
+            } | awk '!seen[$0]++' | tail -n 40 | while IFS= read -r line; do
+              echo "::error::$line"
+            done
+          fi
+          exit "$BUILD_STATUS"
+        env:
+          SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
+          SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
+          SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
+          MAL_CLIENT_SECRET: ${{ secrets.MAL_CLIENT_SECRET }}
+          DISCORD_RPC_APP_ID: ${{ vars.DISCORD_RPC_APP_ID }}
+
+      - name: Rename and validate Preview arm64-v8a APK
+        run: |
+          TAG="${{ env.TAG }}"
+          mkdir -p dist
+          TARGET_APK="dist/Hikaru-Preview-${TAG}-arm64-v8a.apk"
+          mapfile -t APKS < <(find app/build/outputs/apk/preview -type f -name "*.apk" | sort)
+          test "${#APKS[@]}" -gt 0
+          printf 'Generated APKs:\n'
+          for candidate in "${APKS[@]}"; do
+            printf '  %s (%s bytes)\n' "$candidate" "$(stat -c%s "$candidate")"
+          done
+          SOURCE_APK=$(find app/build/outputs/apk/preview -type f -name "*arm64-v8a*.apk" | head -1)
+          test -n "$SOURCE_APK"
+          cp "$SOURCE_APK" "$TARGET_APK"
+          test -s "$TARGET_APK"
+          SIZE_BYTES=$(stat -c%s "$TARGET_APK")
+          SIZE_MB=$((SIZE_BYTES / 1024 / 1024))
+          echo "Final APK: $TARGET_APK (${SIZE_MB} MiB / ${SIZE_BYTES} bytes)"
+
+      - name: Upload Preview arm64-v8a APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Hikaru-Preview-${{ env.TAG }}-arm64-v8a
+          path: dist/Hikaru-Preview-${{ env.TAG }}-arm64-v8a.apk
+          if-no-files-found: error
+          retention-days: 14
