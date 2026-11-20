@@ -195,6 +195,10 @@ android {
                 "META-INF/NOTICE",
                 "META-INF/README.md",
                 "META-INF/versions/9/OSGI-INF/MANIFEST.MF",
+                "*.properties",
+                "org/apache/commons/codec/language/**/*.txt",
+                "org/apache/commons/codec/language/*.txt",
+                "DebugProbesKt.bin",
             )
         }
     }

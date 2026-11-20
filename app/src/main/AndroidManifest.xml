@@ -158,7 +158,7 @@
             android:exported="true"
             android:enabled="false"
             android:icon="@mipmap/ic_launcher_dragon"
-            android:roundIcon="@mipmap/ic_launcher_dragon_round">
+            android:roundIcon="@mipmap/ic_launcher_dragon">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
@@ -177,7 +177,7 @@
             android:exported="true"
             android:enabled="false"
             android:icon="@mipmap/ic_launcher_moon_tree"
-            android:roundIcon="@mipmap/ic_launcher_moon_tree_round">
+            android:roundIcon="@mipmap/ic_launcher_moon_tree">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
@@ -196,7 +196,7 @@
             android:exported="true"
             android:enabled="false"
             android:icon="@mipmap/ic_launcher_crimson_torii"
-            android:roundIcon="@mipmap/ic_launcher_crimson_torii_round">
+            android:roundIcon="@mipmap/ic_launcher_crimson_torii">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
@@ -215,7 +215,7 @@
             android:exported="true"
             android:enabled="false"
             android:icon="@mipmap/ic_launcher_blood_moon_girl"
-            android:roundIcon="@mipmap/ic_launcher_blood_moon_girl_round">
+            android:roundIcon="@mipmap/ic_launcher_blood_moon_girl">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
@@ -234,7 +234,7 @@
             android:exported="true"
             android:enabled="false"
             android:icon="@mipmap/ic_launcher_sakura_lantern"
-            android:roundIcon="@mipmap/ic_launcher_sakura_lantern_round">
+            android:roundIcon="@mipmap/ic_launcher_sakura_lantern">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
@@ -253,7 +253,7 @@
             android:exported="true"
             android:enabled="false"
             android:icon="@mipmap/ic_launcher_enso_sakura"
-            android:roundIcon="@mipmap/ic_launcher_enso_sakura_round">
+            android:roundIcon="@mipmap/ic_launcher_enso_sakura">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
@@ -272,7 +272,7 @@
             android:exported="true"
             android:enabled="false"
             android:icon="@mipmap/ic_launcher_violet_twilight"
-            android:roundIcon="@mipmap/ic_launcher_violet_twilight_round">
+            android:roundIcon="@mipmap/ic_launcher_violet_twilight">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
