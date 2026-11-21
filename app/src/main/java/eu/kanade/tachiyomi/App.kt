@@ -145,6 +145,7 @@ class App : Application(), DefaultLifecycleObserver, SingletonImageLoader.Factor
             Injekt.get<Database>()
             val uiPreferences = Injekt.get<UiPreferences>()
             uiPreferences.migrateNavStyle()
+            eu.kanade.tachiyomi.util.system.AppIconManager.ensureValidLauncherIcon(this@App)
             Injekt.get<NetworkHelper>()
             Injekt.get<eu.kanade.tachiyomi.extension.ExtensionManager>()
             Injekt.get<SourceManager>()
