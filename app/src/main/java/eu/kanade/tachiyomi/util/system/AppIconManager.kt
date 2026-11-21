@@ -86,4 +86,26 @@ object AppIconManager {
 
         return explicitlyEnabled ?: AppIcon.DEFAULT
     }
+
+    /**
+     * Ensures at least one valid launcher activity-alias is active (e.g. after removing an icon
+     * that a user previously had selected prior to an app update).
+     */
+    fun ensureValidLauncherIcon(context: Context) {
+        val packageManager = context.packageManager
+        val packageName = context.packageName
+        val hasActiveAlias = AppIcon.entries.any { icon ->
+            try {
+                val component = ComponentName(packageName, icon.componentClassName)
+                val state = packageManager.getComponentEnabledSetting(component)
+                state == PackageManager.COMPONENT_ENABLED_STATE_ENABLED ||
+                    (icon == AppIcon.DEFAULT && state == PackageManager.COMPONENT_ENABLED_STATE_DEFAULT)
+            } catch (_: IllegalArgumentException) {
+                false
+            }
+        }
+        if (!hasActiveAlias) {
+            setAppIcon(context, AppIcon.DEFAULT)
+        }
+    }
 }
