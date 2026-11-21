@@ -1,15 +1,20 @@
 package eu.kanade.presentation.more.settings.screen.about
 
 import android.content.Context
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Public
+import androidx.compose.material.icons.outlined.AutoAwesome
+import androidx.compose.material.icons.outlined.Description
+import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.outlined.NewReleases
+import androidx.compose.material.icons.outlined.PrivacyTip
+import androidx.compose.material.icons.outlined.SystemUpdate
+import androidx.compose.material.icons.outlined.Translate
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -17,6 +22,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.unit.dp
@@ -25,11 +31,14 @@ import cafe.adriel.voyager.navigator.currentOrThrow
 import eu.kanade.domain.ui.UiPreferences
 import eu.kanade.presentation.components.AppBar
 import eu.kanade.presentation.more.LogoHeader
-import eu.kanade.presentation.more.settings.widget.TextPreferenceWidget
+import eu.kanade.presentation.theme.LocalSettingsAccentColor
+import eu.kanade.presentation.more.components.MoreItem
+import eu.kanade.presentation.more.components.MoreSection
 import eu.kanade.presentation.util.LocalBackPress
 import eu.kanade.presentation.util.Screen
 import eu.kanade.tachiyomi.BuildConfig
 import eu.kanade.tachiyomi.data.updater.AppUpdateChecker
+import eu.kanade.tachiyomi.data.updater.RELEASE_URL
 import eu.kanade.tachiyomi.ui.more.ComingUpdatesScreen
 import eu.kanade.tachiyomi.ui.more.NewUpdateScreen
 import eu.kanade.tachiyomi.ui.more.WhatsNewScreen
@@ -39,8 +48,8 @@ import eu.kanade.tachiyomi.util.system.copyToClipboard
 import eu.kanade.tachiyomi.util.system.isDebugBuildType
 import eu.kanade.tachiyomi.util.system.isPreviewBuildType
 import eu.kanade.tachiyomi.util.system.isReleaseBuildType
+import eu.kanade.tachiyomi.util.system.openInBrowser
 import eu.kanade.tachiyomi.util.system.toast
-import eu.kanade.tachiyomi.util.system.updaterEnabled
 import kotlinx.coroutines.launch
 import logcat.LogPriority
 import tachiyomi.core.common.util.lang.withIOContext
@@ -49,7 +58,6 @@ import tachiyomi.core.common.util.system.logcat
 import tachiyomi.domain.release.interactor.GetApplicationRelease
 import tachiyomi.i18n.MR
 import tachiyomi.i18n.kmk.KMR
-import tachiyomi.presentation.core.components.LinkIcon
 import tachiyomi.presentation.core.components.ScrollbarLazyColumn
 import tachiyomi.presentation.core.components.material.Scaffold
 import tachiyomi.presentation.core.i18n.stringResource
@@ -62,31 +70,30 @@ import java.time.Instant
 import java.time.LocalDateTime
 import java.time.ZoneId
 
-import androidx.compose.material3.MaterialTheme
-import eu.kanade.presentation.more.components.MoreItem
-import eu.kanade.presentation.more.components.MoreSection
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.ui.graphics.Color
+private const val DISCORD_BRAND_HEX = 0xFF5865F2
+private val AboutScreenPadding = 16.dp
+private val AboutSectionSpacing = 20.dp
+private val AboutLoadingIndicatorSize = 20.dp
+private val AboutLoadingStrokeWidth = 2.dp
 
 object AboutScreen : Screen() {
+
     private fun readResolve(): Any = AboutScreen
 
     @Composable
+    @Suppress("LongMethod")
     override fun Content() {
         val scope = rememberCoroutineScope()
         val context = LocalContext.current
         val uriHandler = LocalUriHandler.current
         val handleBack = LocalBackPress.current
         val navigator = LocalNavigator.currentOrThrow
+        val accentColor = LocalSettingsAccentColor.current
         var isCheckingUpdates by remember { mutableStateOf(false) }
-
         // KMK -->
         var isCheckingWhatsNew by remember { mutableStateOf(false) }
         var isCheckingWhatsComing by remember { mutableStateOf(false) }
         // KMK <--
-
         // SY -->
         var showWhatsNewDialog by remember { mutableStateOf(false) }
         // SY <--
@@ -99,22 +106,33 @@ object AboutScreen : Screen() {
                     scrollBehavior = scrollBehavior,
                 )
             },
-            containerColor = MaterialTheme.colorScheme.background
+            containerColor = MaterialTheme.colorScheme.background,
         ) { contentPadding ->
             ScrollbarLazyColumn(
-                contentPadding = PaddingValues(16.dp),
+                contentPadding = PaddingValues(
+                    start = AboutScreenPadding,
+                    end = AboutScreenPadding,
+                    top = AboutScreenPadding,
+                    bottom = AboutScreenPadding + contentPadding.calculateBottomPadding(),
+                ),
                 modifier = Modifier.padding(top = contentPadding.calculateTopPadding()),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
+                verticalArrangement = Arrangement.spacedBy(AboutSectionSpacing),
             ) {
                 item {
                     LogoHeader()
                 }
 
                 item {
-                    MoreSection(title = "App Information") {
+                    MoreSection(
+                        title = "App Information",
+                        accentColor = accentColor,
+                    ) {
                         MoreItem(
                             title = stringResource(MR.strings.version),
                             subtitle = getVersionName(withBuildDate = true),
+                            icon = Icons.Outlined.Info,
+                            iconTint = accentColor,
+                            showDivider = true,
                             onClick = {
                                 val deviceInfo = CrashLogUtil(context).getDebugInfo()
                                 context.copyToClipboard("Debug information", deviceInfo)
@@ -124,11 +142,18 @@ object AboutScreen : Screen() {
                         MoreItem(
                             title = stringResource(MR.strings.check_for_updates),
                             subtitle = if (isCheckingUpdates) "Checking..." else null,
+                            icon = Icons.Outlined.SystemUpdate,
+                            iconTint = accentColor,
+                            showDivider = true,
+                            trailingContent = if (isCheckingUpdates) {
+                                { AboutLoadingSpinner() }
+                            } else {
+                                null
+                            },
                             onClick = {
                                 if (!isCheckingUpdates) {
                                     scope.launch {
                                         isCheckingUpdates = true
-
                                         checkVersion(
                                             context = context,
                                             onAvailableUpdate = { result ->
@@ -150,14 +175,22 @@ object AboutScreen : Screen() {
                         )
 
                         // KMK -->
+                        val hasWhatsComing = isReleaseBuildType || isDebugBuildType
                         MoreItem(
                             title = stringResource(MR.strings.whats_new),
                             subtitle = if (isCheckingWhatsNew) "Checking..." else null,
+                            icon = Icons.Outlined.NewReleases,
+                            iconTint = accentColor,
+                            showDivider = hasWhatsComing,
+                            trailingContent = if (isCheckingWhatsNew) {
+                                { AboutLoadingSpinner() }
+                            } else {
+                                null
+                            },
                             onClick = {
                                 if (!isCheckingWhatsNew) {
                                     scope.launch {
                                         isCheckingWhatsNew = true
-
                                         getReleaseNotes(
                                             context = context,
                                             onAvailableUpdate = { result ->
@@ -178,15 +211,21 @@ object AboutScreen : Screen() {
                             },
                         )
 
-                        if (isReleaseBuildType || isDebugBuildType) {
+                        if (hasWhatsComing) {
                             MoreItem(
                                 title = stringResource(KMR.strings.whats_coming),
                                 subtitle = if (isCheckingWhatsComing) "Checking..." else null,
+                                icon = Icons.Outlined.AutoAwesome,
+                                iconTint = accentColor,
+                                trailingContent = if (isCheckingWhatsComing) {
+                                    { AboutLoadingSpinner() }
+                                } else {
+                                    null
+                                },
                                 onClick = {
                                     if (!isCheckingWhatsComing) {
                                         scope.launch {
                                             isCheckingWhatsComing = true
-
                                             checkVersion(
                                                 context = context,
                                                 onAvailableUpdate = { result ->
@@ -213,9 +252,15 @@ object AboutScreen : Screen() {
                 }
 
                 item {
-                    MoreSection(title = "Community") {
+                    MoreSection(
+                        title = "Community",
+                        accentColor = accentColor,
+                    ) {
                         MoreItem(
                             title = stringResource(MR.strings.help_translate),
+                            icon = Icons.Outlined.Translate,
+                            iconTint = accentColor,
+                            showDivider = true,
                             onClick = {
                                 uriHandler.openUri(
                                     "https://crowdin.com/project/komikku/" +
@@ -223,37 +268,43 @@ object AboutScreen : Screen() {
                                 )
                             },
                         )
-
                         MoreItem(
                             title = stringResource(MR.strings.licenses),
+                            icon = Icons.Outlined.Description,
+                            iconTint = accentColor,
+                            showDivider = true,
                             onClick = { navigator.push(OpenSourceLicensesScreen()) },
                         )
-
                         MoreItem(
                             title = stringResource(MR.strings.privacy_policy),
+                            icon = Icons.Outlined.PrivacyTip,
+                            iconTint = accentColor,
                             onClick = { uriHandler.openUri("https://mihon.app/privacy/") },
                         )
                     }
                 }
 
                 item {
-                    MoreSection(title = "Links") {
+                    MoreSection(
+                        title = "Links",
+                        accentColor = accentColor,
+                    ) {
                         if (BuildConfig.DISCORD_INVITE_URL.isNotBlank()) {
                             MoreItem(
                                 title = "Discord",
                                 subtitle = "Join our community",
                                 icon = CustomIcons.Discord,
-                                iconTint = Color(0xFF5865F2),
-                                onClick = { uriHandler.openUri(BuildConfig.DISCORD_INVITE_URL) }
+                                iconTint = Color(DISCORD_BRAND_HEX),
+                                showDivider = true,
+                                onClick = { uriHandler.openUri(BuildConfig.DISCORD_INVITE_URL) },
                             )
                         }
-
                         MoreItem(
                             title = "GitHub",
                             subtitle = "Source code",
                             icon = CustomIcons.Github,
                             iconTint = MaterialTheme.colorScheme.onSurface,
-                            onClick = { uriHandler.openUri("https://github.com/SA-San49/Hikaru") }
+                            onClick = { uriHandler.openUri("https://github.com/SA-San49/Hikaru") },
                         )
                     }
                 }
@@ -296,10 +347,12 @@ object AboutScreen : Screen() {
                     is GetApplicationRelease.Result.OsTooOld -> {
                         context.toast(MR.strings.update_check_eol)
                     }
-                    else -> {}
+                    is GetApplicationRelease.Result.ThirdPartyInstallation -> {
+                        context.openInBrowser(RELEASE_URL)
+                    }
                 }
             } catch (e: Exception) {
-                context.toast(e.message)
+                context.toast(e.message ?: "Unable to check for updates")
                 logcat(LogPriority.ERROR, e)
             } finally {
                 onFinish()
@@ -379,4 +432,12 @@ object AboutScreen : Screen() {
             BuildConfig.BUILD_TIME
         }
     }
+}
+
+@Composable
+private fun AboutLoadingSpinner() {
+    CircularProgressIndicator(
+        modifier = Modifier.size(AboutLoadingIndicatorSize),
+        strokeWidth = AboutLoadingStrokeWidth,
+    )
 }

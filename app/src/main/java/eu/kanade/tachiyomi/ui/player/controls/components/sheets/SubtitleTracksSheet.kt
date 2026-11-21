@@ -53,7 +53,6 @@ fun SubtitlesSheet(
     selectedTracks: List<Int>,
     onSelect: (VideoTrack) -> Unit,
     onAddSubtitle: () -> Unit,
-    onAddJimakuSubtitle: () -> Unit,
     onOpenSubtitleSettings: () -> Unit,
     onOpenSubtitleDelay: () -> Unit,
     onDismissRequest: () -> Unit,
@@ -89,10 +88,6 @@ fun SubtitlesSheet(
             AddTrackRow(
                 title = stringResource(MR.strings.player_sheets_add_ext_sub),
                 onClick = onAddSubtitle,
-            )
-            AddTrackRow(
-                title = stringResource(MR.strings.player_sheets_add_jimaku_sub),
-                onClick = onAddJimakuSubtitle,
             )
         },
         track = { track ->

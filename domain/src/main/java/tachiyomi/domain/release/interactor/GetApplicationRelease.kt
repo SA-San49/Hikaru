@@ -26,9 +26,13 @@ class GetApplicationRelease(
         }
 
         // KMK -->
-        val releases = service.releaseNotes(arguments.repository)
+        val allReleases = service.releaseNotes(arguments.repository)
+        lastChecked.set(now.toEpochMilli())
+
+        val releases = allReleases
             .filter {
-                !it.preRelease &&
+                !it.draft &&
+                    (!it.preRelease || arguments.isPreview) &&
                     isNewVersion(
                         arguments.isPreview,
                         arguments.commitCount,
@@ -39,8 +43,6 @@ class GetApplicationRelease(
 
         val latest = releases.getLatest() ?: return Result.NoNewUpdate
         // KMK <--
-
-        lastChecked.set(now.toEpochMilli())
 
         // Check if latest version is different from current version
         val isNewVersion = isNewVersion(
@@ -59,7 +61,7 @@ class GetApplicationRelease(
     // KMK -->
     suspend fun awaitReleaseNotes(arguments: Arguments): Result {
         val releases = service.releaseNotes(arguments.repository)
-            .filter { !it.preRelease }
+            .filter { !it.draft && (!it.preRelease || arguments.isPreview) }
         val checksumRegex = """---(\R|.)*Checksums(\R|.)*""".toRegex()
 
         val release = releases.firstOrNull()
@@ -89,25 +91,27 @@ class GetApplicationRelease(
         versionName: String,
         versionTag: String,
     ): Boolean {
-        // Removes prefixes like "r" or "v"
-        val newVersion = versionTag.replace("[^\\d.]".toRegex(), "")
-        return if (isPreview) {
-            // Preview builds: based on releases in "SA-San49/Hikaru" repo
-            // tagged as something like "r1234"
+        // Strip optional build/commit suffix like "0.5.223-4770" and prefixes like "r" or "v"
+        val newVersion = versionTag.substringBefore("-").replace("[^\\d.]".toRegex(), "")
+        return if (isPreview && versionTag.startsWith("r", ignoreCase = true) && newVersion.toIntOrNull() != null) {
+            // Preview builds: based on releases tagged as something like "r1234"
             newVersion.toInt() > commitCount
         } else {
-            // Release builds: based on releases in "SA-San49/Hikaru" repo
-            // tagged as something like "v0.1.2"
-            val oldVersion = versionName.replace("[^\\d.]".toRegex(), "")
+            // Release builds: based on SemVer releases tagged like "v0.1.2"
+            val oldVersion = versionName.substringBefore("-").replace("[^\\d.]".toRegex(), "")
 
-            val newSemVer = newVersion.split(".").map { it.toInt() }
-            val oldSemVer = oldVersion.split(".").map { it.toInt() }
+            val newSemVer = newVersion.split(".").mapNotNull { it.toIntOrNull() }
+            val oldSemVer = oldVersion.split(".").mapNotNull { it.toIntOrNull() }
+            if (newSemVer.isEmpty() || oldSemVer.isEmpty()) {
+                return false
+            }
 
-            oldSemVer.mapIndexed { index, i ->
-                if (newSemVer[index] > i) {
-                    return true
-                }
-                if (newSemVer[index] < i) return false
+            val maxSegments = maxOf(newSemVer.size, oldSemVer.size)
+            for (index in 0 until maxSegments) {
+                val newPart = newSemVer.getOrElse(index) { 0 }
+                val oldPart = oldSemVer.getOrElse(index) { 0 }
+                if (newPart > oldPart) return true
+                if (newPart < oldPart) return false
             }
 
             false
