@@ -1,35 +1,19 @@
 package eu.kanade.domain.ui.model
 
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.CalendarMonth
-import androidx.compose.material.icons.filled.DynamicFeed
-import androidx.compose.material.icons.filled.Explore
-import androidx.compose.material.icons.filled.GridView
-import androidx.compose.material.icons.filled.History
-import androidx.compose.material.icons.filled.NewReleases
-import androidx.compose.material.icons.filled.VideoLibrary
-import androidx.compose.material.icons.outlined.CalendarMonth
-import androidx.compose.material.icons.outlined.DynamicFeed
-import androidx.compose.material.icons.outlined.Explore
-import androidx.compose.material.icons.outlined.GridView
-import androidx.compose.material.icons.outlined.History
-import androidx.compose.material.icons.outlined.NewReleases
-import androidx.compose.material.icons.outlined.VideoLibrary
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.CallToAction
+import androidx.compose.material.icons.outlined.DateRange
 import dev.icerock.moko.resources.StringResource
 import eu.kanade.presentation.util.Tab
+import eu.kanade.tachiyomi.R
 import eu.kanade.tachiyomi.ui.browse.BrowseTab
 import eu.kanade.tachiyomi.ui.history.HistoryTab
 import eu.kanade.tachiyomi.ui.home.FeedTab
 import eu.kanade.tachiyomi.ui.library.LibraryTab
 import eu.kanade.tachiyomi.ui.more.MoreTab
 import eu.kanade.tachiyomi.ui.updates.UpdatesTab
-import kotlinx.collections.immutable.ImmutableList
-import kotlinx.collections.immutable.ImmutableMap
-import kotlinx.collections.immutable.persistentListOf
-import kotlinx.collections.immutable.persistentMapOf
-import kotlinx.collections.immutable.toImmutableList
-import kotlinx.collections.immutable.toImmutableMap
+import kotlinx.collections.immutable.*
 import mihon.feature.airingschedule.AiringScheduleTab
 import tachiyomi.i18n.MR
 
@@ -273,23 +257,25 @@ enum class NavItem(
     val id: String,
     val titleRes: StringResource,
     val tab: Tab,
-    val selectedIcon: ImageVector,
-    val unselectedIcon: ImageVector,
-    val behavior: NavBehavior = NavBehavior(),
+    val iconRes: Int,
+    val staticIconRes: Int,
+    val iconVector: ImageVector? = null,
+    val behavior: NavBehavior = NavBehavior()
 ) {
-    LIBRARY("library", MR.strings.label_library, LibraryTab, Icons.Filled.VideoLibrary, Icons.Outlined.VideoLibrary),
-    FEED("feed", MR.strings.feed, FeedTab, Icons.Filled.DynamicFeed, Icons.Outlined.DynamicFeed),
-    UPDATES("updates", MR.strings.label_recent_updates, UpdatesTab, Icons.Filled.NewReleases, Icons.Outlined.NewReleases),
-    HISTORY("history", MR.strings.history, HistoryTab, Icons.Filled.History, Icons.Outlined.History),
+    LIBRARY("library", MR.strings.label_library, LibraryTab, R.drawable.anim_library_enter, R.drawable.ic_animelibrary_outline_24dp),
+    FEED("feed", MR.strings.feed, FeedTab, R.drawable.ic_dynamic_feed_24dp, R.drawable.ic_dynamic_feed_24dp),
+    UPDATES("updates", MR.strings.label_recent_updates, UpdatesTab, R.drawable.anim_updates_enter, R.drawable.ic_updates_outline_24dp),
+    HISTORY("history", MR.strings.history, HistoryTab, R.drawable.anim_history_enter, R.drawable.ic_progress_clock_24dp),
     SCHEDULE(
         "schedule",
         MR.strings.label_schedule_short,
         AiringScheduleTab,
-        Icons.Filled.CalendarMonth,
-        Icons.Outlined.CalendarMonth,
+        R.drawable.ic_progress_clock_24dp,
+        R.drawable.ic_progress_clock_24dp,
+        Icons.Outlined.DateRange,
     ),
-    BROWSE("browse", MR.strings.browse, BrowseTab, Icons.Filled.Explore, Icons.Outlined.Explore),
-    MORE("more", MR.strings.label_more, MoreTab, Icons.Filled.GridView, Icons.Outlined.GridView);
+    BROWSE("browse", MR.strings.browse, BrowseTab, R.drawable.anim_browse_enter, R.drawable.ic_browse_filled_24dp),
+    MORE("more", MR.strings.label_more, MoreTab, R.drawable.anim_more_enter, R.drawable.ic_overflow_24dp);
 
     companion object {
         fun fromId(id: String): NavItem? = entries.find { it.id == id }

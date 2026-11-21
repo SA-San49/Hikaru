@@ -3,7 +3,6 @@ package eu.kanade.presentation.util
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedContentTransitionScope
 import androidx.compose.animation.ContentTransform
-import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
@@ -39,9 +38,6 @@ import uy.kohesive.injekt.api.get
  * For invoking back press to the parent activity
  */
 val LocalBackPress: ProvidableCompositionLocal<(() -> Unit)?> = staticCompositionLocalOf { null }
-
-private const val NAV_TRANSITION_DURATION_MS = 200
-private const val NAV_FADE_DURATION_MS = 120
 
 internal val uiPreferences: UiPreferences = Injekt.get()
 
@@ -100,11 +96,9 @@ fun DefaultNavigatorScreenTransition(
                 materialSharedAxisX(
                     forward = navigator.lastEvent != StackEvent.Pop,
                     slideDistance = slideDistance,
-                    durationMillis = NAV_TRANSITION_DURATION_MS,
                 )
             } else {
-                fadeIn(animationSpec = tween(NAV_FADE_DURATION_MS)) togetherWith
-                    fadeOut(animationSpec = tween(NAV_FADE_DURATION_MS))
+                fadeIn() togetherWith fadeOut()
             }
         },
         modifier = modifier,

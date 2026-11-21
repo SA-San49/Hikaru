@@ -32,6 +32,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.vectorResource
 import androidx.compose.ui.unit.dp
 import cafe.adriel.voyager.navigator.LocalNavigator
@@ -239,7 +240,12 @@ fun MoreScreen(
                     hiddenTabs.forEach { navItem ->
                         MoreItem(
                             title = stringResource(navItem.titleRes),
-                            icon = navItem.unselectedIcon,
+                            icon = navItem.iconVector,
+                            iconPainter = if (navItem.iconVector == null) {
+                                painterResource(navItem.staticIconRes)
+                            } else {
+                                null
+                            },
                             iconTint = accentColor,
                             onClick = {
                                 scope.launch {

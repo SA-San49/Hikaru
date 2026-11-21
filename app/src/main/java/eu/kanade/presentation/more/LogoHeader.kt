@@ -122,7 +122,9 @@ fun LogoHeader(
                     contentAlignment = Alignment.Center,
                 ) {
                     Image(
-                        painter = painterResource(R.drawable.ic_splash_logo),
+                        painter = painterResource(
+                            if (isDark) R.drawable.ic_splash_logo_raw_dark else R.drawable.ic_splash_logo_raw,
+                        ),
                         contentDescription = null,
                         modifier = Modifier.size(LogoImageSize),
                     )

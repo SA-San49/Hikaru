@@ -4,19 +4,21 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.EnterTransition
-import androidx.compose.animation.ExitTransition
-import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.scaleIn
-import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.togetherWith
+import androidx.compose.animation.graphics.ExperimentalAnimationGraphicsApi
+import androidx.compose.animation.graphics.res.animatedVectorResource
+import androidx.compose.animation.graphics.res.rememberAnimatedVectorPainter
+import androidx.compose.animation.graphics.vector.AnimatedImageVector
+import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -35,11 +37,10 @@ import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBarItem
-import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.NavigationRailItem
-import androidx.compose.material3.NavigationRailItemDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -58,7 +59,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.hapticfeedback.HapticFeedback
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
@@ -66,23 +67,33 @@ import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.testTagsAsResourceId
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.util.fastFilter
+import androidx.compose.ui.util.fastForEach
 import cafe.adriel.voyager.core.model.rememberScreenModel
 import cafe.adriel.voyager.navigator.LocalNavigator
+import cafe.adriel.voyager.navigator.Navigator
 import cafe.adriel.voyager.navigator.currentOrThrow
+import cafe.adriel.voyager.navigator.tab.LocalTabNavigator
 import cafe.adriel.voyager.navigator.tab.TabNavigator
+import eu.kanade.core.preference.asState
+import eu.kanade.domain.source.service.SourcePreferences
 import eu.kanade.domain.ui.UiPreferences
 import eu.kanade.domain.ui.model.NavBehavior
 import eu.kanade.domain.ui.model.NavLabelVisibility
 import eu.kanade.domain.ui.model.NavItem
 import eu.kanade.domain.ui.model.NavAction
 import eu.kanade.presentation.util.Screen
+import eu.kanade.presentation.util.Tab
 import eu.kanade.presentation.util.isTabletUi
+import eu.kanade.tachiyomi.R
+import eu.kanade.tachiyomi.data.connections.discord.DiscordRPCService
+import eu.kanade.tachiyomi.data.connections.discord.DiscordScreen
 import eu.kanade.tachiyomi.ui.anime.AnimeScreen
 import eu.kanade.tachiyomi.ui.browse.BrowseTab
 import eu.kanade.tachiyomi.ui.download.DownloadQueueScreen
@@ -94,9 +105,13 @@ import mihon.feature.airingschedule.AiringScheduleTab
 import tachiyomi.presentation.core.i18n.stringResource
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.launch
+import soup.compose.material.motion.animation.materialFadeThroughIn
+import soup.compose.material.motion.animation.materialFadeThroughOut
 import tachiyomi.core.common.preference.PreferenceStore
+import tachiyomi.domain.library.service.LibraryPreferences
 import tachiyomi.i18n.MR
 import tachiyomi.presentation.core.components.material.NavigationBar
 import tachiyomi.presentation.core.components.material.NavigationRail
@@ -114,13 +129,6 @@ object HomeScreen : Screen() {
     private val showBottomNavEvent = Channel<Boolean>()
 
     private const val TAB_NAVIGATOR_KEY = "HomeTabs"
-    private const val SELECTED_ICON_SCALE = 1.12f
-    private const val DEFAULT_ICON_SCALE = 1f
-    private const val ICON_SCALE_ANIM_MS = 140
-    private const val TAB_ENTER_ANIM_MS = 140
-    private const val TAB_EXIT_ANIM_MS = 90
-    private const val TAB_ENTER_SCALE = 0.985f
-    private const val MAX_BADGE_COUNT = 99
 
     private val uiPreferences: UiPreferences by injectLazy()
     private val defaultTab = uiPreferences.startScreen().get().tab.let { 
@@ -134,13 +142,11 @@ object HomeScreen : Screen() {
         val bottomNavTabs by uiPreferences.bottomNavTabs().collectAsStatePref()
         val animatedTransitions by uiPreferences.animatedTransitions().collectAsStatePref()
         val hazeEnabled by uiPreferences.hazeEnabled().collectAsStatePref()
-        val behaviorMap by uiPreferences.bottomNavBehaviors().collectAsStatePref()
+        val tabFadeDuration = remember(animatedTransitions) { if (animatedTransitions) 200 else 0 }
 
         val navigator = LocalNavigator.currentOrThrow
         val scope = rememberCoroutineScope()
         val context = LocalContext.current
-        val haptic = LocalHapticFeedback.current
-        val executor = remember(context, scope, navigator) { NavActionExecutor(context, scope, navigator) }
 
         val screenModel = rememberScreenModel { HomeScreenModel(context) }
         val adaptiveEngine = screenModel.adaptiveEngine
@@ -191,18 +197,7 @@ object HomeScreen : Screen() {
                             ) {
                                 for (navItem in visibleNavItems) {
                                     key(navItem.id) {
-                                        val behavior = behaviorMap[navItem.id] ?: NavBehavior()
-                                        HomeNavigationRailItem(
-                                            tabNavigator = tabNavigator,
-                                            navItem = navItem,
-                                            navLabelVisibility = navLabelVisibility,
-                                            behavior = behavior,
-                                            animatedTransitions = animatedTransitions,
-                                            executor = executor,
-                                            haptic = haptic,
-                                            updatesCount = updatesCount,
-                                            extensionUpdatesCount = extensionUpdatesCount,
-                                        )
+                                        HomeNavigationRailItem(tabNavigator, navItem, navLabelVisibility, adaptiveDecision, updatesCount, extensionUpdatesCount)
                                     }
                                 }
                             }
@@ -224,19 +219,7 @@ object HomeScreen : Screen() {
                                 ) {
                                     for (navItem in visibleNavItems) {
                                         key(navItem.id) {
-                                            val behavior = behaviorMap[navItem.id] ?: NavBehavior()
-                                            HomeNavigationBarItem(
-                                                rowScope = this,
-                                                tabNavigator = tabNavigator,
-                                                navItem = navItem,
-                                                navLabelVisibility = navLabelVisibility,
-                                                behavior = behavior,
-                                                animatedTransitions = animatedTransitions,
-                                                executor = executor,
-                                                haptic = haptic,
-                                                updatesCount = updatesCount,
-                                                extensionUpdatesCount = extensionUpdatesCount,
-                                            )
+                                            HomeNavigationBarItem(this, tabNavigator, navItem, navLabelVisibility, adaptiveDecision, updatesCount, extensionUpdatesCount)
                                         }
                                     }
                                 }
@@ -254,17 +237,12 @@ object HomeScreen : Screen() {
                         AnimatedContent(
                             targetState = tabNavigator.current,
                             transitionSpec = {
-                                if (animatedTransitions) {
-                                    (
-                                        fadeIn(animationSpec = tween(TAB_ENTER_ANIM_MS)) +
-                                            scaleIn(
-                                                initialScale = TAB_ENTER_SCALE,
-                                                animationSpec = tween(TAB_ENTER_ANIM_MS),
-                                            )
-                                        ) togetherWith fadeOut(animationSpec = tween(TAB_EXIT_ANIM_MS))
-                                } else {
-                                    EnterTransition.None togetherWith ExitTransition.None
-                                }
+                                materialFadeThroughIn(
+                                    durationMillis = tabFadeDuration,
+                                ) togetherWith
+                                    materialFadeThroughOut(
+                                        durationMillis = tabFadeDuration,
+                                    )
                             },
                             label = "tabContent",
                             contentKey = { it.key },
@@ -368,24 +346,25 @@ object HomeScreen : Screen() {
         tabNavigator: TabNavigator,
         navItem: NavItem,
         navLabelVisibility: NavLabelVisibility,
-        behavior: NavBehavior,
-        animatedTransitions: Boolean,
-        executor: NavActionExecutor,
-        haptic: HapticFeedback,
+        adaptiveDecision: AdaptiveDecision?,
         updatesCount: Int,
         extensionUpdatesCount: Int,
     ) {
         val tab = navItem.tab
         val navigator = LocalNavigator.currentOrThrow
         val scope = rememberCoroutineScope()
+        val context = LocalContext.current
+        val behaviorMap by uiPreferences.bottomNavBehaviors().collectAsStatePref()
+        val behavior = remember(behaviorMap, navItem.id) { behaviorMap[navItem.id] ?: NavBehavior() }
+
         val selected = tabNavigator.current.key == tab.key
+        val haptic = LocalHapticFeedback.current
+        val executor = remember(context, scope, navigator) { NavActionExecutor(context, scope, navigator) }
+        
         val title = stringResource(navItem.titleRes)
 
-        val onClick: () -> Unit = remember(
-            selected, navItem.id, tabNavigator, tab, scope, navigator, executor, haptic,
-        ) {
+        val onClick: () -> Unit = remember(selected, navItem.id, tabNavigator, tab, scope, navigator, executor) {
             {
-                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                 if (!selected) {
                     executor.logClick(navItem.id)
                     tabNavigator.current = tab
@@ -414,21 +393,17 @@ object HomeScreen : Screen() {
             }
         }
 
-        val label: @Composable (() -> Unit)? = remember(navLabelVisibility, title, selected) {
+        val label: @Composable (() -> Unit)? = remember(navLabelVisibility, title) {
             if (navLabelVisibility != NavLabelVisibility.NEVER) {
                 {
                     Text(
                         text = title,
-                        style = MaterialTheme.typography.labelMedium.copy(
-                            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
-                        ),
+                        style = MaterialTheme.typography.labelLarge,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
                 }
-            } else {
-                null
-            }
+            } else null
         }
         val homeTabTestTag = Modifier
             .semantics { testTagsAsResourceId = true }
@@ -450,24 +425,9 @@ object HomeScreen : Screen() {
                 } else {
                     homeTabTestTag
                 },
-                icon = {
-                    NavigationIconItem(
-                        navItem = navItem,
-                        selected = selected,
-                        animatedTransitions = animatedTransitions,
-                        updatesCount = updatesCount,
-                        extensionUpdatesCount = extensionUpdatesCount,
-                    )
-                },
+                icon = { NavigationIconItem(navItem, adaptiveDecision, updatesCount, extensionUpdatesCount) },
                 label = label,
                 alwaysShowLabel = navLabelVisibility == NavLabelVisibility.ALWAYS,
-                colors = NavigationBarItemDefaults.colors(
-                    selectedIconColor = MaterialTheme.colorScheme.onSecondaryContainer,
-                    selectedTextColor = MaterialTheme.colorScheme.onSurface,
-                    indicatorColor = MaterialTheme.colorScheme.secondaryContainer,
-                    unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                    unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                ),
             )
         }
     }
@@ -477,26 +437,27 @@ object HomeScreen : Screen() {
         tabNavigator: TabNavigator,
         navItem: NavItem,
         navLabelVisibility: NavLabelVisibility,
-        behavior: NavBehavior,
-        animatedTransitions: Boolean,
-        executor: NavActionExecutor,
-        haptic: HapticFeedback,
+        adaptiveDecision: AdaptiveDecision?,
         updatesCount: Int,
         extensionUpdatesCount: Int,
     ) {
         val tab = navItem.tab
         val navigator = LocalNavigator.currentOrThrow
         val scope = rememberCoroutineScope()
+        val context = LocalContext.current
+        
+        val behaviorMap by uiPreferences.bottomNavBehaviors().collectAsStatePref()
+        val behavior = remember(behaviorMap, navItem.id) { behaviorMap[navItem.id] ?: NavBehavior() }
+
         val selected = tabNavigator.current.key == tab.key
+        val haptic = LocalHapticFeedback.current
+        val executor = remember(context, scope, navigator) { NavActionExecutor(context, scope, navigator) }
+
         val title = stringResource(navItem.titleRes)
 
-        val onClick: () -> Unit = remember(
-            selected, navItem.id, tabNavigator, tab, scope, navigator, executor, haptic,
-        ) {
+        val onClick: () -> Unit = remember(selected, navItem.id, tabNavigator, tab, scope, navigator, executor) {
             {
-                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                 if (!selected) {
-                    executor.logClick(navItem.id)
                     tabNavigator.current = tab
                 } else {
                     scope.launch { tab.onReselect(navigator) }
@@ -523,21 +484,29 @@ object HomeScreen : Screen() {
             }
         }
 
-        val label: @Composable (() -> Unit)? = remember(navLabelVisibility, title, selected) {
+        val combinedClick: () -> Unit = remember(selected, navItem.id, tabNavigator, tab, scope, navigator, executor) {
+            {
+                if (!selected) {
+                    executor.logClick(navItem.id)
+                    tabNavigator.current = tab
+                } else {
+                    scope.launch { tab.onReselect(navigator) }
+                }
+                Unit
+            }
+        }
+
+        val label: @Composable (() -> Unit)? = remember(navLabelVisibility, title) {
             if (navLabelVisibility != NavLabelVisibility.NEVER) {
                 {
                     Text(
                         text = title,
-                        style = MaterialTheme.typography.labelMedium.copy(
-                            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
-                        ),
+                        style = MaterialTheme.typography.labelLarge,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
                 }
-            } else {
-                null
-            }
+            } else null
         }
 
         val homeTabTestTag = Modifier
@@ -549,52 +518,39 @@ object HomeScreen : Screen() {
             onClick = onClick,
             modifier = if (
                 behavior.onLongClick != NavAction.Default ||
-                behavior.onDoubleTap != NavAction.Default
+                    behavior.onDoubleTap != NavAction.Default
             ) {
                 homeTabTestTag.combinedClickable(
                     onLongClick = onLongClick,
                     onDoubleClick = onDoubleClick,
-                    onClick = onClick,
+                    onClick = combinedClick,
                 )
             } else {
                 homeTabTestTag
             },
-            icon = {
-                NavigationIconItem(
-                    navItem = navItem,
-                    selected = selected,
-                    animatedTransitions = animatedTransitions,
-                    updatesCount = updatesCount,
-                    extensionUpdatesCount = extensionUpdatesCount,
-                )
-            },
+            icon = { NavigationIconItem(navItem, adaptiveDecision, updatesCount, extensionUpdatesCount) },
             label = label,
             alwaysShowLabel = navLabelVisibility == NavLabelVisibility.ALWAYS,
-            colors = NavigationRailItemDefaults.colors(
-                selectedIconColor = MaterialTheme.colorScheme.onSecondaryContainer,
-                selectedTextColor = MaterialTheme.colorScheme.onSurface,
-                indicatorColor = MaterialTheme.colorScheme.secondaryContainer,
-                unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
-            ),
         )
     }
 
+    @OptIn(ExperimentalAnimationGraphicsApi::class)
     @Composable
     private fun NavigationIconItem(
         navItem: NavItem,
-        selected: Boolean,
-        animatedTransitions: Boolean,
+        adaptiveDecision: AdaptiveDecision?,
         updatesCount: Int,
         extensionUpdatesCount: Int,
     ) {
         val tab = navItem.tab
-        val targetScale = if (selected && animatedTransitions) SELECTED_ICON_SCALE else DEFAULT_ICON_SCALE
+        val tabNavigator = LocalTabNavigator.current
+        val animatedTransitions by uiPreferences.animatedTransitions().collectAsStatePref()
+        val selected = tabNavigator.current.key == tab.key
         val scale by animateFloatAsState(
-            targetValue = targetScale,
+            targetValue = if (selected && animatedTransitions) 1.15f else 1f,
             animationSpec = tween(
-                durationMillis = ICON_SCALE_ANIM_MS,
-                easing = FastOutSlowInEasing,
+                durationMillis = 200,
+                easing = androidx.compose.animation.core.FastOutSlowInEasing
             ),
             label = "iconScale",
         )
@@ -615,11 +571,7 @@ object HomeScreen : Screen() {
                                     updatesCount,
                                 )
                                 Text(
-                                    text = if (updatesCount > MAX_BADGE_COUNT) {
-                                        "$MAX_BADGE_COUNT+"
-                                    } else {
-                                        updatesCount.toString()
-                                    },
+                                    text = if (updatesCount > 99) "99+" else updatesCount.toString(),
                                     modifier = Modifier.semantics { contentDescription = desc },
                                 )
                             }
@@ -634,11 +586,7 @@ object HomeScreen : Screen() {
                                     extensionUpdatesCount,
                                 )
                                 Text(
-                                    text = if (extensionUpdatesCount > MAX_BADGE_COUNT) {
-                                        "$MAX_BADGE_COUNT+"
-                                    } else {
-                                        extensionUpdatesCount.toString()
-                                    },
+                                    text = if (extensionUpdatesCount > 99) "99+" else extensionUpdatesCount.toString(),
                                     modifier = Modifier.semantics { contentDescription = desc },
                                 )
                             }
@@ -647,10 +595,60 @@ object HomeScreen : Screen() {
                 }
             },
         ) {
-            Icon(
-                imageVector = if (selected) navItem.selectedIcon else navItem.unselectedIcon,
-                contentDescription = stringResource(navItem.titleRes),
-            )
+            val iconPainter = when {
+                navItem.iconVector != null -> null
+                LibraryTab::class.isInstance(tab) -> {
+                    rememberAnimatedVectorPainter(
+                        AnimatedImageVector.animatedVectorResource(R.drawable.anim_library_enter),
+                        selected
+                    )
+                }
+                UpdatesTab::class.isInstance(tab) -> {
+                    rememberAnimatedVectorPainter(
+                        AnimatedImageVector.animatedVectorResource(R.drawable.anim_updates_enter),
+                        selected
+                    )
+                }
+                HistoryTab::class.isInstance(tab) -> {
+                    rememberAnimatedVectorPainter(
+                        AnimatedImageVector.animatedVectorResource(R.drawable.anim_history_enter),
+                        selected
+                    )
+                }
+                BrowseTab::class.isInstance(tab) -> {
+                    rememberAnimatedVectorPainter(
+                        AnimatedImageVector.animatedVectorResource(R.drawable.anim_browse_enter),
+                        selected
+                    )
+                }
+                MoreTab::class.isInstance(tab) -> {
+                    rememberAnimatedVectorPainter(
+                        AnimatedImageVector.animatedVectorResource(R.drawable.anim_more_enter),
+                        selected
+                    )
+                }
+                FeedTab::class.isInstance(tab) -> {
+                    painterResource(R.drawable.ic_dynamic_feed_24dp)
+                }
+                AiringScheduleTab::class.isInstance(tab) -> {
+                    painterResource(R.drawable.ic_progress_clock_24dp)
+                }
+                else -> painterResource(R.drawable.ic_browse_filled_24dp)
+            }
+
+            if (navItem.iconVector != null) {
+                Icon(
+                    imageVector = navItem.iconVector!!,
+                    contentDescription = stringResource(navItem.titleRes),
+                    tint = if (selected) MaterialTheme.colorScheme.onSecondaryContainer else LocalContentColor.current,
+                )
+            } else {
+                Icon(
+                    painter = iconPainter!!,
+                    contentDescription = stringResource(navItem.titleRes),
+                    tint = if (selected) MaterialTheme.colorScheme.onSecondaryContainer else LocalContentColor.current,
+                )
+            }
         }
     }
 
