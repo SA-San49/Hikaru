@@ -50,6 +50,7 @@ private const val SLATE_GRAY_HEX = 0xFF708090
 val SlateGrayAccent = Color(SLATE_GRAY_HEX)
 
 val LocalSettingsAccentColor = staticCompositionLocalOf { SlateGrayAccent }
+val LocalIsDefaultTheme = staticCompositionLocalOf { true }
 
 @Composable
 fun TachiyomiTheme(
@@ -95,7 +96,10 @@ private fun BaseTachiyomiTheme(
     } else {
         colorScheme.primary
     }
-    CompositionLocalProvider(LocalSettingsAccentColor provides settingsAccent) {
+    CompositionLocalProvider(
+        LocalSettingsAccentColor provides settingsAccent,
+        LocalIsDefaultTheme provides (appTheme == AppTheme.DEFAULT),
+    ) {
         MaterialTheme(
             colorScheme = colorScheme,
             shapes = TachiyomiShapes,
