@@ -179,4 +179,62 @@ class GetApplicationReleaseTest {
         coVerify(exactly = 0) { releaseService.releaseNotes(any()) }
         result shouldBe GetApplicationRelease.Result.NoNewUpdate
     }
+
+    @Test
+    fun `When preview build checks SemVer tag older than base version expect no new update`() = runTest {
+        every { preference.get() } returns 0
+        every { preference.set(any()) }.answers { }
+
+        val releases = listOf(
+            Release(
+                "v0.5.222",
+                "info",
+                "http://example.com/release_link",
+                listOf("http://example.com/assets"),
+            ),
+        )
+
+        coEvery { releaseService.releaseNotes(any()) } returns releases
+
+        val result = getApplicationRelease.await(
+            GetApplicationRelease.Arguments(
+                isPreview = true,
+                isThirdParty = false,
+                commitCount = 4770,
+                versionName = "0.5.223-4770",
+                repository = "test",
+            ),
+        )
+
+        result shouldBe GetApplicationRelease.Result.NoNewUpdate
+    }
+
+    @Test
+    fun `When preview build checks SemVer tag newer than base version expect new update`() = runTest {
+        every { preference.get() } returns 0
+        every { preference.set(any()) }.answers { }
+
+        val releases = listOf(
+            Release(
+                "v0.5.222",
+                "info",
+                "http://example.com/release_link",
+                listOf("http://example.com/assets"),
+            ),
+        )
+
+        coEvery { releaseService.releaseNotes(any()) } returns releases
+
+        val result = getApplicationRelease.await(
+            GetApplicationRelease.Arguments(
+                isPreview = true,
+                isThirdParty = false,
+                commitCount = 4700,
+                versionName = "0.5.221-4700",
+                repository = "test",
+            ),
+        )
+
+        result shouldBe GetApplicationRelease.Result.NewUpdate(releases.getLatest()!!)
+    }
 }

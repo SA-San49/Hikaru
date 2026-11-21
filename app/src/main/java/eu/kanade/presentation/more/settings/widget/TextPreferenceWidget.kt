@@ -18,6 +18,7 @@ import eu.kanade.presentation.more.components.ExpressiveBadgeCompactRadius
 import eu.kanade.presentation.more.components.ExpressiveBadgeCompactSize
 import eu.kanade.presentation.more.components.ExpressiveCompactIconSize
 import eu.kanade.presentation.more.components.ExpressiveIconBadge
+import eu.kanade.presentation.theme.LocalSettingsAccentColor
 import eu.kanade.presentation.theme.TachiyomiPreviewTheme
 
 private const val MAX_SUBTITLE_LINES = 10
@@ -31,7 +32,7 @@ fun TextPreferenceWidget(
     title: String? = null,
     subtitle: String? = null,
     icon: ImageVector? = null,
-    iconTint: Color = MaterialTheme.colorScheme.primary,
+    iconTint: Color = LocalSettingsAccentColor.current,
     widget: @Composable (() -> Unit)? = null,
     onPreferenceClick: (() -> Unit)? = null,
 ) {

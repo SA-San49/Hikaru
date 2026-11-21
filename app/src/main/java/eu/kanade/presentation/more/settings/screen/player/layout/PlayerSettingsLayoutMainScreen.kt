@@ -26,7 +26,7 @@ import androidx.compose.ui.unit.dp
 import cafe.adriel.voyager.navigator.LocalNavigator
 import cafe.adriel.voyager.navigator.currentOrThrow
 import eu.kanade.presentation.components.AppBar
-import eu.kanade.presentation.more.components.CategoryAccent
+import eu.kanade.presentation.theme.LocalSettingsAccentColor
 import eu.kanade.presentation.more.components.ExpressiveBadgeCompactRadius
 import eu.kanade.presentation.more.components.ExpressiveBadgeCompactSize
 import eu.kanade.presentation.more.components.ExpressiveCompactIconSize
@@ -79,7 +79,7 @@ object PlayerSettingsLayoutMainScreen : Screen() {
                 verticalArrangement = Arrangement.spacedBy(LayoutSectionSpacing),
             ) {
                 item {
-                    val landscapeAccent = CategoryAccent.INDIGO.resolveColor()
+                    val landscapeAccent = LocalSettingsAccentColor.current
                     MoreSection(
                         title = "Landscape Controls",
                         accentColor = landscapeAccent,
@@ -108,7 +108,7 @@ object PlayerSettingsLayoutMainScreen : Screen() {
                 }
 
                 item {
-                    val portraitAccent = CategoryAccent.VIOLET.resolveColor()
+                    val portraitAccent = LocalSettingsAccentColor.current
                     MoreSection(
                         title = "Portrait Controls",
                         accentColor = portraitAccent,

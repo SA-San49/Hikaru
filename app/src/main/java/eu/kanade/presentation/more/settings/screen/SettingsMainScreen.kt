@@ -39,7 +39,7 @@ import dev.icerock.moko.resources.StringResource
 import eu.kanade.domain.ui.UiPreferences
 import eu.kanade.presentation.components.AppBar
 import eu.kanade.presentation.components.AppBarActions
-import eu.kanade.presentation.more.components.CategoryAccent
+import eu.kanade.presentation.theme.LocalSettingsAccentColor
 import eu.kanade.presentation.more.components.MoreItem
 import eu.kanade.presentation.more.components.MoreSection
 import eu.kanade.presentation.more.settings.screen.about.AboutScreen
@@ -94,113 +94,98 @@ object SettingsMainScreen : Screen() {
         val backPress = LocalBackPress.currentOrThrow
         val containerColor = if (twoPane) getPalerSurface() else MaterialTheme.colorScheme.background
         val topBarState = rememberTopAppBarState()
+        val accentColor = LocalSettingsAccentColor.current
 
         val sections = remember {
             listOf(
                 Section(
                     title = "User Interface",
-                    accent = CategoryAccent.INDIGO,
                     items = listOf(
                         Item(
                             titleRes = MR.strings.pref_category_appearance,
                             subtitleRes = MR.strings.pref_appearance_summary,
                             icon = Icons.Outlined.Palette,
-                            accent = CategoryAccent.INDIGO,
-                            screen = SettingsAppearanceScreen,
+                                    screen = SettingsAppearanceScreen,
                         ),
                         Item(
                             titleRes = MR.strings.pref_category_library,
                             subtitleRes = MR.strings.pref_library_summary,
                             icon = Icons.Outlined.CollectionsBookmark,
-                            accent = CategoryAccent.EMERALD,
-                            screen = SettingsLibraryScreen,
+                                    screen = SettingsLibraryScreen,
                         ),
                     ),
                 ),
                 Section(
                     title = "Core Features",
-                    accent = CategoryAccent.VIOLET,
                     items = listOf(
                         Item(
                             titleRes = MR.strings.pref_category_schedule,
                             subtitleRes = MR.strings.pref_category_schedule_summary,
                             icon = Icons.Outlined.DateRange,
-                            accent = CategoryAccent.AMBER,
-                            screen = SettingsScheduleScreen,
+                                    screen = SettingsScheduleScreen,
                         ),
                         Item(
                             titleRes = MR.strings.pref_category_downloads,
                             subtitleRes = MR.strings.pref_downloads_summary,
                             icon = Icons.Outlined.GetApp,
-                            accent = CategoryAccent.EMERALD,
-                            screen = SettingsDownloadScreen,
+                                    screen = SettingsDownloadScreen,
                         ),
                         Item(
                             titleRes = MR.strings.pref_category_tracking,
                             subtitleRes = MR.strings.pref_tracking_summary,
                             icon = Icons.Outlined.Sync,
-                            accent = CategoryAccent.ROSE,
-                            screen = SettingsTrackingScreen,
+                                    screen = SettingsTrackingScreen,
                         ),
                         Item(
                             titleRes = MR.strings.pref_category_ai,
                             subtitleRes = MR.strings.pref_ai_summary,
                             icon = Icons.Default.AutoAwesome,
-                            accent = CategoryAccent.VIOLET,
-                            screen = SettingsAiScreen,
+                                    screen = SettingsAiScreen,
                         ),
                     ),
                 ),
                 Section(
                     title = "Connections",
-                    accent = CategoryAccent.CYAN,
                     items = listOf(
                         Item(
                             titleRes = KMR.strings.pref_category_connections,
                             subtitleRes = KMR.strings.pref_connections_summary,
                             icon = Icons.Outlined.Link,
-                            accent = CategoryAccent.CYAN,
-                            screen = SettingsConnectionsScreen,
+                                    screen = SettingsConnectionsScreen,
                         ),
                         Item(
                             titleRes = MR.strings.browse,
                             subtitleRes = MR.strings.pref_browse_summary,
                             icon = Icons.Outlined.Explore,
-                            accent = CategoryAccent.INDIGO,
-                            screen = SettingsBrowseScreen,
+                                    screen = SettingsBrowseScreen,
                         ),
                     ),
                 ),
                 Section(
                     title = "System",
-                    accent = CategoryAccent.SLATE,
                     items = listOf(
                         Item(
                             titleRes = MR.strings.label_data_storage,
                             subtitleRes = MR.strings.pref_backup_summary,
                             icon = Icons.Outlined.Storage,
-                            accent = CategoryAccent.CYAN,
-                            screen = SettingsDataScreen,
+                                    screen = SettingsDataScreen,
                         ),
                         Item(
                             titleRes = MR.strings.pref_category_security,
                             subtitleRes = MR.strings.pref_security_summary,
                             icon = Icons.Outlined.Security,
-                            accent = CategoryAccent.ROSE,
-                            screen = SettingsSecurityScreen,
+                                    screen = SettingsSecurityScreen,
                         ),
                         Item(
                             titleRes = MR.strings.pref_category_advanced,
                             subtitleRes = MR.strings.pref_advanced_summary,
                             icon = Icons.Outlined.Code,
-                            accent = CategoryAccent.SLATE,
-                            screen = SettingsAdvancedScreen,
+                                    screen = SettingsAdvancedScreen,
                         ),
                     ),
                 ),
                 Section(
                     title = "About",
-                    accent = CategoryAccent.AMBER,
                     items = listOf(
                         Item(
                             titleRes = MR.strings.pref_category_about,
@@ -210,8 +195,7 @@ object SettingsMainScreen : Screen() {
                                 }"
                             },
                             icon = Icons.Outlined.Info,
-                            accent = CategoryAccent.AMBER,
-                            screen = AboutScreen,
+                                    screen = AboutScreen,
                         ),
                     ),
                 ),
@@ -261,7 +245,7 @@ object SettingsMainScreen : Screen() {
                         item(key = "settings-category-${section.title}") {
                             MoreSection(
                                 title = section.title,
-                                accentColor = section.accent.resolveColor(),
+                                accentColor = accentColor,
                             ) {
                                 section.items.forEachIndexed { index, item ->
                                     val onClick = remember(item.screen, twoPane, navigator) {
@@ -272,7 +256,7 @@ object SettingsMainScreen : Screen() {
                                         title = stringResource(item.titleRes),
                                         subtitle = item.formatSubtitle(),
                                         icon = item.icon,
-                                        iconTint = item.accent.resolveColor(),
+                                        iconTint = accentColor,
                                         selected = isSelected,
                                         showDivider = index < section.items.lastIndex,
                                         onClick = onClick,
@@ -293,7 +277,6 @@ object SettingsMainScreen : Screen() {
 
     private data class Section(
         val title: String,
-        val accent: CategoryAccent,
         val items: List<Item>,
     )
 
@@ -302,7 +285,6 @@ object SettingsMainScreen : Screen() {
         val subtitleRes: StringResource? = null,
         val formatSubtitle: @Composable () -> String? = { subtitleRes?.let { stringResource(it) } },
         val icon: ImageVector,
-        val accent: CategoryAccent = CategoryAccent.PRIMARY,
         val screen: VoyagerScreen,
     )
 }

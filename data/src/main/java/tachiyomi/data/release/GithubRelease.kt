@@ -10,9 +10,9 @@ import tachiyomi.domain.release.model.Release
 @Serializable
 data class GithubRelease(
     @SerialName("tag_name") val version: String,
-    @SerialName("body") val info: String,
+    @SerialName("body") val info: String? = null,
     @SerialName("html_url") val releaseLink: String,
-    @SerialName("assets") val assets: List<GitHubAssets>,
+    @SerialName("assets") val assets: List<GitHubAssets> = emptyList(),
     // KMK -->
     @SerialName("prerelease") val preRelease: Boolean = false,
     @SerialName("draft") val draft: Boolean = false,
@@ -55,7 +55,7 @@ val gitHubCommitsCompareRegex =
 val releaseMapper: (GithubRelease) -> Release = {
     Release(
         it.version,
-        it.info
+        (it.info ?: "")
             .replace(gitHubUsernameMentionRegex) { mention ->
                 "[${mention.value}](https://github.com/${mention.value.substring(1)})"
             }

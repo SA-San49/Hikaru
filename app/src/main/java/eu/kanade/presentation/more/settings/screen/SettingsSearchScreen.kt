@@ -53,7 +53,7 @@ import androidx.compose.ui.unit.dp
 import cafe.adriel.voyager.navigator.LocalNavigator
 import cafe.adriel.voyager.navigator.currentOrThrow
 import eu.kanade.presentation.components.UpIcon
-import eu.kanade.presentation.more.components.CategoryAccent
+import eu.kanade.presentation.theme.LocalSettingsAccentColor
 import eu.kanade.presentation.more.components.ExpressiveBadgeCompactRadius
 import eu.kanade.presentation.more.components.ExpressiveBadgeCompactSize
 import eu.kanade.presentation.more.components.ExpressiveCompactIconSize
@@ -261,11 +261,7 @@ private fun SearchResult(
                 EmptyScreen(stringResource(MR.strings.no_results_found))
             }
             else -> {
-                val badgeAccent = if (isPlayer) {
-                    CategoryAccent.VIOLET.resolveColor()
-                } else {
-                    CategoryAccent.PRIMARY.resolveColor()
-                }
+                val badgeAccent = LocalSettingsAccentColor.current
                 LazyColumn(
                     modifier = modifier.fillMaxSize(),
                     state = listState,
@@ -288,7 +284,7 @@ private fun SearchResult(
                             shape = RoundedCornerShape(SearchCardRadius),
                             color = MaterialTheme.colorScheme.surfaceContainerLow,
                             border = expressiveCardBorder(),
-                            tonalElevation = 1.dp,
+                            tonalElevation = 0.dp,
                         ) {
                             Row(
                                 modifier = Modifier

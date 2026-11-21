@@ -2,9 +2,7 @@ package eu.kanade.presentation.more.settings
 
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -35,7 +33,6 @@ import uy.kohesive.injekt.api.get
 import kotlin.time.Duration.Companion.seconds
 
 private const val HIGHLIGHT_SCROLL_DELAY_SECONDS = 0.5
-private const val GROUP_LAZY_ITEM_COUNT = 3
 private val ScreenCardHorizontalPadding = 16.dp
 private val CardInnerVerticalPadding = 4.dp
 private val GroupBottomSpacing = 8.dp
@@ -43,9 +40,9 @@ private val StandaloneTopSpacing = 12.dp
 private val StandaloneBottomSpacing = 8.dp
 
 private sealed interface PreferenceBlock {
-    data class Group(val group: Preference.PreferenceGroup) : PreferenceBlock
-    data class StandaloneCard(val items: List<Preference.PreferenceItem<*>>) : PreferenceBlock
-    data class StandaloneFree(val item: Preference.PreferenceItem<*>) : PreferenceBlock
+    data class GroupHeader(val title: String) : PreferenceBlock
+    data class CardGroup(val items: List<Preference.PreferenceItem<*>>, val addBottomSpacing: Boolean) : PreferenceBlock
+    data class FreeItem(val item: Preference.PreferenceItem<*>) : PreferenceBlock
 }
 
 /**
@@ -85,29 +82,23 @@ fun PreferenceScreen(
     ) {
         blocks.fastForEachIndexed { blockIndex, block ->
             when (block) {
-                is PreferenceBlock.Group -> {
-                    item(key = "group-header-$blockIndex-${block.group.title}") {
-                        PreferenceGroupHeader(title = block.group.title)
-                    }
-                    item(key = "group-content-$blockIndex-${block.group.title}") {
-                        PreferenceCardContainer(
-                            items = block.group.preferenceItems,
-                            highlightKey = highlightKey,
-                            useContainer = useContainer,
-                        )
-                    }
-                    item(key = "group-spacer-$blockIndex-${block.group.title}") {
-                        if (blockIndex < blocks.lastIndex) {
-                            Spacer(modifier = Modifier.height(GroupBottomSpacing))
-                        }
+                is PreferenceBlock.GroupHeader -> {
+                    item(key = "group-header-$blockIndex-${block.title}") {
+                        PreferenceGroupHeader(title = block.title)
                     }
                 }
-                is PreferenceBlock.StandaloneCard -> {
-                    item(key = "standalone-card-$blockIndex") {
+                is PreferenceBlock.CardGroup -> {
+                    item(key = "card-group-$blockIndex") {
                         Column(
                             modifier = Modifier.padding(
                                 top = if (blockIndex == 0) StandaloneTopSpacing else 0.dp,
-                                bottom = if (blockIndex < blocks.lastIndex) StandaloneBottomSpacing else 0.dp,
+                                bottom = if (block.addBottomSpacing && blockIndex < blocks.lastIndex) {
+                                    GroupBottomSpacing
+                                } else if (blockIndex < blocks.lastIndex) {
+                                    StandaloneBottomSpacing
+                                } else {
+                                    0.dp
+                                },
                             ),
                         ) {
                             PreferenceCardContainer(
@@ -118,8 +109,8 @@ fun PreferenceScreen(
                         }
                     }
                 }
-                is PreferenceBlock.StandaloneFree -> {
-                    item(key = "standalone-free-$blockIndex-${block.item.title}") {
+                is PreferenceBlock.FreeItem -> {
+                    item(key = "free-item-$blockIndex-${block.item.title}") {
                         PreferenceItem(
                             item = block.item,
                             highlightKey = highlightKey,
@@ -145,7 +136,7 @@ private fun PreferenceCardContainer(
             shape = RoundedCornerShape(ExpressiveCardCornerRadius),
             color = MaterialTheme.colorScheme.surfaceContainerLow,
             border = expressiveCardBorder(),
-            tonalElevation = 1.dp,
+            tonalElevation = 0.dp,
         ) {
             PreferenceCardItems(
                 items = items,
@@ -174,6 +165,22 @@ private fun PreferenceCardItems(
     highlightKey: String?,
     showDividers: Boolean,
 ) {
+    val nextEnabledByIndex = remember(items, showDividers) {
+        if (!showDividers) {
+            emptyList()
+        } else {
+            val next = MutableList<Preference.PreferenceItem<*>?>(items.size) { null }
+            var upcoming: Preference.PreferenceItem<*>? = null
+            for (idx in items.indices.reversed()) {
+                next[idx] = upcoming
+                if (items[idx].enabled) {
+                    upcoming = items[idx]
+                }
+            }
+            next
+        }
+    }
+
     Column(
         modifier = Modifier.padding(vertical = CardInnerVerticalPadding),
     ) {
@@ -184,11 +191,9 @@ private fun PreferenceCardItems(
                     highlightKey = highlightKey,
                 )
             }
-            if (showDividers && item.enabled && !isUnboxedPreference(item)) {
-                val nextEnabled = items
-                    .drop(index + 1)
-                    .firstOrNull { it.enabled }
-                if (nextEnabled != null && !isUnboxedPreference(nextEnabled)) {
+            if (showDividers && item.enabled && item !is Preference.PreferenceItem.CustomPreference) {
+                val nextEnabled = nextEnabledByIndex.getOrNull(index)
+                if (nextEnabled != null && nextEnabled !is Preference.PreferenceItem.CustomPreference) {
                     val insetStart = if (item.icon != null || nextEnabled.icon != null) {
                         ExpressiveDividerStartInset
                     } else {
@@ -202,18 +207,17 @@ private fun PreferenceCardItems(
 }
 
 private fun isUnboxedPreference(item: Preference.PreferenceItem<*>): Boolean {
-    return item is Preference.PreferenceItem.InfoPreference ||
-        item is Preference.PreferenceItem.CustomPreference
+    return item is Preference.PreferenceItem.InfoPreference
 }
 
 private fun buildPreferenceBlocks(items: List<Preference>): List<PreferenceBlock> {
     val result = mutableListOf<PreferenceBlock>()
-    val pendingStandalone = mutableListOf<Preference.PreferenceItem<*>>()
+    val pendingCardItems = mutableListOf<Preference.PreferenceItem<*>>()
 
-    fun flushPending() {
-        if (pendingStandalone.isNotEmpty()) {
-            result.add(PreferenceBlock.StandaloneCard(pendingStandalone.toList()))
-            pendingStandalone.clear()
+    fun flushCard(isGroup: Boolean) {
+        if (pendingCardItems.isNotEmpty()) {
+            result.add(PreferenceBlock.CardGroup(pendingCardItems.toList(), addBottomSpacing = isGroup))
+            pendingCardItems.clear()
         }
     }
 
@@ -221,51 +225,46 @@ private fun buildPreferenceBlocks(items: List<Preference>): List<PreferenceBlock
         when (preference) {
             is Preference.PreferenceGroup -> {
                 if (preference.enabled) {
-                    flushPending()
-                    result.add(PreferenceBlock.Group(preference))
+                    flushCard(isGroup = false)
+                    result.add(PreferenceBlock.GroupHeader(preference.title))
+                    preference.preferenceItems.forEach { groupItem ->
+                        if (isUnboxedPreference(groupItem)) {
+                            flushCard(isGroup = true)
+                            result.add(PreferenceBlock.FreeItem(groupItem))
+                        } else {
+                            pendingCardItems.add(groupItem)
+                        }
+                    }
+                    flushCard(isGroup = true)
                 }
             }
             is Preference.PreferenceItem<*> -> {
                 if (isUnboxedPreference(preference)) {
-                    flushPending()
-                    result.add(PreferenceBlock.StandaloneFree(preference))
+                    flushCard(isGroup = false)
+                    result.add(PreferenceBlock.FreeItem(preference))
                 } else {
-                    pendingStandalone.add(preference)
+                    pendingCardItems.add(preference)
                 }
             }
         }
     }
-    flushPending()
+    flushCard(isGroup = false)
     return result
 }
 
 private fun List<PreferenceBlock>.findHighlightedIndex(highlightKey: String): Int {
-    var lazyIndex = 0
-    forEach { block ->
+    forEachIndexed { index, block ->
         when (block) {
-            is PreferenceBlock.Group -> {
-                val headerIndex = lazyIndex
-                val contentIndex = lazyIndex + 1
-                if (block.group.preferenceItems.any { it.title == highlightKey }) {
-                    return if (block.group.preferenceItems.firstOrNull()?.title == highlightKey) {
-                        headerIndex
-                    } else {
-                        contentIndex
-                    }
-                }
-                lazyIndex += GROUP_LAZY_ITEM_COUNT
-            }
-            is PreferenceBlock.StandaloneCard -> {
+            is PreferenceBlock.GroupHeader -> Unit
+            is PreferenceBlock.CardGroup -> {
                 if (block.items.any { it.title == highlightKey }) {
-                    return lazyIndex
+                    return index
                 }
-                lazyIndex += 1
             }
-            is PreferenceBlock.StandaloneFree -> {
+            is PreferenceBlock.FreeItem -> {
                 if (block.item.title == highlightKey) {
-                    return lazyIndex
+                    return index
                 }
-                lazyIndex += 1
             }
         }
     }

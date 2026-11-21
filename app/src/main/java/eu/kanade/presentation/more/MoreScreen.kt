@@ -32,14 +32,13 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalUriHandler
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.vectorResource
 import androidx.compose.ui.unit.dp
 import cafe.adriel.voyager.navigator.LocalNavigator
 import cafe.adriel.voyager.navigator.currentOrThrow
 import eu.kanade.domain.ai.AiPreferences
 import eu.kanade.domain.ui.model.NavItem
-import eu.kanade.presentation.more.components.CategoryAccent
+import eu.kanade.presentation.theme.LocalSettingsAccentColor
 import eu.kanade.presentation.more.components.MoreItem
 import eu.kanade.presentation.more.components.MoreSection
 import eu.kanade.presentation.more.components.MoreSwitchItem
@@ -85,6 +84,7 @@ fun MoreScreen(
     onClickAbout: () -> Unit,
 ) {
     val uriHandler = LocalUriHandler.current
+    val accentColor = LocalSettingsAccentColor.current
     val navigator = LocalNavigator.currentOrThrow
     val scope = rememberCoroutineScope()
     val aiPreferences = remember { Injekt.get<AiPreferences>() }
@@ -120,13 +120,13 @@ fun MoreScreen(
             item(key = "more-quick-modes") {
                 MoreSection(
                     title = "Quick Modes",
-                    accentColor = CategoryAccent.CYAN.resolveColor(),
+                    accentColor = accentColor,
                 ) {
                     MoreSwitchItem(
                         title = stringResource(MR.strings.label_downloaded_only),
                         subtitle = stringResource(MR.strings.downloaded_only_summary),
                         icon = Icons.Outlined.CloudOff,
-                        iconTint = CategoryAccent.CYAN.resolveColor(),
+                        iconTint = accentColor,
                         checked = downloadedOnly,
                         onCheckedChanged = onDownloadedOnlyChange,
                         showDivider = true,
@@ -135,7 +135,7 @@ fun MoreScreen(
                         title = stringResource(MR.strings.pref_incognito_mode),
                         subtitle = stringResource(MR.strings.pref_incognito_mode_summary),
                         icon = ImageVector.vectorResource(R.drawable.ic_glasses_24dp),
-                        iconTint = CategoryAccent.VIOLET.resolveColor(),
+                        iconTint = accentColor,
                         checked = incognitoMode,
                         onCheckedChanged = onIncognitoModeChange,
                     )
@@ -145,7 +145,7 @@ fun MoreScreen(
             item(key = "more-library") {
                 MoreSection(
                     title = "Library",
-                    accentColor = CategoryAccent.EMERALD.resolveColor(),
+                    accentColor = accentColor,
                 ) {
                     val downloadQueueState = downloadQueueStateProvider()
                     MoreItem(
@@ -176,28 +176,28 @@ fun MoreScreen(
                             }
                         },
                         icon = Icons.Outlined.GetApp,
-                        iconTint = CategoryAccent.EMERALD.resolveColor(),
+                        iconTint = accentColor,
                         onClick = onClickDownloadQueue,
                         showDivider = true,
                     )
                     MoreItem(
                         title = stringResource(MR.strings.general_categories),
                         icon = Icons.AutoMirrored.Outlined.Label,
-                        iconTint = CategoryAccent.ROSE.resolveColor(),
+                        iconTint = accentColor,
                         onClick = onClickCategories,
                         showDivider = true,
                     )
                     MoreItem(
                         title = stringResource(MR.strings.label_stats),
                         icon = Icons.Outlined.QueryStats,
-                        iconTint = CategoryAccent.AMBER.resolveColor(),
+                        iconTint = accentColor,
                         onClick = onClickStats,
                         showDivider = true,
                     )
                     MoreItem(
                         title = stringResource(SYMR.strings.option_label_library_update_errors),
                         icon = Icons.Outlined.ErrorOutline,
-                        iconTint = CategoryAccent.ROSE.resolveColor(),
+                        iconTint = accentColor,
                         onClick = onClickLibraryUpdateErrors,
                     )
                 }
@@ -209,13 +209,13 @@ fun MoreScreen(
                 val showDiagnostics = enableAi && enableAiAssistant
                 MoreSection(
                     title = "System",
-                    accentColor = CategoryAccent.VIOLET.resolveColor(),
+                    accentColor = accentColor,
                 ) {
                     MoreItem(
                         title = "Extension Health",
                         subtitle = "Real-time telemetry and source status",
                         icon = Icons.Outlined.MonitorHeart,
-                        iconTint = CategoryAccent.EMERALD.resolveColor(),
+                        iconTint = accentColor,
                         onClick = { navigator.push(InfrastructureScreen) },
                         showDivider = showDiagnostics,
                     )
@@ -224,7 +224,7 @@ fun MoreScreen(
                             title = "App Diagnostics",
                             subtitle = "Automated troubleshooting and AI insights",
                             icon = Icons.Default.Terminal,
-                            iconTint = CategoryAccent.VIOLET.resolveColor(),
+                            iconTint = accentColor,
                             onClick = { navigator.push(AiAssistantScreen()) },
                         )
                     }
@@ -234,18 +234,13 @@ fun MoreScreen(
             item(key = "more-general") {
                 MoreSection(
                     title = "General",
-                    accentColor = CategoryAccent.INDIGO.resolveColor(),
+                    accentColor = accentColor,
                 ) {
                     hiddenTabs.forEach { navItem ->
                         MoreItem(
                             title = stringResource(navItem.titleRes),
-                            icon = navItem.iconVector,
-                            iconPainter = if (navItem.iconVector == null) {
-                                painterResource(navItem.staticIconRes)
-                            } else {
-                                null
-                            },
-                            iconTint = CategoryAccent.INDIGO.resolveColor(),
+                            icon = navItem.unselectedIcon,
+                            iconTint = accentColor,
                             onClick = {
                                 scope.launch {
                                     val homeTab = when (navItem) {
@@ -266,28 +261,28 @@ fun MoreScreen(
                     MoreItem(
                         title = stringResource(MR.strings.pref_bottom_nav_settings),
                         icon = Icons.Outlined.CallToAction,
-                        iconTint = CategoryAccent.INDIGO.resolveColor(),
+                        iconTint = accentColor,
                         onClick = { navigator.push(NavigationSettingsScreen(null)) },
                         showDivider = true,
                     )
                     MoreItem(
                         title = stringResource(MR.strings.label_data_storage),
                         icon = Icons.Outlined.Storage,
-                        iconTint = CategoryAccent.CYAN.resolveColor(),
+                        iconTint = accentColor,
                         onClick = onClickDataAndStorage,
                         showDivider = true,
                     )
                     MoreItem(
                         title = stringResource(MR.strings.label_settings),
                         icon = Icons.Outlined.Settings,
-                        iconTint = CategoryAccent.PRIMARY.resolveColor(),
+                        iconTint = accentColor,
                         onClick = onClickSettings,
                         showDivider = true,
                     )
                     MoreItem(
                         title = stringResource(MR.strings.label_player_settings),
                         icon = Icons.Outlined.VideoSettings,
-                        iconTint = CategoryAccent.VIOLET.resolveColor(),
+                        iconTint = accentColor,
                         onClick = onClickPlayerSettings,
                     )
                 }
@@ -296,19 +291,19 @@ fun MoreScreen(
             item(key = "more-support") {
                 MoreSection(
                     title = "Support",
-                    accentColor = CategoryAccent.AMBER.resolveColor(),
+                    accentColor = accentColor,
                 ) {
                     MoreItem(
                         title = stringResource(MR.strings.pref_category_about),
                         icon = Icons.Outlined.Info,
-                        iconTint = CategoryAccent.INDIGO.resolveColor(),
+                        iconTint = accentColor,
                         onClick = onClickAbout,
                         showDivider = true,
                     )
                     MoreItem(
                         title = stringResource(MR.strings.label_help),
                         icon = Icons.AutoMirrored.Outlined.HelpOutline,
-                        iconTint = CategoryAccent.AMBER.resolveColor(),
+                        iconTint = accentColor,
                         onClick = { uriHandler.openUri(Constants.URL_HELP) },
                     )
                 }

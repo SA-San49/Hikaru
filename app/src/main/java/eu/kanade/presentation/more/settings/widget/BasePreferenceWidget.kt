@@ -25,7 +25,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.composed
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -54,9 +53,10 @@ internal fun BasePreferenceWidget(
 ) {
     val highlighted = LocalPreferenceHighlighted.current
     val minHeight = LocalPreferenceMinHeight.current
+    val bgModifier = if (highlighted) Modifier.highlightBackground() else Modifier
     Row(
         modifier = modifier
-            .highlightBackground(highlighted)
+            .then(bgModifier)
             .sizeIn(minHeight = minHeight)
             .clickable(enabled = onClick != null, onClick = { onClick?.invoke() })
             .fillMaxWidth(),
@@ -97,14 +97,14 @@ internal fun BasePreferenceWidget(
     }
 }
 
-internal fun Modifier.highlightBackground(highlighted: Boolean): Modifier = composed {
+@Composable
+internal fun Modifier.highlightBackground(highlighted: Boolean = true): Modifier {
+    if (!highlighted) return this
     var highlightFlag by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) {
-        if (highlighted) {
-            highlightFlag = true
-            delay(HIGHLIGHT_DURATION_SECONDS.seconds)
-            highlightFlag = false
-        }
+        highlightFlag = true
+        delay(HIGHLIGHT_DURATION_SECONDS.seconds)
+        highlightFlag = false
     }
     val highlight by animateColorAsState(
         targetValue = if (highlightFlag) {
@@ -127,7 +127,7 @@ internal fun Modifier.highlightBackground(highlighted: Boolean): Modifier = comp
         },
         label = "highlight",
     )
-    Modifier.background(color = highlight)
+    return background(color = highlight)
 }
 
 internal val TrailingWidgetBuffer = 16.dp

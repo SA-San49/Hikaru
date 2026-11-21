@@ -37,7 +37,7 @@ import dev.icerock.moko.resources.StringResource
 import eu.kanade.domain.ui.UiPreferences
 import eu.kanade.presentation.components.AppBar
 import eu.kanade.presentation.components.AppBarActions
-import eu.kanade.presentation.more.components.CategoryAccent
+import eu.kanade.presentation.theme.LocalSettingsAccentColor
 import eu.kanade.presentation.more.components.MoreItem
 import eu.kanade.presentation.more.components.MoreSection
 import eu.kanade.presentation.more.settings.screen.SettingsSearchScreen
@@ -94,6 +94,7 @@ object PlayerSettingsMainScreen : Screen() {
         val backPress = LocalBackPress.currentOrThrow
         val containerColor = if (twoPane) getPalerSurface() else MaterialTheme.colorScheme.background
         val topBarState = rememberTopAppBarState()
+        val accentColor = LocalSettingsAccentColor.current
         val uiPreferences = remember { Injekt.get<UiPreferences>() }
         val hazeEnabled by uiPreferences.hazeEnabled().collectAsStatePref()
 
@@ -154,7 +155,7 @@ object PlayerSettingsMainScreen : Screen() {
                         item(key = "player-section-${section.title}") {
                             MoreSection(
                                 title = section.title,
-                                accentColor = section.accent.resolveColor(),
+                                accentColor = accentColor,
                             ) {
                                 section.items.forEachIndexed { index, item ->
                                     val isSelected = twoPane && activeScreenClass == item.screen::class
@@ -165,7 +166,7 @@ object PlayerSettingsMainScreen : Screen() {
                                         title = stringResource(item.titleRes),
                                         subtitle = item.formatSubtitle(),
                                         icon = item.icon,
-                                        iconTint = item.accent.resolveColor(),
+                                        iconTint = accentColor,
                                         selected = isSelected,
                                         showDivider = index < section.items.lastIndex,
                                         onClick = onClick,
@@ -186,7 +187,6 @@ object PlayerSettingsMainScreen : Screen() {
 
     private data class Section(
         val title: String,
-        val accent: CategoryAccent,
         val items: List<Item>,
     )
 
@@ -195,88 +195,75 @@ object PlayerSettingsMainScreen : Screen() {
         val subtitleRes: StringResource? = null,
         val formatSubtitle: @Composable () -> String? = { subtitleRes?.let { stringResource(it) } },
         val icon: ImageVector,
-        val accent: CategoryAccent,
         val screen: VoyagerScreen,
     )
 
     private val sections = listOf(
         Section(
             title = "Playback & Controls",
-            accent = CategoryAccent.VIOLET,
             items = listOf(
                 Item(
                     titleRes = MR.strings.pref_player_internal,
                     subtitleRes = MR.strings.pref_player_internal_summary,
                     icon = Icons.Outlined.PlayCircleOutline,
-                    accent = CategoryAccent.VIOLET,
                     screen = PlayerSettingsPlayerScreen,
                 ),
                 Item(
                     titleRes = MR.strings.pref_player_layout,
                     subtitleRes = MR.strings.pref_player_layout_summary,
                     icon = Icons.Outlined.Dashboard,
-                    accent = CategoryAccent.INDIGO,
                     screen = PlayerSettingsLayoutMainScreen,
                 ),
                 Item(
                     titleRes = MR.strings.pref_player_gestures,
                     subtitleRes = MR.strings.pref_player_gestures_summary,
                     icon = Icons.Outlined.Gesture,
-                    accent = CategoryAccent.CYAN,
                     screen = PlayerSettingsGesturesScreen,
                 ),
             ),
         ),
         Section(
             title = "Media & Tracks",
-            accent = CategoryAccent.AMBER,
             items = listOf(
                 Item(
                     titleRes = MR.strings.pref_player_decoder,
                     subtitleRes = MR.strings.pref_player_decoder_summary,
                     icon = Icons.Outlined.Memory,
-                    accent = CategoryAccent.AMBER,
                     screen = PlayerSettingsDecoderScreen,
                 ),
                 Item(
                     titleRes = MR.strings.pref_player_subtitle,
                     subtitleRes = MR.strings.pref_player_subtitle_summary,
                     icon = Icons.Outlined.Subtitles,
-                    accent = CategoryAccent.ROSE,
                     screen = PlayerSettingsSubtitleScreen,
                 ),
                 Item(
                     titleRes = MR.strings.pref_player_audio,
                     subtitleRes = MR.strings.pref_player_audio_summary,
                     icon = Icons.Outlined.Audiotrack,
-                    accent = CategoryAccent.EMERALD,
                     screen = PlayerSettingsAudioScreen,
                 ),
             ),
         ),
         Section(
             title = "Customization & Engine",
-            accent = CategoryAccent.SLATE,
             items = listOf(
                 Item(
                     titleRes = MR.strings.pref_player_custom_button,
                     subtitleRes = MR.strings.pref_player_custom_button_summary,
                     icon = Icons.Outlined.Terminal,
-                    accent = CategoryAccent.VIOLET,
                     screen = PlayerSettingsCustomButtonScreen,
                 ),
                 Item(
                     titleRes = MR.strings.pref_player_editor,
                     subtitleRes = MR.strings.pref_player_editor_summary,
                     icon = Icons.Outlined.EditNote,
-                    accent = CategoryAccent.INDIGO,
                     screen = PlayerSettingsEditorScreen,
                 ),
                 Item(
                     titleRes = MR.strings.pref_player_advanced,
                     subtitleRes = MR.strings.pref_player_advanced_summary,
                     icon = Icons.Outlined.Code,
-                    accent = CategoryAccent.SLATE,
                     screen = PlayerSettingsAdvancedScreen,
                 ),
             ),

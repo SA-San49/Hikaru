@@ -31,13 +31,14 @@ import cafe.adriel.voyager.navigator.currentOrThrow
 import eu.kanade.domain.ui.UiPreferences
 import eu.kanade.presentation.components.AppBar
 import eu.kanade.presentation.more.LogoHeader
-import eu.kanade.presentation.more.components.CategoryAccent
+import eu.kanade.presentation.theme.LocalSettingsAccentColor
 import eu.kanade.presentation.more.components.MoreItem
 import eu.kanade.presentation.more.components.MoreSection
 import eu.kanade.presentation.util.LocalBackPress
 import eu.kanade.presentation.util.Screen
 import eu.kanade.tachiyomi.BuildConfig
 import eu.kanade.tachiyomi.data.updater.AppUpdateChecker
+import eu.kanade.tachiyomi.data.updater.RELEASE_URL
 import eu.kanade.tachiyomi.ui.more.ComingUpdatesScreen
 import eu.kanade.tachiyomi.ui.more.NewUpdateScreen
 import eu.kanade.tachiyomi.ui.more.WhatsNewScreen
@@ -47,6 +48,7 @@ import eu.kanade.tachiyomi.util.system.copyToClipboard
 import eu.kanade.tachiyomi.util.system.isDebugBuildType
 import eu.kanade.tachiyomi.util.system.isPreviewBuildType
 import eu.kanade.tachiyomi.util.system.isReleaseBuildType
+import eu.kanade.tachiyomi.util.system.openInBrowser
 import eu.kanade.tachiyomi.util.system.toast
 import kotlinx.coroutines.launch
 import logcat.LogPriority
@@ -86,6 +88,7 @@ object AboutScreen : Screen() {
         val uriHandler = LocalUriHandler.current
         val handleBack = LocalBackPress.current
         val navigator = LocalNavigator.currentOrThrow
+        val accentColor = LocalSettingsAccentColor.current
         var isCheckingUpdates by remember { mutableStateOf(false) }
         // KMK -->
         var isCheckingWhatsNew by remember { mutableStateOf(false) }
@@ -122,13 +125,13 @@ object AboutScreen : Screen() {
                 item {
                     MoreSection(
                         title = "App Information",
-                        accentColor = CategoryAccent.PRIMARY.resolveColor(),
+                        accentColor = accentColor,
                     ) {
                         MoreItem(
                             title = stringResource(MR.strings.version),
                             subtitle = getVersionName(withBuildDate = true),
                             icon = Icons.Outlined.Info,
-                            iconTint = CategoryAccent.PRIMARY.resolveColor(),
+                            iconTint = accentColor,
                             showDivider = true,
                             onClick = {
                                 val deviceInfo = CrashLogUtil(context).getDebugInfo()
@@ -140,7 +143,7 @@ object AboutScreen : Screen() {
                             title = stringResource(MR.strings.check_for_updates),
                             subtitle = if (isCheckingUpdates) "Checking..." else null,
                             icon = Icons.Outlined.SystemUpdate,
-                            iconTint = CategoryAccent.EMERALD.resolveColor(),
+                            iconTint = accentColor,
                             showDivider = true,
                             trailingContent = if (isCheckingUpdates) {
                                 { AboutLoadingSpinner() }
@@ -177,7 +180,7 @@ object AboutScreen : Screen() {
                             title = stringResource(MR.strings.whats_new),
                             subtitle = if (isCheckingWhatsNew) "Checking..." else null,
                             icon = Icons.Outlined.NewReleases,
-                            iconTint = CategoryAccent.AMBER.resolveColor(),
+                            iconTint = accentColor,
                             showDivider = hasWhatsComing,
                             trailingContent = if (isCheckingWhatsNew) {
                                 { AboutLoadingSpinner() }
@@ -213,7 +216,7 @@ object AboutScreen : Screen() {
                                 title = stringResource(KMR.strings.whats_coming),
                                 subtitle = if (isCheckingWhatsComing) "Checking..." else null,
                                 icon = Icons.Outlined.AutoAwesome,
-                                iconTint = CategoryAccent.VIOLET.resolveColor(),
+                                iconTint = accentColor,
                                 trailingContent = if (isCheckingWhatsComing) {
                                     { AboutLoadingSpinner() }
                                 } else {
@@ -251,12 +254,12 @@ object AboutScreen : Screen() {
                 item {
                     MoreSection(
                         title = "Community",
-                        accentColor = CategoryAccent.CYAN.resolveColor(),
+                        accentColor = accentColor,
                     ) {
                         MoreItem(
                             title = stringResource(MR.strings.help_translate),
                             icon = Icons.Outlined.Translate,
-                            iconTint = CategoryAccent.CYAN.resolveColor(),
+                            iconTint = accentColor,
                             showDivider = true,
                             onClick = {
                                 uriHandler.openUri(
@@ -268,14 +271,14 @@ object AboutScreen : Screen() {
                         MoreItem(
                             title = stringResource(MR.strings.licenses),
                             icon = Icons.Outlined.Description,
-                            iconTint = CategoryAccent.SLATE.resolveColor(),
+                            iconTint = accentColor,
                             showDivider = true,
                             onClick = { navigator.push(OpenSourceLicensesScreen()) },
                         )
                         MoreItem(
                             title = stringResource(MR.strings.privacy_policy),
                             icon = Icons.Outlined.PrivacyTip,
-                            iconTint = CategoryAccent.ROSE.resolveColor(),
+                            iconTint = accentColor,
                             onClick = { uriHandler.openUri("https://mihon.app/privacy/") },
                         )
                     }
@@ -284,7 +287,7 @@ object AboutScreen : Screen() {
                 item {
                     MoreSection(
                         title = "Links",
-                        accentColor = CategoryAccent.INDIGO.resolveColor(),
+                        accentColor = accentColor,
                     ) {
                         if (BuildConfig.DISCORD_INVITE_URL.isNotBlank()) {
                             MoreItem(
@@ -344,10 +347,12 @@ object AboutScreen : Screen() {
                     is GetApplicationRelease.Result.OsTooOld -> {
                         context.toast(MR.strings.update_check_eol)
                     }
-                    else -> {}
+                    is GetApplicationRelease.Result.ThirdPartyInstallation -> {
+                        context.openInBrowser(RELEASE_URL)
+                    }
                 }
             } catch (e: Exception) {
-                context.toast(e.message)
+                context.toast(e.message ?: "Unable to check for updates")
                 logcat(LogPriority.ERROR, e)
             } finally {
                 onFinish()

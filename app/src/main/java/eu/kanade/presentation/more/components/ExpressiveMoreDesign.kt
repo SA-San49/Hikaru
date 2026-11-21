@@ -38,30 +38,20 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import eu.kanade.presentation.theme.LocalSettingsAccentColor
+import eu.kanade.presentation.theme.SlateGrayAccent
 
 private const val DARK_LUMINANCE_THRESHOLD = 0.5f
-private const val BADGE_FILL_DARK_ALPHA = 0.17f
-private const val BADGE_FILL_LIGHT_ALPHA = 0.13f
-private const val BADGE_BORDER_DARK_ALPHA = 0.28f
+private const val BADGE_FILL_DARK_ALPHA = 0.16f
+private const val BADGE_FILL_LIGHT_ALPHA = 0.12f
+private const val BADGE_BORDER_DARK_ALPHA = 0.30f
 private const val BADGE_BORDER_LIGHT_ALPHA = 0.22f
-private const val CARD_BORDER_ALPHA = 0.36f
-private const val DIVIDER_ALPHA = 0.28f
-private const val SWITCH_ANIM_DURATION_MS = 220
+private const val CARD_BORDER_ALPHA = 0.42f
+private const val DIVIDER_ALPHA = 0.45f
+private const val SWITCH_ANIM_DURATION_MS = 160
 
-private const val INDIGO_DARK = 0xFF818CF8
-private const val INDIGO_LIGHT = 0xFF4338CA
 private const val EMERALD_DARK = 0xFF34D399
 private const val EMERALD_LIGHT = 0xFF047857
-private const val VIOLET_DARK = 0xFFC084FC
-private const val VIOLET_LIGHT = 0xFF7E22CE
-private const val ROSE_DARK = 0xFFFB7185
-private const val ROSE_LIGHT = 0xFFBE123C
-private const val AMBER_DARK = 0xFFFBBF24
-private const val AMBER_LIGHT = 0xFFB45309
-private const val CYAN_DARK = 0xFF38BDF8
-private const val CYAN_LIGHT = 0xFF0369A1
-private const val SLATE_DARK = 0xFF94A3B8
-private const val SLATE_LIGHT = 0xFF475569
 
 internal val ExpressiveCardCornerRadius = 24.dp
 internal val ExpressiveDialogCornerRadius = 28.dp
@@ -93,29 +83,32 @@ data class BadgeColors(
     val borderColor: Color,
 )
 
-enum class CategoryAccent(
-    private val darkHex: Long,
-    private val lightHex: Long,
-) {
-    INDIGO(INDIGO_DARK, INDIGO_LIGHT),
-    EMERALD(EMERALD_DARK, EMERALD_LIGHT),
-    VIOLET(VIOLET_DARK, VIOLET_LIGHT),
-    ROSE(ROSE_DARK, ROSE_LIGHT),
-    AMBER(AMBER_DARK, AMBER_LIGHT),
-    CYAN(CYAN_DARK, CYAN_LIGHT),
-    SLATE(SLATE_DARK, SLATE_LIGHT),
-    PRIMARY(0L, 0L),
+enum class CategoryAccent {
+    INDIGO,
+    EMERALD,
+    VIOLET,
+    ROSE,
+    AMBER,
+    CYAN,
+    SLATE,
+    PRIMARY,
     ;
 
     @Composable
-    fun resolveColor(): Color {
-        if (this == PRIMARY) return MaterialTheme.colorScheme.primary
-        val isDark = MaterialTheme.colorScheme.surface.luminance() < DARK_LUMINANCE_THRESHOLD
-        return Color(if (isDark) darkHex else lightHex)
-    }
+    fun resolveColor(): Color = LocalSettingsAccentColor.current
 
     @Composable
-    fun badgeColors(): BadgeColors = expressiveBadgeColors(resolveColor())
+    fun badgeColors(): BadgeColors = if (this == EMERALD) {
+        emeraldStatusBadgeColors()
+    } else {
+        expressiveBadgeColors(resolveColor())
+    }
+}
+
+@Composable
+fun emeraldStatusBadgeColors(): BadgeColors {
+    val isDark = MaterialTheme.colorScheme.surface.luminance() < DARK_LUMINANCE_THRESHOLD
+    return expressiveBadgeColors(Color(if (isDark) EMERALD_DARK else EMERALD_LIGHT))
 }
 
 @Composable
@@ -139,8 +132,8 @@ fun expressiveCardBorder(): BorderStroke = BorderStroke(
 @Composable
 fun ExpressiveIconBadge(
     icon: ImageVector,
-    accentColor: Color,
     modifier: Modifier = Modifier,
+    accentColor: Color = LocalSettingsAccentColor.current,
     size: Dp = ExpressiveBadgeSize,
     cornerRadius: Dp = ExpressiveBadgeRadius,
     iconSize: Dp = ExpressiveIconSize,
@@ -168,8 +161,8 @@ fun ExpressiveIconBadge(
 @Composable
 fun ExpressiveIconBadge(
     painter: Painter,
-    accentColor: Color,
     modifier: Modifier = Modifier,
+    accentColor: Color = LocalSettingsAccentColor.current,
     size: Dp = ExpressiveBadgeSize,
     cornerRadius: Dp = ExpressiveBadgeRadius,
     iconSize: Dp = ExpressiveIconSize,
@@ -198,7 +191,7 @@ fun ExpressiveIconBadge(
 fun ExpressiveSectionHeader(
     title: String,
     modifier: Modifier = Modifier,
-    accentColor: Color = MaterialTheme.colorScheme.primary,
+    accentColor: Color = LocalSettingsAccentColor.current,
 ) {
     Row(
         modifier = modifier
@@ -277,8 +270,9 @@ fun ExpressiveSwitch(
 fun ExpressiveStatusPill(
     text: String,
     modifier: Modifier = Modifier,
-    containerColor: Color = MaterialTheme.colorScheme.primaryContainer,
-    contentColor: Color = MaterialTheme.colorScheme.onPrimaryContainer,
+    containerColor: Color = SlateGrayAccent,
+    contentColor: Color = Color.White,
+    borderColor: Color? = null,
     icon: ImageVector? = null,
 ) {
     Surface(
@@ -286,6 +280,7 @@ fun ExpressiveStatusPill(
         shape = RoundedCornerShape(ExpressivePillRadius),
         color = containerColor,
         contentColor = contentColor,
+        border = borderColor?.let { BorderStroke(ExpressiveBorderWidth, it) },
     ) {
         Row(
             modifier = Modifier.padding(

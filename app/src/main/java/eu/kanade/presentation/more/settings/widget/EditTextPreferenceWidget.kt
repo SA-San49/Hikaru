@@ -36,6 +36,7 @@ import eu.kanade.presentation.more.components.ExpressiveBadgeCompactSize
 import eu.kanade.presentation.more.components.ExpressiveCompactIconSize
 import eu.kanade.presentation.more.components.ExpressiveDialogCornerRadius
 import eu.kanade.presentation.more.components.ExpressiveIconBadge
+import eu.kanade.presentation.theme.LocalSettingsAccentColor
 import kotlinx.coroutines.launch
 import tachiyomi.i18n.MR
 import tachiyomi.presentation.core.i18n.stringResource
@@ -84,7 +85,7 @@ fun EditTextPreferenceWidget(
                         if (icon != null) {
                             ExpressiveIconBadge(
                                 icon = icon,
-                                accentColor = MaterialTheme.colorScheme.primary,
+                                accentColor = LocalSettingsAccentColor.current,
                                 size = ExpressiveBadgeCompactSize,
                                 cornerRadius = ExpressiveBadgeCompactRadius,
                                 iconSize = ExpressiveCompactIconSize,
