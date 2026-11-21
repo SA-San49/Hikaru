@@ -49,8 +49,6 @@ object PlayerSettingsSubtitleScreen : SearchableSettings {
         val whitelist = subtitlePreferences.subtitleWhitelist()
         val blacklist = subtitlePreferences.subtitleBlacklist()
         val disableAutoSubtitles = subtitlePreferences.disableAutoSubtitles()
-        val jimakuEnabled = subtitlePreferences.jimakuEnabled()
-        val jimakuApiKey = subtitlePreferences.jimakuApiKey()
         val speedPref = ttsPreferences.ttsSpeed()
         val voicePref = ttsPreferences.ttsVoiceName()
         val autoPlayPref = ttsPreferences.autoPlaySummary()
@@ -79,17 +77,6 @@ object PlayerSettingsSubtitleScreen : SearchableSettings {
                 pref = blacklist,
                 title = stringResource(MR.strings.pref_player_subtitle_blacklist),
                 dialogSubtitle = stringResource(MR.strings.pref_player_subtitle_blacklist_info),
-            ),
-            Preference.PreferenceItem.SwitchPreference(
-                pref = jimakuEnabled,
-                title = stringResource(MR.strings.pref_jimaku_enabled),
-                subtitle = stringResource(MR.strings.pref_jimaku_enabled_summary),
-            ),
-            Preference.PreferenceItem.EditTextInfoPreference(
-                pref = jimakuApiKey,
-                title = stringResource(MR.strings.pref_jimaku_api_key),
-                dialogSubtitle = stringResource(MR.strings.pref_jimaku_api_key_info),
-                enabled = jimakuEnabled.get(),
             ),
             Preference.PreferenceItem.SwitchPreference(
                 pref = ttsPreferences.enableTts(),

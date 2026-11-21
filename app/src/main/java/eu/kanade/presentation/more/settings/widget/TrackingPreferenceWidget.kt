@@ -5,22 +5,24 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Done
-import androidx.compose.material3.Icon
+import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import eu.kanade.presentation.more.components.CategoryAccent
+import eu.kanade.presentation.more.components.ExpressiveStatusPill
 import eu.kanade.presentation.more.settings.LocalPreferenceHighlighted
 import eu.kanade.presentation.track.components.TrackLogoIcon
 import eu.kanade.tachiyomi.data.track.Tracker
 import tachiyomi.i18n.MR
 import tachiyomi.presentation.core.i18n.stringResource
+
+private val TrackerRowVerticalPadding = 12.dp
 
 @Composable
 fun TrackingPreferenceWidget(
@@ -30,12 +32,13 @@ fun TrackingPreferenceWidget(
     onClick: (() -> Unit)? = null,
 ) {
     val highlighted = LocalPreferenceHighlighted.current
+    val emeraldColors = CategoryAccent.EMERALD.badgeColors()
     Box(modifier = Modifier.highlightBackground(highlighted)) {
         Row(
             modifier = modifier
                 .clickable(enabled = onClick != null, onClick = { onClick?.invoke() })
                 .fillMaxWidth()
-                .padding(horizontal = PrefsHorizontalPadding, vertical = 8.dp),
+                .padding(horizontal = PrefsHorizontalPadding, vertical = TrackerRowVerticalPadding),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             TrackLogoIcon(tracker)
@@ -43,19 +46,20 @@ fun TrackingPreferenceWidget(
                 text = tracker.name,
                 modifier = Modifier
                     .weight(1f)
-                    .padding(horizontal = 16.dp),
+                    .padding(horizontal = PrefsHorizontalPadding),
                 maxLines = 1,
-                style = MaterialTheme.typography.titleLarge,
-                fontSize = TitleFontSize,
+                style = MaterialTheme.typography.titleMedium.copy(
+                    fontWeight = FontWeight.Medium,
+                    fontSize = TitleFontSize,
+                ),
+                color = MaterialTheme.colorScheme.onSurface,
             )
             if (checked) {
-                Icon(
-                    imageVector = Icons.Outlined.Done,
-                    modifier = Modifier
-                        .padding(4.dp)
-                        .size(32.dp),
-                    tint = Color(0xFF4CAF50),
-                    contentDescription = stringResource(MR.strings.login_success),
+                ExpressiveStatusPill(
+                    text = stringResource(MR.strings.login_success),
+                    containerColor = emeraldColors.containerColor,
+                    contentColor = emeraldColors.contentColor,
+                    icon = Icons.Rounded.Check,
                 )
             }
         }

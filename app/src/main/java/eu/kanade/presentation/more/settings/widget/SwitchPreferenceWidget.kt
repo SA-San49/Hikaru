@@ -5,11 +5,13 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Preview
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Switch
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.tooling.preview.PreviewLightDark
+import eu.kanade.presentation.more.components.ExpressiveSwitch
 import eu.kanade.presentation.theme.TachiyomiPreviewTheme
 
 @Composable
@@ -21,20 +23,21 @@ fun SwitchPreferenceWidget(
     checked: Boolean = false,
     onCheckedChanged: (Boolean) -> Unit,
 ) {
-    val haptic = androidx.compose.ui.platform.LocalHapticFeedback.current
+    val haptic = LocalHapticFeedback.current
     TextPreferenceWidget(
         modifier = modifier,
         title = title,
         subtitle = subtitle,
         icon = icon,
         widget = {
-            Switch(
+            ExpressiveSwitch(
                 checked = checked,
                 onCheckedChange = null,
                 modifier = Modifier.padding(start = TrailingWidgetBuffer),
             )
         },
         onPreferenceClick = {
+            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
             onCheckedChanged(!checked)
         },
     )
