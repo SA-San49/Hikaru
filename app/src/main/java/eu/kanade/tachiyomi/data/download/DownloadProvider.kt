@@ -8,7 +8,6 @@ import eu.kanade.tachiyomi.util.storage.DiskUtil
 import logcat.LogPriority
 import tachiyomi.core.common.i18n.stringResource
 import tachiyomi.core.common.storage.displayablePath
-import tachiyomi.core.common.storage.nameWithoutExtension
 import tachiyomi.core.common.util.system.logcat
 import tachiyomi.domain.anime.model.Anime
 import tachiyomi.domain.episode.model.Episode
@@ -124,10 +123,12 @@ class DownloadProvider(
         animeTitle: String,
         source: Source,
     ): UniFile? {
-        val animeDir = findAnimeDir(animeTitle, source)
         if (source.isLocal()) {
-            return animeDir?.listFiles().orEmpty().find { it.nameWithoutExtension == episodeName }
+            val entry = localFileSystem.findEpisodeByNameWithoutExtension(animeTitle, episodeName)
+                ?: return null
+            return localFileSystem.toUniFile(entry.uri)
         }
+        val animeDir = findAnimeDir(animeTitle, source)
         return getValidEpisodeDirNames(episodeName, episodeScanlator).asSequence()
             .mapNotNull { animeDir?.findFile(it) }
             .firstOrNull()
@@ -143,14 +144,11 @@ class DownloadProvider(
     fun findEpisodeDirs(episodes: List<Episode>, anime: Anime, source: Source): Pair<UniFile?, List<UniFile>> {
         val animeDir = findAnimeDir(if (source.isLocal()) anime.url else anime.ogTitle, source)
         if (source.isLocal()) {
-            val files = animeDir?.listFiles().orEmpty()
             return animeDir to episodes.mapNotNull { episode ->
-                // Try finding by URL filename first
-                val filenameFromUrl = episode.url.split('/', limit = 2).lastOrNull()
-                val fileByUrl = filenameFromUrl?.let { animeDir?.findFile(it) }
-
-                // Fallback to finding by name without extension
-                fileByUrl ?: files.find { it.nameWithoutExtension == episode.name }
+                val relativePath = episode.url.split('/', limit = 2).lastOrNull()
+                val entry = relativePath?.let { localFileSystem.findEpisodeEntry(anime.url, it) }
+                    ?: localFileSystem.findEpisodeByNameWithoutExtension(anime.url, episode.name)
+                entry?.let { localFileSystem.toUniFile(it.uri) }
             }
         }
         if (animeDir == null) return null to emptyList()
@@ -257,8 +255,9 @@ class DownloadProvider(
     ): Long? {
         if (source == null) return null
         return if (source.isLocal()) {
-            val (animeDirName, episodeDirName) = episodeUrl?.split('/', limit = 2) ?: return null
-            localFileSystem.getBaseDirectory()?.findFile(animeDirName)?.findFile(episodeDirName)?.size()
+            val parts = episodeUrl?.split('/', limit = 2)
+            if (parts == null || parts.size < 2) return null
+            localFileSystem.getEpisodeFileSize(parts[0], parts[1])
         } else {
             findEpisodeDir(episodeName, episodeScanlator, animeTitle, source)?.size()
         }

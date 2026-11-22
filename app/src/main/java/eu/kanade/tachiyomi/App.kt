@@ -49,6 +49,7 @@ import eu.kanade.tachiyomi.data.coil.AnimeCoverFetcher
 import eu.kanade.tachiyomi.data.coil.AnimeCoverKeyer
 import eu.kanade.tachiyomi.data.coil.AnimeKeyer
 import eu.kanade.tachiyomi.data.coil.BufferedSourceFetcher
+import eu.kanade.tachiyomi.data.coil.LocalVideoThumbnailFetcher
 import eu.kanade.tachiyomi.data.coil.TachiyomiImageDecoder
 import eu.kanade.tachiyomi.data.connections.discord.DiscordRPCService
 import eu.kanade.tachiyomi.data.notification.Notifications
@@ -261,9 +262,15 @@ class App : Application(), DefaultLifecycleObserver, SingletonImageLoader.Factor
 
     override fun newImageLoader(context: Context): ImageLoader {
         return ImageLoader.Builder(this).apply {
+            // Keep cache/decoder pressure bounded on low-memory devices while using available
+            // headroom on larger devices for fewer cover reloads during library scrolling.
+            val isLowRamDevice = DeviceUtil.isLowRamDevice(this@App)
+            val processorCount = Runtime.getRuntime().availableProcessors().coerceAtLeast(1)
+            val isLowCoreDevice = processorCount <= 2
             val callFactoryLazy = lazy { Injekt.get<NetworkHelper>().client }
             components {
                 add(OkHttpNetworkFetcherFactory(callFactoryLazy::value))
+                add(LocalVideoThumbnailFetcher.Factory(this@App, isLowRamDevice || isLowCoreDevice))
                 add(TachiyomiImageDecoder.Factory())
                 add(BufferedSourceFetcher.Factory())
                 add(AnimeCoverFetcher.AnimeCoverFactory(callFactoryLazy))
@@ -271,12 +278,6 @@ class App : Application(), DefaultLifecycleObserver, SingletonImageLoader.Factor
                 add(AnimeCoverKeyer())
                 add(AnimeKeyer())
             }
-
-            // Keep cache/decoder pressure bounded on low-memory devices while using available
-            // headroom on larger devices for fewer cover reloads during library scrolling.
-            val isLowRamDevice = DeviceUtil.isLowRamDevice(this@App)
-            val processorCount = Runtime.getRuntime().availableProcessors().coerceAtLeast(1)
-            val isLowCoreDevice = processorCount <= 2
             // Keep image work from competing with UI composition on dual-core/low-RAM devices.
             val fetcherParallelism = when {
                 isLowCoreDevice -> processorCount

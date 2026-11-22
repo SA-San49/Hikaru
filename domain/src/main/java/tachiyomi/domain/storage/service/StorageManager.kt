@@ -22,7 +22,15 @@ class StorageManager(
 
     private val scope = CoroutineScope(Dispatchers.IO)
 
+    val appContext: Context
+        get() = context
+
     private var baseDir: UniFile? = getBaseDir(storagePreferences.baseStorageDirectory().get())
+
+    private val localSourceDirLock = Any()
+
+    @Volatile
+    private var cachedLocalSourceDir: UniFile? = null
 
     private val _changes: Channel<Unit> = Channel(Channel.UNLIMITED)
     val changes = _changes.receiveAsFlow()
@@ -34,9 +42,12 @@ class StorageManager(
             .distinctUntilChanged()
             .onEach { uri ->
                 baseDir = getBaseDir(uri)
+                invalidateLocalSourceDirectoryCache()
                 baseDir?.let { parent ->
                     parent.createDirectory(AUTOMATIC_BACKUPS_PATH)
-                    parent.createDirectory(LOCAL_SOURCE_PATH)
+                    synchronized(localSourceDirLock) {
+                        cachedLocalSourceDir = parent.createDirectory(LOCAL_SOURCE_PATH)
+                    }
                     parent.createDirectory(DOWNLOADS_PATH).also {
                         DiskUtil.createNoMediaFile(it, context)
                     }
@@ -65,7 +76,19 @@ class StorageManager(
     }
 
     fun getLocalSourceDirectory(): UniFile? {
-        return baseDir?.createDirectory(LOCAL_SOURCE_PATH)
+        cachedLocalSourceDir?.let { return it }
+        return synchronized(localSourceDirLock) {
+            cachedLocalSourceDir?.let { return@synchronized it }
+            baseDir?.createDirectory(LOCAL_SOURCE_PATH)?.also {
+                cachedLocalSourceDir = it
+            }
+        }
+    }
+
+    fun invalidateLocalSourceDirectoryCache() {
+        synchronized(localSourceDirLock) {
+            cachedLocalSourceDir = null
+        }
     }
 
     fun getFontsDirectory(): UniFile? {

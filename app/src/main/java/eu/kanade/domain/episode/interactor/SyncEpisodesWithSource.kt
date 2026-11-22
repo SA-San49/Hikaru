@@ -1,7 +1,6 @@
 package eu.kanade.domain.episode.interactor
 
 import eu.kanade.domain.anime.interactor.UpdateAnime
-import tachiyomi.domain.anime.model.toSAnime
 import eu.kanade.domain.episode.model.copyFromSEpisode
 import eu.kanade.domain.episode.model.toSEpisode
 import eu.kanade.tachiyomi.data.download.DownloadManager
@@ -12,6 +11,7 @@ import eu.kanade.tachiyomi.source.online.HttpSource
 import tachiyomi.data.episode.EpisodeSanitizer
 import tachiyomi.data.source.NoResultsException
 import tachiyomi.domain.anime.model.Anime
+import tachiyomi.domain.anime.model.toSAnime
 import tachiyomi.domain.episode.interactor.GetEpisodesByAnimeId
 import tachiyomi.domain.episode.interactor.ShouldUpdateDbEpisode
 import tachiyomi.domain.episode.interactor.UpdateEpisode
@@ -34,6 +34,12 @@ class SyncEpisodesWithSource(
     private val getEpisodesByAnimeId: GetEpisodesByAnimeId,
 ) {
 
+    private data class RecognizedEpisodeKey(
+        val episodeNumber: Double,
+        val scanlator: String?,
+        val cleanName: String,
+    )
+
     /**
      * Method to synchronize db episodes with source ones
      *
@@ -49,7 +55,8 @@ class SyncEpisodesWithSource(
         manualFetch: Boolean = false,
         fetchWindow: Pair<Long, Long> = Pair(0, 0),
     ): List<Episode> {
-        if (rawSourceEpisodes.isEmpty() && !source.isLocal()) {
+        val isLocalSource = source.isLocal()
+        if (rawSourceEpisodes.isEmpty() && !isLocalSource) {
             throw NoResultsException()
         }
 
@@ -69,11 +76,23 @@ class SyncEpisodesWithSource(
 
         val newEpisodes = mutableListOf<Episode>()
         val updatedEpisodes = mutableListOf<Episode>()
-        val removedEpisodes = dbEpisodes.filterNot { dbEpisode ->
-            sourceEpisodes.any { sourceEpisode ->
-                dbEpisode.url == sourceEpisode.url
+
+        // O(N) lookups prevent quadratic stalls on anime with hundreds of episodes
+        val sourceEpisodeUrls = sourceEpisodes.mapTo(HashSet(sourceEpisodes.size)) { it.url }
+        val removedEpisodes = dbEpisodes.filterNotTo(mutableListOf()) { dbEpisode ->
+            dbEpisode.url in sourceEpisodeUrls
+        }
+
+        val dbEpisodesByUrl = HashMap<String, Episode>(dbEpisodes.size)
+        val dbEpisodesByRecognizedKey = HashMap<RecognizedEpisodeKey, Episode>(dbEpisodes.size)
+        for (dbEp in dbEpisodes) {
+            dbEpisodesByUrl.putIfAbsent(dbEp.url, dbEp)
+            if (dbEp.isRecognizedNumber) {
+                val cleanName = with(EpisodeSanitizer) { dbEp.name.sanitize(anime.title) }
+                val key = RecognizedEpisodeKey(dbEp.episodeNumber, dbEp.scanlator, cleanName)
+                dbEpisodesByRecognizedKey.putIfAbsent(key, dbEp)
             }
-        }.toMutableList()
+        }
 
         // Used to not set upload date of older episodes
         // to a higher value than newer episodes
@@ -97,14 +116,16 @@ class SyncEpisodesWithSource(
             )
             episode = episode.copy(episodeNumber = episodeNumber)
 
-            val dbEpisode = dbEpisodes.find { it.url == episode.url }
-                ?: dbEpisodes.find {
-                    val incomingCleanName = with(EpisodeSanitizer) { episode.name.sanitize(anime.title) }
-                    val dbCleanName = with(EpisodeSanitizer) { it.name.sanitize(anime.title) }
-                    it.isRecognizedNumber &&
-                        it.episodeNumber == episode.episodeNumber &&
-                        it.scanlator == episode.scanlator &&
-                        incomingCleanName == dbCleanName
+            val dbEpisode = dbEpisodesByUrl[episode.url]
+                ?: run {
+                    val incomingCleanName = if (source is HttpSource) {
+                        with(EpisodeSanitizer) { episode.name.sanitize(anime.title) }
+                    } else {
+                        episode.name
+                    }
+                    dbEpisodesByRecognizedKey[
+                        RecognizedEpisodeKey(episode.episodeNumber, episode.scanlator, incomingCleanName),
+                    ]
                 }
 
             if (dbEpisode == null) {
@@ -118,10 +139,11 @@ class SyncEpisodesWithSource(
                 newEpisodes.add(toAddEpisode)
             } else {
                 if (shouldUpdateDbEpisode.await(dbEpisode, episode)) {
-                    val shouldRenameEpisode = downloadProvider.isEpisodeDirNameChanged(
-                        dbEpisode,
-                        episode,
-                    ) &&
+                    val shouldRenameEpisode = !isLocalSource &&
+                        downloadProvider.isEpisodeDirNameChanged(
+                            dbEpisode,
+                            episode,
+                        ) &&
                         downloadManager.isEpisodeDownloaded(
                             dbEpisode.name,
                             dbEpisode.scanlator,

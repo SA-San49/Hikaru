@@ -20,3 +20,21 @@ fun UniFile.toFFmpegString(context: Context? = null): String {
         this.filePath!!
     }.replace("\"", "\\\"")
 }
+
+fun Uri.toFFmpegReadString(context: Context): String? {
+    val resolved = if (this.scheme == "content") {
+        FFmpegKitConfig.getSafParameterForRead(context, this)
+    } else {
+        this.path
+    }
+    return resolved?.replace("\"", "\\\"")
+}
+
+fun UniFile.toFFmpegReadString(context: Context): String? {
+    val resolved = if (this.uri.scheme == "content") {
+        FFmpegKitConfig.getSafParameterForRead(context, this.uri)
+    } else {
+        this.filePath
+    }
+    return resolved?.replace("\"", "\\\"")
+}
