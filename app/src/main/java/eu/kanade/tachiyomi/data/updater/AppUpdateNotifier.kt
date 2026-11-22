@@ -228,19 +228,27 @@ internal class AppUpdateNotifier(private val context: Context) {
             setAutoCancel(true)
             setOngoing(false)
             setProgress(0, 0, false)
-            val pendingIntent = PendingIntent.getActivity(
-                context,
-                0,
-                context.packageManager.getLaunchIntentForPackage(BuildConfig.APPLICATION_ID),
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-            )
-            setContentIntent(pendingIntent)
+            val launchIntent = context.packageManager.getLaunchIntentForPackage(context.packageName)
+                ?: context.packageManager.getLaunchIntentForPackage(BuildConfig.APPLICATION_ID)
+            val pendingIntent = launchIntent?.let {
+                PendingIntent.getActivity(
+                    context,
+                    0,
+                    it,
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+                )
+            }
+            if (pendingIntent != null) {
+                setContentIntent(pendingIntent)
+            }
             clearActions()
-            addAction(
-                R.drawable.ic_launch,
-                context.stringResource(KMR.strings.open),
-                pendingIntent,
-            )
+            if (pendingIntent != null) {
+                addAction(
+                    R.drawable.ic_launch,
+                    context.stringResource(KMR.strings.open),
+                    pendingIntent,
+                )
+            }
             addReleasePageAction()
             show(Notifications.ID_APP_INSTALLED)
         }

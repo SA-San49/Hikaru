@@ -15,17 +15,23 @@ actual class LocalAnimeSourceCoverManager(
 ) {
 
     actual fun find(animeUrl: String): UniFile? {
-        val animeDir = fileSystem.getAnimeDirectory(animeUrl) ?: return null
-        return findInDirectory(animeDir)
+        val coverEntry = fileSystem.listAnimeDirectoryEntries(animeUrl)
+            .firstOrNull { !it.isDirectory && it.name.lowercase() in LocalAnimeSourceFileSystem.COVER_FILENAMES }
+            ?: return null
+        return fileSystem.toUniFile(coverEntry.uri)
     }
 
     actual fun findInDirectory(animeDir: UniFile): UniFile? {
+        val animeName = animeDir.name
+        if (!animeName.isNullOrEmpty()) {
+            val coverUri = fileSystem.findCoverUriInDirectory(animeName, animeDir.uri)
+            if (coverUri != null) {
+                return fileSystem.toUniFile(coverUri)
+            }
+        }
         val files = animeDir.listFiles() ?: return null
         return files.firstOrNull { file ->
-            when (file.name?.lowercase()) {
-                "cover.jpg", "cover.jpeg", "cover.png", "cover.webp" -> true
-                else -> false
-            }
+            file.name?.lowercase() in LocalAnimeSourceFileSystem.COVER_FILENAMES
         }
     }
 
@@ -36,7 +42,11 @@ actual class LocalAnimeSourceCoverManager(
             return null
         }
 
-        val targetFile = findInDirectory(directory) ?: directory.createFile(DEFAULT_COVER_NAME)!!
+        val targetFile = find(anime.url) ?: directory.createFile(DEFAULT_COVER_NAME)
+        if (targetFile == null) {
+            inputStream.close()
+            return null
+        }
 
         inputStream.use { input ->
             targetFile.openOutputStream().use { output ->
@@ -45,8 +55,8 @@ actual class LocalAnimeSourceCoverManager(
         }
 
         DiskUtil.createNoMediaFile(directory, context)
-
         anime.thumbnail_url = targetFile.uri.toString()
+        fileSystem.invalidateAnimeCache(anime.url)
         return targetFile
     }
 }

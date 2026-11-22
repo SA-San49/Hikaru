@@ -37,7 +37,7 @@ class AppUpdateChecker(
                 GetApplicationRelease.Arguments(
                     isPreview = isPreviewBuildType || peekIntoPreview,
                     isThirdParty = false,
-                    commitCount = BuildConfig.COMMIT_COUNT.toInt(),
+                    commitCount = BuildConfig.COMMIT_COUNT.toIntOrNull() ?: 0,
                     versionName = BuildConfig.VERSION_NAME,
                     repository = getGithubRepo(peekIntoPreview),
                     forceCheck = forceCheck,
@@ -83,7 +83,7 @@ class AppUpdateChecker(
                 GetApplicationRelease.Arguments(
                     isPreview = isPreviewBuildType || peekIntoPreview,
                     isThirdParty = false,
-                    commitCount = BuildConfig.COMMIT_COUNT.toInt(),
+                    commitCount = BuildConfig.COMMIT_COUNT.toIntOrNull() ?: 0,
                     versionName = BuildConfig.VERSION_NAME,
                     repository = getGithubRepo(peekIntoPreview),
                 ),

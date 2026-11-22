@@ -1,17 +1,19 @@
 package eu.kanade.presentation.more.settings.screen
 
 import androidx.compose.animation.Crossfade
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.paddingFromBaseline
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.input.TextFieldLineLimits
@@ -19,10 +21,13 @@ import androidx.compose.foundation.text.input.clearText
 import androidx.compose.foundation.text.input.rememberTextFieldState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.Tune
+import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
@@ -48,6 +53,12 @@ import androidx.compose.ui.unit.dp
 import cafe.adriel.voyager.navigator.LocalNavigator
 import cafe.adriel.voyager.navigator.currentOrThrow
 import eu.kanade.presentation.components.UpIcon
+import eu.kanade.presentation.theme.LocalSettingsAccentColor
+import eu.kanade.presentation.more.components.ExpressiveBadgeCompactRadius
+import eu.kanade.presentation.more.components.ExpressiveBadgeCompactSize
+import eu.kanade.presentation.more.components.ExpressiveCompactIconSize
+import eu.kanade.presentation.more.components.ExpressiveIconBadge
+import eu.kanade.presentation.more.components.expressiveCardBorder
 import eu.kanade.presentation.more.settings.Preference
 import eu.kanade.presentation.more.settings.screen.player.PlayerSettingsAdvancedScreen
 import eu.kanade.presentation.more.settings.screen.player.PlayerSettingsAudioScreen
@@ -63,9 +74,20 @@ import tachiyomi.presentation.core.screens.EmptyScreen
 import tachiyomi.presentation.core.util.runOnEnterKeyPressed
 import cafe.adriel.voyager.core.screen.Screen as VoyagerScreen
 
+private const val MAX_SEARCH_RESULTS = 10
+private val SearchListHorizontalPadding = 16.dp
+private val SearchListVerticalPadding = 12.dp
+private val SearchCardSpacing = 10.dp
+private val SearchCardRadius = 18.dp
+private val SearchCardHorizontalPadding = 14.dp
+private val SearchCardVerticalPadding = 12.dp
+private val SearchCardRowGap = 12.dp
+private val SearchChevronSize = 20.dp
+
 class SettingsSearchScreen(
     val isPlayer: Boolean = false,
 ) : Screen() {
+
     @Composable
     override fun Content() {
         val navigator = LocalNavigator.currentOrThrow
@@ -225,7 +247,7 @@ private fun SearchResult(
                         )
                     }
             }
-            .take(10) // Just take top 10 result for quicker result
+            .take(MAX_SEARCH_RESULTS)
             .toList()
     }
 
@@ -239,36 +261,75 @@ private fun SearchResult(
                 EmptyScreen(stringResource(MR.strings.no_results_found))
             }
             else -> {
+                val badgeAccent = LocalSettingsAccentColor.current
                 LazyColumn(
                     modifier = modifier.fillMaxSize(),
                     state = listState,
-                    contentPadding = contentPadding,
+                    contentPadding = PaddingValues(
+                        start = SearchListHorizontalPadding,
+                        end = SearchListHorizontalPadding,
+                        top = contentPadding.calculateTopPadding() + SearchListVerticalPadding,
+                        bottom = contentPadding.calculateBottomPadding() + SearchListVerticalPadding,
+                    ),
+                    verticalArrangement = Arrangement.spacedBy(SearchCardSpacing),
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
                     items(
                         items = it,
                         key = { i -> i.hashCode() },
                     ) { item ->
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { onItemClick(item) }
-                                .padding(horizontal = 24.dp, vertical = 14.dp),
+                        Surface(
+                            onClick = { onItemClick(item) },
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(SearchCardRadius),
+                            color = MaterialTheme.colorScheme.surfaceContainerLow,
+                            border = expressiveCardBorder(),
+                            tonalElevation = 0.dp,
                         ) {
-                            Text(
-                                text = item.title,
-                                overflow = TextOverflow.Ellipsis,
-                                maxLines = 1,
-                                fontWeight = FontWeight.Normal,
-                                style = MaterialTheme.typography.titleMedium,
-                            )
-                            Text(
-                                text = item.breadcrumbs,
-                                modifier = Modifier.paddingFromBaseline(top = 16.dp),
-                                maxLines = 1,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                style = MaterialTheme.typography.bodySmall,
-                            )
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(
+                                        horizontal = SearchCardHorizontalPadding,
+                                        vertical = SearchCardVerticalPadding,
+                                    ),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(SearchCardRowGap),
+                            ) {
+                                ExpressiveIconBadge(
+                                    icon = Icons.Outlined.Tune,
+                                    accentColor = badgeAccent,
+                                    size = ExpressiveBadgeCompactSize,
+                                    cornerRadius = ExpressiveBadgeCompactRadius,
+                                    iconSize = ExpressiveCompactIconSize,
+                                )
+                                Column(
+                                    modifier = Modifier.weight(1f),
+                                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                                ) {
+                                    Text(
+                                        text = item.title,
+                                        overflow = TextOverflow.Ellipsis,
+                                        maxLines = 1,
+                                        fontWeight = FontWeight.Medium,
+                                        style = MaterialTheme.typography.titleMedium,
+                                        color = MaterialTheme.colorScheme.onSurface,
+                                    )
+                                    Text(
+                                        text = item.breadcrumbs,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        style = MaterialTheme.typography.bodySmall,
+                                    )
+                                }
+                                Icon(
+                                    imageVector = Icons.Rounded.ChevronRight,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(SearchChevronSize),
+                                )
+                            }
                         }
                     }
                 }

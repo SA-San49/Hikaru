@@ -1,11 +1,16 @@
 package eu.kanade.presentation.more.settings.widget
 
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Cancel
 import androidx.compose.material.icons.filled.Error
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -19,13 +24,26 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.DialogProperties
+import eu.kanade.presentation.more.components.ExpressiveBadgeCompactRadius
+import eu.kanade.presentation.more.components.ExpressiveBadgeCompactSize
+import eu.kanade.presentation.more.components.ExpressiveCompactIconSize
+import eu.kanade.presentation.more.components.ExpressiveDialogCornerRadius
+import eu.kanade.presentation.more.components.ExpressiveIconBadge
+import eu.kanade.presentation.theme.LocalSettingsAccentColor
 import kotlinx.coroutines.launch
 import tachiyomi.i18n.MR
 import tachiyomi.presentation.core.i18n.stringResource
+
+private val EditDialogTitleGap = 12.dp
+private val EditDialogSubtitleTopPadding = 6.dp
+private val EditDialogFieldRadius = 14.dp
 
 @Composable
 fun EditTextPreferenceWidget(
@@ -56,11 +74,35 @@ fun EditTextPreferenceWidget(
         }
         AlertDialog(
             onDismissRequest = onDismissRequest,
+            shape = RoundedCornerShape(ExpressiveDialogCornerRadius),
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
             title = {
                 Column {
-                    Text(text = title)
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(EditDialogTitleGap),
+                    ) {
+                        if (icon != null) {
+                            ExpressiveIconBadge(
+                                icon = icon,
+                                accentColor = LocalSettingsAccentColor.current,
+                                size = ExpressiveBadgeCompactSize,
+                                cornerRadius = ExpressiveBadgeCompactRadius,
+                                iconSize = ExpressiveCompactIconSize,
+                            )
+                        }
+                        Text(
+                            text = title,
+                            style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.SemiBold),
+                        )
+                    }
                     if (dialogSubtitle != null) {
-                        Text(text = dialogSubtitle, style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            text = dialogSubtitle,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = EditDialogSubtitleTopPadding),
+                        )
                     }
                 }
             },
@@ -68,6 +110,7 @@ fun EditTextPreferenceWidget(
                 OutlinedTextField(
                     value = textFieldValue,
                     onValueChange = { textFieldValue = it },
+                    shape = RoundedCornerShape(EditDialogFieldRadius),
                     trailingIcon = {
                         if (textFieldValue.text.isBlank() && !canBeBlank) {
                             Icon(imageVector = Icons.Filled.Error, contentDescription = null)
@@ -86,7 +129,7 @@ fun EditTextPreferenceWidget(
                 usePlatformDefaultWidth = true,
             ),
             confirmButton = {
-                TextButton(
+                FilledTonalButton(
                     enabled = textFieldValue.text != value && (textFieldValue.text.isNotBlank() || canBeBlank),
                     onClick = {
                         scope.launch {

@@ -1,33 +1,33 @@
 package eu.kanade.tachiyomi.ui.player.loader
 
 import eu.kanade.domain.episode.model.toSEpisode
-import tachiyomi.domain.anime.model.toSAnime
 import eu.kanade.tachiyomi.animesource.AnimeSource
 import eu.kanade.tachiyomi.animesource.model.Hoster
 import eu.kanade.tachiyomi.animesource.model.Hoster.Companion.toHosterList
+import eu.kanade.tachiyomi.animesource.model.Track
 import eu.kanade.tachiyomi.animesource.model.Video
 import eu.kanade.tachiyomi.animesource.online.AnimeHttpSource
+import eu.kanade.tachiyomi.animesource.online.ParsedAnimeHttpSource
 import eu.kanade.tachiyomi.data.download.DownloadManager
 import eu.kanade.tachiyomi.ui.player.controls.components.sheets.HosterState
+import eu.kanade.tachiyomi.util.subtitles.StremioSubtitleResolver
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.coroutineScope
 import tachiyomi.domain.anime.model.Anime
+import tachiyomi.domain.anime.model.toSAnime
 import tachiyomi.domain.episode.model.Episode
 import tachiyomi.source.localanime.LocalAnimeSource
 import tachiyomi.source.localanime.io.LocalAnimeSourceFileSystem
-import eu.kanade.tachiyomi.util.subtitles.StremioSubtitleResolver
+import tachiyomi.source.localanime.io.LocalFileEntry
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
-
-import eu.kanade.tachiyomi.animesource.online.ParsedAnimeHttpSource
 
 /**
  * Loader used to retrieve the hosters for a given episode.
  */
 class EpisodeLoader {
     companion object {
+
+        private val SUBTITLE_EXTENSIONS = hashSetOf("srt", "ass", "ssa", "vtt", "sub")
 
         /**
          * Returns a list of hosters of an [episode] based on the type of [source] used.
@@ -37,11 +37,14 @@ class EpisodeLoader {
          * @param source the source of the anime.
          */
         suspend fun getHosters(episode: Episode, anime: Anime, source: AnimeSource): List<Hoster> {
+            // Check local source first to avoid redundant SAF scans and handle subfolder/title mismatches
+            if (source is LocalAnimeSource) {
+                return getHostersOnLocal(episode)
+            }
             val isDownloaded = isDownload(episode, anime)
             return when {
                 isDownloaded -> getHostersOnDownloaded(episode, anime, source)
                 source is AnimeHttpSource -> getHostersOnHttp(episode, source)
-                source is LocalAnimeSource -> getHostersOnLocal(episode)
                 else -> error("source not supported")
             }
         }
@@ -117,7 +120,7 @@ class EpisodeLoader {
             return try {
                 val video = downloadManager.buildVideo(source, anime, episode)
                 listOf(video).toHosterList()
-            } catch (e: Throwable) {
+            } catch (_: Exception) {
                 emptyList()
             }
         }
@@ -131,21 +134,62 @@ class EpisodeLoader {
             episode: Episode,
         ): List<Hoster> {
             return try {
-                val (animeDirName, episodeName) = episode.url.split('/', limit = 2)
+                val parts = episode.url.split('/', limit = 2)
+                if (parts.size < 2) return emptyList()
+                val animeDirName = parts[0]
+                val episodeRelativePath = parts[1]
+
                 val fileSystem: LocalAnimeSourceFileSystem = Injekt.get()
-                val videoFile = fileSystem.getBaseDirectory()
-                    ?.findFile(animeDirName)
-                    ?.findFile(episodeName)
-                val videoUri = videoFile!!.uri
+                val videoEntry = fileSystem.findEpisodeEntry(animeDirName, episodeRelativePath)
+                    ?: fileSystem.findEpisodeByNameWithoutExtension(animeDirName, episode.name)
+                    ?: return emptyList()
+
+                val siblingEntries = resolveSiblingEntries(fileSystem, animeDirName, episodeRelativePath)
+                val baseNameLower = videoEntry.nameWithoutExtension.lowercase()
+                val subtitleTracks = siblingEntries
+                    .filter { entry ->
+                        !entry.isDirectory &&
+                            entry.extension.lowercase() in SUBTITLE_EXTENSIONS &&
+                            matchesSubtitleName(entry.nameWithoutExtension.lowercase(), baseNameLower)
+                    }
+                    .map { sub ->
+                        Track(sub.uri.toString(), sub.nameWithoutExtension)
+                    }
 
                 val video = Video(
-                    videoUri.toString(),
-                    "Local source: ${episode.url}",
-                )
+                    videoUrl = videoEntry.uri.toString(),
+                    videoTitle = "Local source: ${episode.url}",
+                    subtitleTracks = subtitleTracks,
+                    initialized = true,
+                ).apply {
+                    status = Video.State.READY
+                }
                 listOf(video).toHosterList()
-            } catch (e: Exception) {
+            } catch (_: Exception) {
                 emptyList()
             }
+        }
+
+        private fun resolveSiblingEntries(
+            fileSystem: LocalAnimeSourceFileSystem,
+            animeDirName: String,
+            episodeRelativePath: String,
+        ): List<LocalFileEntry> {
+            val topEntries = fileSystem.listAnimeDirectoryEntries(animeDirName)
+            val slashIndex = episodeRelativePath.indexOf('/')
+            if (slashIndex < 0) return topEntries
+            val subDirName = episodeRelativePath.substring(0, slashIndex)
+            val subDir = topEntries.firstOrNull { it.isDirectory && it.name == subDirName } ?: return topEntries
+            return fileSystem.listSubDirectoryEntries(animeDirName, subDir)
+        }
+
+        private fun matchesSubtitleName(subBaseLower: String, videoBaseLower: String): Boolean {
+            if (subBaseLower == videoBaseLower) return true
+            if (!subBaseLower.startsWith(videoBaseLower) || subBaseLower.length <= videoBaseLower.length) {
+                return false
+            }
+            val nextChar = subBaseLower[videoBaseLower.length]
+            return nextChar == '.' || nextChar == '_' || nextChar == ' '
         }
 
         /**
@@ -169,7 +213,7 @@ class EpisodeLoader {
             } else {
                 videos
             }
-            
+
             return sortedVideos.resolveSubtitles()
         }
 

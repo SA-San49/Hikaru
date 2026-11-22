@@ -4,7 +4,6 @@ import android.content.Context
 import eu.kanade.tachiyomi.animesource.model.Video
 import eu.kanade.tachiyomi.data.download.model.Download
 import eu.kanade.tachiyomi.source.Source
-import eu.kanade.tachiyomi.util.size
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.asFlow
 import kotlinx.coroutines.flow.drop
@@ -24,7 +23,6 @@ import tachiyomi.domain.category.interactor.GetCategories
 import tachiyomi.domain.download.service.DownloadPreferences
 import tachiyomi.domain.episode.model.Episode
 import tachiyomi.domain.source.service.SourceManager
-import tachiyomi.domain.storage.service.StorageManager
 import tachiyomi.i18n.MR
 import tachiyomi.source.localanime.LocalAnimeSource
 import tachiyomi.source.localanime.io.Archive
@@ -41,7 +39,7 @@ import java.io.File
  */
 class DownloadManager(
     private val context: Context,
-    private val storageManager: StorageManager = Injekt.get(),
+    private val localFileSystem: LocalAnimeSourceFileSystem = Injekt.get(),
     private val provider: DownloadProvider = Injekt.get(),
     private val cache: DownloadCache = Injekt.get(),
     private val getCategories: GetCategories = Injekt.get(),
@@ -274,8 +272,15 @@ class DownloadManager(
      */
     fun getDownloadCount(anime: Anime): Int {
         return if (anime.isLocal()) {
-            LocalAnimeSourceFileSystem(storageManager).getFilesInAnimeDirectory(anime.url)
-                .count { Archive.isSupported(it) }
+            val topEntries = localFileSystem.listAnimeDirectoryEntries(anime.url)
+            var count = topEntries.count { !it.isDirectory && Archive.isSupportedExtension(it.extension) }
+            for (entry in topEntries) {
+                if (entry.isDirectory && !entry.name.startsWith('.')) {
+                    count += localFileSystem.listSubDirectoryEntries(anime.url, entry)
+                        .count { !it.isDirectory && Archive.isSupportedExtension(it.extension) }
+                }
+            }
+            count
         } else {
             cache.getDownloadCount(anime)
         }
@@ -295,8 +300,15 @@ class DownloadManager(
      */
     fun getDownloadSize(anime: Anime): Long {
         return if (anime.isLocal()) {
-            LocalAnimeSourceFileSystem(storageManager).getAnimeDirectory(anime.url)
-                ?.size() ?: 0L
+            val topEntries = localFileSystem.listAnimeDirectoryEntries(anime.url)
+            var totalSize = topEntries.sumOf { if (it.isDirectory) 0L else it.size }
+            for (entry in topEntries) {
+                if (entry.isDirectory && !entry.name.startsWith('.')) {
+                    totalSize += localFileSystem.listSubDirectoryEntries(anime.url, entry)
+                        .sumOf { if (it.isDirectory) 0L else it.size }
+                }
+            }
+            totalSize
         } else {
             cache.getDownloadSize(anime)
         }
@@ -334,6 +346,7 @@ class DownloadManager(
             cache.removeEpisodes(filteredEpisodes, anime)
 
             if (source.isLocal()) {
+                localFileSystem.invalidateAnimeCache(anime.url)
                 deleteEpisodes.await(filteredEpisodes.map { it.id })
             }
 
@@ -372,7 +385,10 @@ class DownloadManager(
             if (removeQueued) {
                 downloader.removeFromQueue(anime)
             }
-            provider.findAnimeDir(anime.ogTitle, source)?.delete()
+            provider.findAnimeDir(if (source.isLocal()) anime.url else anime.ogTitle, source)?.delete()
+            if (source.isLocal()) {
+                localFileSystem.invalidateCache()
+            }
             cache.removeAnime(anime)
 
             // KMK -->

@@ -25,8 +25,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.composed
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -34,6 +34,13 @@ import eu.kanade.presentation.more.settings.LocalPreferenceHighlighted
 import eu.kanade.presentation.more.settings.LocalPreferenceMinHeight
 import kotlinx.coroutines.delay
 import kotlin.time.Duration.Companion.seconds
+
+private const val HIGHLIGHT_DURATION_SECONDS = 3
+private const val HIGHLIGHT_ALPHA = 0.45f
+private const val HIGHLIGHT_ITERATIONS = 5
+private const val HIGHLIGHT_ANIM_MS = 200
+private const val HIGHLIGHT_START_OFFSET_MS = 600
+private val IconEndPadding = 4.dp
 
 @Composable
 internal fun BasePreferenceWidget(
@@ -46,9 +53,10 @@ internal fun BasePreferenceWidget(
 ) {
     val highlighted = LocalPreferenceHighlighted.current
     val minHeight = LocalPreferenceMinHeight.current
+    val bgModifier = if (highlighted) Modifier.highlightBackground() else Modifier
     Row(
         modifier = modifier
-            .highlightBackground(highlighted)
+            .then(bgModifier)
             .sizeIn(minHeight = minHeight)
             .clickable(enabled = onClick != null, onClick = { onClick?.invoke() })
             .fillMaxWidth(),
@@ -56,7 +64,7 @@ internal fun BasePreferenceWidget(
     ) {
         if (icon != null) {
             Box(
-                modifier = Modifier.padding(start = PrefsHorizontalPadding, end = 8.dp),
+                modifier = Modifier.padding(start = PrefsHorizontalPadding, end = IconEndPadding),
                 content = { icon() },
             )
         }
@@ -71,8 +79,11 @@ internal fun BasePreferenceWidget(
                     text = title,
                     overflow = TextOverflow.Ellipsis,
                     maxLines = 2,
-                    style = MaterialTheme.typography.titleLarge,
-                    fontSize = TitleFontSize,
+                    style = MaterialTheme.typography.titleMedium.copy(
+                        fontSize = TitleFontSize,
+                        fontWeight = FontWeight.Medium,
+                    ),
+                    color = MaterialTheme.colorScheme.onSurface,
                 )
             }
             subcomponent?.invoke(this)
@@ -86,40 +97,40 @@ internal fun BasePreferenceWidget(
     }
 }
 
-internal fun Modifier.highlightBackground(highlighted: Boolean): Modifier = composed {
+@Composable
+internal fun Modifier.highlightBackground(highlighted: Boolean = true): Modifier {
+    if (!highlighted) return this
     var highlightFlag by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) {
-        if (highlighted) {
-            highlightFlag = true
-            delay(3.seconds)
-            highlightFlag = false
-        }
+        highlightFlag = true
+        delay(HIGHLIGHT_DURATION_SECONDS.seconds)
+        highlightFlag = false
     }
     val highlight by animateColorAsState(
         targetValue = if (highlightFlag) {
-            MaterialTheme.colorScheme.surfaceTint.copy(alpha = .12f)
+            MaterialTheme.colorScheme.primaryContainer.copy(alpha = HIGHLIGHT_ALPHA)
         } else {
             Color.Transparent
         },
         animationSpec = if (highlightFlag) {
             repeatable(
-                iterations = 5,
-                animation = tween(durationMillis = 200),
+                iterations = HIGHLIGHT_ITERATIONS,
+                animation = tween(durationMillis = HIGHLIGHT_ANIM_MS),
                 repeatMode = RepeatMode.Reverse,
                 initialStartOffset = StartOffset(
-                    offsetMillis = 600,
+                    offsetMillis = HIGHLIGHT_START_OFFSET_MS,
                     offsetType = StartOffsetType.Delay,
                 ),
             )
         } else {
-            tween(200)
+            tween(HIGHLIGHT_ANIM_MS)
         },
         label = "highlight",
     )
-    Modifier.background(color = highlight)
+    return background(color = highlight)
 }
 
 internal val TrailingWidgetBuffer = 16.dp
 internal val PrefsHorizontalPadding = 16.dp
-internal val PrefsVerticalPadding = 16.dp
-internal val TitleFontSize = 16.sp
+internal val PrefsVerticalPadding = 14.dp
+internal val TitleFontSize = 15.5.sp

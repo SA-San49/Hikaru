@@ -260,6 +260,7 @@ class AnimeScreenModel(
     val showFileSize = storagePreferences.showEpisodeFileSize().get()
 
     private var fetchSuggestionsJob: kotlinx.coroutines.Job? = null
+    private var fetchAllJob: kotlinx.coroutines.Job? = null
     private val suggestionsDispatcher = kotlinx.coroutines.Dispatchers.IO.limitedParallelism(3)
 
     private val _openRelatedAnimeFlow = kotlinx.coroutines.flow.MutableSharedFlow<Long>(extraBufferCapacity = 1)
@@ -752,8 +753,15 @@ class AnimeScreenModel(
                 val needRefreshEpisode = initialEpisodes.isEmpty() || isLocal
 
                 if (needRefreshInfo || needRefreshEpisode) {
-                    if (needRefreshInfo) fetchAnimeFromSource()
-                    fetchEpisodesFromSource()
+                    if (isLocal && needRefreshInfo && needRefreshEpisode) {
+                        kotlinx.coroutines.coroutineScope {
+                            launch { fetchAnimeFromSource() }
+                            launch { fetchEpisodesFromSource() }
+                        }
+                    } else {
+                        if (needRefreshInfo) fetchAnimeFromSource()
+                        if (needRefreshEpisode) fetchEpisodesFromSource()
+                    }
                 }
             }
             updateSuccessState { it.copySuccess(isRefreshingData = false) }
@@ -767,10 +775,16 @@ class AnimeScreenModel(
     }
 
     fun fetchAllFromSource(manualFetch: Boolean = true) {
-        screenModelScope.launch {
+        fetchAllJob?.cancel()
+        fetchAllJob = screenModelScope.launch {
             updateSuccessState { it.copySuccess(isRefreshingData = true) }
             val current = successState?.anime
-            if (current != null && current.initialized && current.fetchType != FetchType.Seasons) {
+            val isLocal = current?.isLocal() == true
+            if (manualFetch && isLocal) {
+                (successState?.source as? LocalAnimeSource)?.invalidateCache(current.url)
+            }
+            val canFetchConcurrently = current != null && current.fetchType != FetchType.Seasons
+            if (canFetchConcurrently && (current.initialized || isLocal)) {
                 kotlinx.coroutines.coroutineScope {
                     launch { fetchAnimeFromSource(manualFetch) }
                     launch { fetchEpisodesFromSource(manualFetch) }

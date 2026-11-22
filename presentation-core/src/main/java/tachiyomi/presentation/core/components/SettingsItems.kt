@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyGridScope
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDownward
@@ -36,6 +37,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.MenuAnchorType
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -51,6 +53,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInteropFilter
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import dev.icerock.moko.resources.StringResource
@@ -176,6 +179,12 @@ fun RadioItem(label: String, selected: Boolean, onClick: () -> Unit) {
     )
 }
 
+private val SliderSectionSpacing = 6.dp
+private val SliderHeaderGap = 12.dp
+private val SliderPillRadius = 10.dp
+private val SliderPillHorizontalPadding = 10.dp
+private val SliderPillVerticalPadding = 4.dp
+
 @Composable
 fun SliderItem(
     label: String,
@@ -187,6 +196,7 @@ fun SliderItem(
     onValueChangeFinished: (() -> Unit)? = null,
 ) {
     val haptic = LocalHapticFeedback.current
+    val pillText = valueText.ifBlank { value.toString() }
 
     Column(
         modifier = Modifier
@@ -195,43 +205,46 @@ fun SliderItem(
                 horizontal = SettingsItemsPaddings.Horizontal,
                 vertical = SettingsItemsPaddings.Vertical,
             ),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(SliderSectionSpacing),
     ) {
-        Column(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(SliderHeaderGap),
+        ) {
             Text(
                 text = label,
-                style = MaterialTheme.typography.bodyMedium,
+                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Medium),
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.weight(1f),
             )
-            if (valueText.isNotEmpty()) {
+            Surface(
+                shape = RoundedCornerShape(SliderPillRadius),
+                color = MaterialTheme.colorScheme.primaryContainer,
+                contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+            ) {
                 Text(
-                    text = valueText,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    text = pillText,
+                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                    modifier = Modifier.padding(
+                        horizontal = SliderPillHorizontalPadding,
+                        vertical = SliderPillVerticalPadding,
+                    ),
                 )
             }
         }
 
-        Row(
+        Slider(
             modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            Slider(
-                modifier = Modifier.weight(1f),
-                value = value,
-                onValueChange = f@{
-                    if (it == value) return@f
-                    onChange(it)
-                },
-                onValueChangeFinished = onValueChangeFinished,
-                valueRange = min..max,
-            )
-            Text(
-                text = value.toString(),
-                style = MaterialTheme.typography.bodyMedium,
-                modifier = Modifier.widthIn(min = 24.dp),
-            )
-        }
+            value = value,
+            onValueChange = f@{
+                if (it == value) return@f
+                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                onChange(it)
+            },
+            onValueChangeFinished = onValueChangeFinished,
+            valueRange = min..max,
+        )
     }
 }
 

@@ -1,13 +1,13 @@
 package tachiyomi.source.localanime.image
 
 import android.content.Context
+import android.net.Uri
 import com.hippo.unifile.UniFile
 import eu.kanade.tachiyomi.source.model.SAnime
 import eu.kanade.tachiyomi.source.model.SEpisode
 import eu.kanade.tachiyomi.util.storage.DiskUtil
-import tachiyomi.core.common.storage.nameWithoutExtension
-import tachiyomi.core.common.util.system.ImageUtil
 import tachiyomi.source.localanime.io.LocalAnimeSourceFileSystem
+import tachiyomi.source.localanime.io.LocalFileEntry
 import java.io.InputStream
 
 private const val DEFAULT_THUMBNAIL_NAME = "thumbnail.jpg"
@@ -18,30 +18,31 @@ actual class LocalAnimeSourceEpisodeThumbnailManager(
 ) {
 
     actual fun find(animeUrl: String, episodeName: String): UniFile? {
-        val files = fileSystem.getFilesInAnimeDirectory(animeUrl)
+        val entries = fileSystem.listAnimeDirectoryEntries(animeUrl)
+        val imageMap = buildImageLookup(entries)
+        val uri = findUriInLookup(imageMap, episodeName) ?: return null
+        return fileSystem.toUniFile(uri)
+    }
 
-        // 1. Match "<Episode Name>-thumbnail" (e.g., Episode 01-thumbnail.jpg)
-        files.firstOrNull {
-            it.isFile &&
-                it.nameWithoutExtension.equals("$episodeName-thumbnail", ignoreCase = true) &&
-                ImageUtil.isImage(it.name) { it.openInputStream() }
-        }?.let { return it }
+    fun buildImageLookup(entries: List<LocalFileEntry>): Map<String, Uri> {
+        val map = HashMap<String, Uri>()
+        for (entry in entries) {
+            if (!entry.isDirectory && entry.extension.lowercase() in IMAGE_EXTENSIONS) {
+                val key = entry.nameWithoutExtension.lowercase()
+                if (key !in map) {
+                    map[key] = entry.uri
+                }
+            }
+        }
+        return map
+    }
 
-        // 2. Match "<Episode Name>" image file (e.g., Episode 01.jpg)
-        files.firstOrNull {
-            it.isFile &&
-                it.nameWithoutExtension.equals(episodeName, ignoreCase = true) &&
-                ImageUtil.isImage(it.name) { it.openInputStream() }
-        }?.let { return it }
-
-        // 3. Match "<Episode Name>-cover" (e.g., Episode 01-cover.jpg)
-        files.firstOrNull {
-            it.isFile &&
-                it.nameWithoutExtension.equals("$episodeName-cover", ignoreCase = true) &&
-                ImageUtil.isImage(it.name) { it.openInputStream() }
-        }?.let { return it }
-
-        return null
+    fun findUriInLookup(imageMap: Map<String, Uri>, episodeName: String): Uri? {
+        if (imageMap.isEmpty()) return null
+        val lowerName = episodeName.lowercase()
+        return imageMap["$lowerName-thumbnail"]
+            ?: imageMap[lowerName]
+            ?: imageMap["$lowerName-cover"]
     }
 
     actual fun update(anime: SAnime, episode: SEpisode, inputStream: InputStream): UniFile? {
@@ -52,7 +53,11 @@ actual class LocalAnimeSourceEpisodeThumbnailManager(
         }
 
         val fileName = "${episode.name}-$DEFAULT_THUMBNAIL_NAME"
-        val targetFile = find(anime.url, episode.name) ?: directory.createFile(fileName)!!
+        val targetFile = find(anime.url, episode.name) ?: directory.createFile(fileName)
+        if (targetFile == null) {
+            inputStream.close()
+            return null
+        }
 
         inputStream.use { input ->
             targetFile.openOutputStream().use { output ->
@@ -61,8 +66,20 @@ actual class LocalAnimeSourceEpisodeThumbnailManager(
         }
 
         DiskUtil.createNoMediaFile(directory, context)
-
         episode.preview_url = targetFile.uri.toString()
+        fileSystem.invalidateAnimeCache(anime.url)
         return targetFile
+    }
+
+    companion object {
+        private val IMAGE_EXTENSIONS = hashSetOf(
+            "jpg",
+            "jpeg",
+            "png",
+            "webp",
+            "avif",
+            "gif",
+            "bmp",
+        )
     }
 }

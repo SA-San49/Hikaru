@@ -13,7 +13,6 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.shrinkVertically
-import androidx.compose.animation.togetherWith
 import androidx.compose.animation.graphics.ExperimentalAnimationGraphicsApi
 import androidx.compose.animation.graphics.res.animatedVectorResource
 import androidx.compose.animation.graphics.res.rememberAnimatedVectorPainter
@@ -58,6 +57,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
@@ -108,8 +108,12 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.launch
-import soup.compose.material.motion.animation.materialFadeThroughIn
-import soup.compose.material.motion.animation.materialFadeThroughOut
+import eu.kanade.domain.ui.model.BottomBarStyle
+import eu.kanade.presentation.home.StyledDockItem
+import eu.kanade.presentation.home.StyledHomeNavigationBar
+import eu.kanade.presentation.home.bottomBarTabTransition
+import kotlinx.collections.immutable.ImmutableList
+import kotlinx.collections.immutable.toImmutableList
 import tachiyomi.core.common.preference.PreferenceStore
 import tachiyomi.domain.library.service.LibraryPreferences
 import tachiyomi.i18n.MR
@@ -142,7 +146,7 @@ object HomeScreen : Screen() {
         val bottomNavTabs by uiPreferences.bottomNavTabs().collectAsStatePref()
         val animatedTransitions by uiPreferences.animatedTransitions().collectAsStatePref()
         val hazeEnabled by uiPreferences.hazeEnabled().collectAsStatePref()
-        val tabFadeDuration = remember(animatedTransitions) { if (animatedTransitions) 200 else 0 }
+        val bottomBarStyle by uiPreferences.bottomBarStyle().collectAsStatePref()
 
         val navigator = LocalNavigator.currentOrThrow
         val scope = rememberCoroutineScope()
@@ -176,8 +180,8 @@ object HomeScreen : Screen() {
             tab = defaultTab,
             key = TAB_NAVIGATOR_KEY,
         ) { tabNavigator ->
-            val visibleNavItems: List<NavItem> = remember(bottomNavTabs) {
-                bottomNavTabs.mapNotNull { id -> NavItem.fromId(id) }.filter { it.tab.isEnabled() }
+            val visibleNavItems = remember(bottomNavTabs) {
+                bottomNavTabs.mapNotNull { id -> NavItem.fromId(id) }.filter { it.tab.isEnabled() }.toImmutableList()
             }
             val isCurrentTabVisible = remember(visibleNavItems, tabNavigator.current) {
                 visibleNavItems.any { it.tab::class == tabNavigator.current::class }
@@ -214,14 +218,35 @@ object HomeScreen : Screen() {
                                 enter = slideInVertically { it } + expandVertically(),
                                 exit = slideOutVertically { it } + shrinkVertically(),
                             ) {
-                                NavigationBar(
-                                    containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
-                                ) {
-                                    for (navItem in visibleNavItems) {
-                                        key(navItem.id) {
-                                            HomeNavigationBarItem(this, tabNavigator, navItem, navLabelVisibility, adaptiveDecision, updatesCount, extensionUpdatesCount)
+                                if (bottomBarStyle == BottomBarStyle.DEFAULT) {
+                                    NavigationBar(
+                                        containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+                                    ) {
+                                        for (navItem in visibleNavItems) {
+                                            key(navItem.id) {
+                                                HomeNavigationBarItem(
+                                                    this,
+                                                    tabNavigator,
+                                                    navItem,
+                                                    navLabelVisibility,
+                                                    adaptiveDecision,
+                                                    updatesCount,
+                                                    extensionUpdatesCount,
+                                                )
+                                            }
                                         }
                                     }
+                                } else {
+                                    StyledHomeDockBar(
+                                        style = bottomBarStyle,
+                                        tabNavigator = tabNavigator,
+                                        visibleNavItems = visibleNavItems,
+                                        navLabelVisibility = navLabelVisibility,
+                                        animatedTransitions = animatedTransitions,
+                                        adaptiveDecision = adaptiveDecision,
+                                        updatesCount = updatesCount,
+                                        extensionUpdatesCount = extensionUpdatesCount,
+                                    )
                                 }
                             }
                         }
@@ -237,12 +262,26 @@ object HomeScreen : Screen() {
                         AnimatedContent(
                             targetState = tabNavigator.current,
                             transitionSpec = {
-                                materialFadeThroughIn(
-                                    durationMillis = tabFadeDuration,
-                                ) togetherWith
-                                    materialFadeThroughOut(
-                                        durationMillis = tabFadeDuration,
-                                    )
+                                val initialIndex = visibleNavItems.indexOfFirst {
+                                    it.tab.key == initialState.key
+                                }
+                                val targetIndex = visibleNavItems.indexOfFirst {
+                                    it.tab.key == targetState.key
+                                }
+                                val direction = if (
+                                    initialIndex == -1 ||
+                                    targetIndex == -1 ||
+                                    targetIndex >= initialIndex
+                                ) {
+                                    1
+                                } else {
+                                    -1
+                                }
+                                bottomBarTabTransition(
+                                    style = bottomBarStyle,
+                                    direction = direction,
+                                    animatedTransitions = animatedTransitions,
+                                )
                             },
                             label = "tabContent",
                             contentKey = { it.key },
@@ -338,6 +377,84 @@ object HomeScreen : Screen() {
                 }
             }
         }
+    }
+
+    @Composable
+    private fun StyledHomeDockBar(
+        style: BottomBarStyle,
+        tabNavigator: TabNavigator,
+        visibleNavItems: ImmutableList<NavItem>,
+        navLabelVisibility: NavLabelVisibility,
+        animatedTransitions: Boolean,
+        adaptiveDecision: AdaptiveDecision?,
+        updatesCount: Int,
+        extensionUpdatesCount: Int,
+    ) {
+        val navigator = LocalNavigator.currentOrThrow
+        val scope = rememberCoroutineScope()
+        val context = LocalContext.current
+        val behaviorMap by uiPreferences.bottomNavBehaviors().collectAsStatePref()
+        val haptic = LocalHapticFeedback.current
+        val executor = remember(context, scope, navigator) { NavActionExecutor(context, scope, navigator) }
+        val selectedIndex = visibleNavItems.indexOfFirst { it.tab.key == tabNavigator.current.key }
+            .coerceAtLeast(0)
+
+        val dockItems = visibleNavItems.map { navItem ->
+            val tab = navItem.tab
+            val behavior = behaviorMap[navItem.id] ?: NavBehavior()
+            val selected = tabNavigator.current.key == tab.key
+            val title = stringResource(navItem.titleRes)
+            val onLongClick: (() -> Unit)? = if (behavior.onLongClick != NavAction.Default) {
+                {
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    executor.execute(behavior.onLongClick, navItem.id)
+                }
+            } else {
+                null
+            }
+            val onDoubleClick: (() -> Unit)? = if (behavior.onDoubleTap != NavAction.Default) {
+                {
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    executor.execute(behavior.onDoubleTap, navItem.id)
+                }
+            } else {
+                null
+            }
+            StyledDockItem(
+                id = navItem.id,
+                title = title,
+                modifier = Modifier
+                    .semantics { testTagsAsResourceId = true }
+                    .testTag("home_${navItem.id}_tab"),
+                onClick = {
+                    if (!selected) {
+                        executor.logClick(navItem.id)
+                        tabNavigator.current = tab
+                    } else {
+                        scope.launch { tab.onReselect(navigator) }
+                    }
+                },
+                onLongClick = onLongClick,
+                onDoubleClick = onDoubleClick,
+                iconContent = { _, tint ->
+                    NavigationIconItem(
+                        navItem = navItem,
+                        adaptiveDecision = adaptiveDecision,
+                        updatesCount = updatesCount,
+                        extensionUpdatesCount = extensionUpdatesCount,
+                        overrideTint = tint,
+                    )
+                },
+            )
+        }.toImmutableList()
+
+        StyledHomeNavigationBar(
+            style = style,
+            items = dockItems,
+            selectedIndex = selectedIndex,
+            navLabelVisibility = navLabelVisibility,
+            animatedTransitions = animatedTransitions,
+        )
     }
 
     @Composable
@@ -541,6 +658,7 @@ object HomeScreen : Screen() {
         adaptiveDecision: AdaptiveDecision?,
         updatesCount: Int,
         extensionUpdatesCount: Int,
+        overrideTint: Color? = null,
     ) {
         val tab = navItem.tab
         val tabNavigator = LocalTabNavigator.current
@@ -636,17 +754,22 @@ object HomeScreen : Screen() {
                 else -> painterResource(R.drawable.ic_browse_filled_24dp)
             }
 
+            val resolvedTint = overrideTint ?: if (selected) {
+                MaterialTheme.colorScheme.onSecondaryContainer
+            } else {
+                LocalContentColor.current
+            }
             if (navItem.iconVector != null) {
                 Icon(
                     imageVector = navItem.iconVector!!,
                     contentDescription = stringResource(navItem.titleRes),
-                    tint = if (selected) MaterialTheme.colorScheme.onSecondaryContainer else LocalContentColor.current,
+                    tint = resolvedTint,
                 )
             } else {
                 Icon(
                     painter = iconPainter!!,
                     contentDescription = stringResource(navItem.titleRes),
-                    tint = if (selected) MaterialTheme.colorScheme.onSecondaryContainer else LocalContentColor.current,
+                    tint = resolvedTint,
                 )
             }
         }
