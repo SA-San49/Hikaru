@@ -233,49 +233,16 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - name: Generate changelog context
-        run: |
-          set -euo pipefail
-          mkdir -p .github/ai
-
-          PREV_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
-          if [[ -z "$PREV_TAG" ]]; then
-            RANGE="-n 15"
-            echo "No previous tag found, using the last 15 commits." >&2
-          else
-            RANGE="$PREV_TAG..HEAD"
-            echo "Changes since $PREV_TAG" >&2
-          fi
-
-          git log $RANGE --pretty=format:'- %s' \
-            | grep -v 'chore(release): prepare' \
-            | grep -v -E '^- Merge (pull request|branch|remote-tracking)' \
-            > .github/ai/commits.txt || true
-          git diff --stat $RANGE > .github/ai/files.txt || true
-
-          if [[ ! -s .github/ai/commits.txt ]]; then
-            echo "- General stability and polish" > .github/ai/commits.txt
-          fi
-
       - name: Write release changelog
-        continue-on-error: true
-        env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          FORCE_AI_NOTES: ${{ inputs.force_ai_notes }}
         run: |
           set -euo pipefail
           mkdir -p .github/ai
 
-          # 0. Explicit opt-out, so the Gemini key can be tested on demand.
-          if [[ "${FORCE_AI_NOTES:-false}" == "true" ]]; then
-            echo "force_ai_notes=true - skipping RELEASE_NOTES.md and generating notes with Gemini"
-            echo "::notice::Release notes source: Gemini (force_ai_notes=true was requested)"
-          # 1. Hand-written notes win, as long as they are meant for this version.
-          elif [[ -s RELEASE_NOTES.md ]]; then
+          # Gemini changelog generation is disabled so hand-written notes in
+          # RELEASE_NOTES.md are never overwritten.
+          if [[ -s RELEASE_NOTES.md ]]; then
             DECLARED=$(sed -n 's/.*<!-- *version: *\([^ >]*\) *-->.*/\1/p' RELEASE_NOTES.md | head -n1)
             if [[ -z "$DECLARED" || "$DECLARED" == "$VERSION" ]]; then
-              # Strip the HTML comment blocks (version marker + maintainer notes)
-              # and any leading blank lines, so only the notes are published.
               awk '/<!--/ { in_comment = 1 }
                    in_comment && /-->/ { in_comment = 0; next }
                    !in_comment' RELEASE_NOTES.md \
@@ -285,99 +252,10 @@ jobs:
               echo "NOTES_SOURCE=hand" >> "${GITHUB_ENV:-/dev/null}"
               exit 0
             fi
-            echo "::warning::RELEASE_NOTES.md targets v$DECLARED but this release is v$VERSION - ignoring it and generating notes instead"
+            echo "::warning::RELEASE_NOTES.md targets v$DECLARED but this release is v$VERSION - using fallback text (Gemini disabled)"
+          else
+            echo "::warning::RELEASE_NOTES.md is missing or empty - using fallback text (Gemini disabled)"
           fi
-
-          # 2. No usable hand-written notes, so ask Gemini.
-          COMMITS=$(cat .github/ai/commits.txt)
-          FILES=$(cat .github/ai/files.txt)
-
-          cat > .github/ai/prompt.txt <<'PROMPT'
-          You are writing the changelog for "Hikaru", an anime app.
-
-          Write it for regular users, not developers. Friendly, clear, upbeat.
-          Do NOT mention code, commits, diffs, repositories or file names.
-          Do NOT invent features that are not supported by the list below.
-
-          Reply with exactly these three Markdown sections and nothing else:
-
-          ### What's New
-          - ...
-
-          ### Improvements & Fixes
-          - ...
-
-          ### Under the Hood
-          - ...
-
-          Keep each bullet under 15 words. Use 0 to 3 bullets per section; skip a
-          bullet rather than padding it. No headings other than the three above.
-
-          CHANGES:
-          PROMPT
-
-          printf '%s\n' "$COMMITS" >> .github/ai/prompt.txt
-
-          if [[ -z "${GEMINI_API_KEY:-}" ]]; then
-            echo "::warning::No hand-written notes for v$VERSION and GEMINI_API_KEY is not set - falling back to generic notes. Add RELEASE_NOTES.md or the GEMINI_API_KEY secret."
-            exit 0
-          fi
-
-          PAYLOAD=$(jq -n --rawfile prompt .github/ai/prompt.txt \
-            '{contents: [{parts: [{text: $prompt}]}], generationConfig: {temperature: 0.6, maxOutputTokens: 1024}}')
-
-          # Google retires model names for new API keys, so try newest first and
-          # keep going if one of them is unavailable.
-          # Newest flash first, lite models as the last resort.
-          MODELS="${GEMINI_MODELS:-gemini-3.6-flash gemini-3.5-flash gemini-3.8-flash gemini-3.7-flash gemini-flash-latest gemini-flash-lite-latest gemini-2.5-flash}"
-          DEADLINE=$(( $(date +%s) + 150 ))
-          summary=""
-          for model in $MODELS; do
-            echo "Trying model: $model"
-            for attempt in 1 2; do
-              if [[ $(date +%s) -ge $DEADLINE ]]; then
-                echo "150s budget exceeded, stopping model attempts"
-                break 2
-              fi
-
-              http=$(curl -sS --max-time 45 -o /tmp/gemini.json -w '%{http_code}' -X POST \
-                "https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}" \
-                -H 'Content-Type: application/json' -d "$PAYLOAD" || echo "000")
-              response=$(cat /tmp/gemini.json 2>/dev/null || echo '{}')
-              summary=$(echo "$response" | jq -r '[.candidates[0].content.parts[]? | select(.thought != true) | .text] | join("")' 2>/dev/null)
-
-              if [[ -n "$summary" ]]; then
-                echo "Notes generated with $model"
-                echo "USED_MODEL=$model" >> "${GITHUB_ENV:-/dev/null}"
-                echo "NOTES_SOURCE=gemini" >> "${GITHUB_ENV:-/dev/null}"
-                break 2
-              fi
-
-              echo "  HTTP $http: $(echo "$response" | jq -r '.error.message // .promptFeedback.blockReason // "no text returned"' 2>/dev/null | head -c 160)"
-
-              # Only rate limits deserve a retry; every other error moves on.
-              if [[ "$http" == "429" ]]; then
-                echo "  rate limited, one retry in 5s"
-                sleep 5
-              else
-                break
-              fi
-            done
-          done
-
-          if [[ -z "$summary" ]]; then
-            echo "::warning::AI changelog unavailable, using fallback text"
-            echo "NOTES_SOURCE=fallback" >> "${GITHUB_ENV:-/dev/null}"
-            echo "::notice::Release notes source: built-in generic text (no usable notes were available)"
-            exit 0
-          fi
-
-          printf '%s\n' "$summary" > .github/ai/changelog.md
-
-          # Flatten to one line so the generated text is visible as an annotation
-          # without needing the raw job log.
-          PREVIEW=$(printf '%s' "$summary" | tr '\n' '~' | tr -s ' ' | head -c 700)
-          echo "::notice::Release notes source: Gemini (${model}): $PREVIEW"
 
       - name: Compose release notes
         run: |

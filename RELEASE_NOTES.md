@@ -1,32 +1,29 @@
-<!-- version: 0.5.220 -->
+<!-- version: 0.5.223 -->
 <!--
-  Hand-written release notes for v0.5.220 - the first public release.
-
-  Everything outside this comment block is published verbatim to the GitHub
-  release and to the Discord update message. Update the version marker when the
-  version moves on, otherwise this file is skipped and Gemini writes the notes.
-
-  Keep it friendly and aimed at users, not developers. No tables: the Discord
-  message gets buttons instead.
+  Hand-written release notes for v0.5.223 (PR #16 + PR #17).
+  Everything outside this comment block is published verbatim to GitHub Releases
+  and the Discord update channel.
 -->
 
-Hey everyone, and welcome! 🎉
+Hey everyone! **Hikaru v0.5.223** is here with one of our biggest visual & performance updates yet — featuring custom launcher icons, 8 animated bottom bar styles, 5 brand-new themes, an Expressive Material 3 settings makeover, and dramatically faster Local Source loading! 🚀
 
-This is **Hikaru's very first public release** — the moment this little app stops being something we build for ourselves and starts being something you can actually use. Thank you for showing up this early. It genuinely means a lot, and it's only the beginning.
+### 🎨 Appearance, App Icons & Bottom Bar Studio
+- **Customizable App Icons (6 Styles)**: Choose between **Default**, **Blood Moon**, **Sakura Lantern**, **Enso Sakura**, **Violet Twilight**, and **Moonlit Cat** inside **Settings → Appearance → App Icon**, complete with a live launcher preview hero stage and one-tap **Restart** dock.
+- **8 Animated Bottom Navigation Bar Styles**: Customize your navigation bar in **Settings → Appearance → Bottom Navigation Bar** using a swipeable live studio with unique tab-sliding animations: **Classic Material**, **Glass Dock**, **Capsule Bar**, **Elevated Bubble**, **Floating Center**, **Wave Dock**, **Floating Pill**, and **Center Dock**.
+- **5 New Color Themes & Modern Previews**: Redesigned the theme selector cards with a cleaner modern layout and added **Slate Mist** (our new sleek default accent), **Cyberpunk**, **Aurora**, **Sakura**, and **Crimson Noir**.
 
-There's no long changelog to catch up on yet, so here's what you're getting on day one:
+### ✨ Expressive Material 3 Settings & About
+- **Redesigned Settings & More**: Refreshed **More**, **Settings**, **Player Settings**, sub-settings screens, **About**, and selection dialogs with grouped rounded cards, color-coded icon badges, smooth check-thumb switches, and tonal value pills — while keeping the classic transparent Hikaru kanji header.
+- **Working In-App Update Checker**: Tapping **Check for updates** in **About** now properly checks for new Hikaru releases and safely launches the APK installer, while Discord and GitHub icons preserve their original brand colors.
 
-### What's inside
-- **Your library, your way** — the grid opens in three columns by default, so more of your collection fits on screen at once
-- **Everything a tap away** — Library · History · Schedule · Browse · More, right there in the bottom bar
-- **Google Drive sync that actually syncs** — backups run on Hikaru's own sync project, so your library follows you between devices
-- **Schedules that stay close** — upcoming episodes live in their own tab instead of being buried
-- **A lighter download** — a separate build for each CPU type, so your phone only carries what it needs
+### ⚡ Local Anime Source Overhaul
+- **Instant Episode Loading**: Removed blocking per-episode scans so series with hundreds of episodes open almost instantly instead of freezing or getting stuck at 0 episodes.
+- **Batch Folder Scanning**: Replaced hundreds of slow Android storage lookups with single-query folder scanning and smart caching, keeping browsing fast even on budget devices.
+- **Lazy On-Demand Video Thumbnails**: Episode thumbnails now generate only for items visible on screen using hardware decoding first, with strict memory caps, bounded disk caching, and instant scroll cancellation.
+- **Richer Format & Subtitle Support**: Added background cover generation for local series without covers, 1-level season subfolder support, wider video formats (`.m4v`, `.ts`, `.m2ts`, `.3gp`, `.mpg`, `.mpeg`, `.ogm`, `.ogv`), and automatic local `.srt`/`.ass`/`.ssa`/`.vtt`/`.sub` subtitle detection.
 
-### A small note on updates
-This is release one of many. When the next version lands you'll hear about it right here — no store, no gatekeeping, no waiting for approval.
-
-### Thank you
-Hikaru is made by a small team that cares a lot about the details. If something feels off, or something you love is missing, tell us. In the early days your feedback shapes everything that comes next.
-
-Happy watching 💜
+### 🛠️ Under the Hood & Cleanup
+- **Over 4 MB Smaller APKs**: Converted icon assets to WebP and stripped unused packaging metadata for lighter downloads.
+- **Faster Episode Sync & Smooth Scrolling**: Upgraded episode database syncing to linear time and optimized **More** & **Settings** rendering to eliminate lag.
+- **Launcher Icon Reliability**: Fixed icon switching across stable, beta, and preview variants while preserving app labels, shortcuts, and full-color adaptive icon artwork.
+- **Jimaku Removal**: Removed deprecated Jimaku subtitle integration and unused API settings.
