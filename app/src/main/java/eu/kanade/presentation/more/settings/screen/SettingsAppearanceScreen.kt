@@ -21,8 +21,10 @@ import eu.kanade.domain.ui.model.setAppCompatDelegateThemeMode
 import eu.kanade.presentation.more.settings.Preference
 import eu.kanade.presentation.more.settings.screen.appearance.AppCustomThemeColorPickerScreen
 import eu.kanade.presentation.more.settings.screen.appearance.AppIconScreen
+import eu.kanade.presentation.more.settings.screen.appearance.BottomBarStyleScreen
 import eu.kanade.presentation.more.settings.screen.appearance.AppLanguageScreen
 import eu.kanade.presentation.more.settings.widget.AppIconPreferenceWidget
+import eu.kanade.presentation.more.settings.widget.BottomBarStylePreferenceWidget
 import eu.kanade.presentation.more.settings.widget.AppThemeModePreferenceWidget
 import eu.kanade.presentation.more.settings.widget.AppThemePreferenceWidget
 import tachiyomi.i18n.ank.AMR
@@ -73,6 +75,8 @@ object SettingsAppearanceScreen : SearchableSettings {
 
         val appIconPref = uiPreferences.appIcon()
         val appIcon by appIconPref.collectAsState()
+        val bottomBarStylePref = uiPreferences.bottomBarStyle()
+        val bottomBarStyle by bottomBarStylePref.collectAsState()
 
         val customPreferenceItem = if (appTheme == AppTheme.CUSTOM) {
             listOf(
@@ -124,6 +128,14 @@ object SettingsAppearanceScreen : SearchableSettings {
                     AppIconPreferenceWidget(
                         value = appIcon,
                         onClick = { navigator.push(AppIconScreen()) },
+                    )
+                },
+                Preference.PreferenceItem.CustomPreference(
+                    title = "Bottom navigation bar style",
+                ) {
+                    BottomBarStylePreferenceWidget(
+                        value = bottomBarStyle,
+                        onClick = { navigator.push(BottomBarStyleScreen()) },
                     )
                 },
             ),

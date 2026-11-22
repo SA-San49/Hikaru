@@ -1,6 +1,7 @@
 package eu.kanade.domain.ui
 
 import eu.kanade.domain.ui.model.AppIcon
+import eu.kanade.domain.ui.model.BottomBarStyle
 import eu.kanade.domain.ui.model.AppTheme
 import eu.kanade.domain.ui.model.NavBehavior
 import eu.kanade.domain.ui.model.NavConfig
@@ -45,6 +46,8 @@ class UiPreferences(
     fun themeDarkAmoled() = preferenceStore.getBoolean("pref_theme_dark_amoled_key", false)
 
     fun appIcon() = preferenceStore.getEnum("pref_app_icon", AppIcon.DEFAULT)
+
+    fun bottomBarStyle() = preferenceStore.getEnum("pref_bottom_bar_style", BottomBarStyle.DEFAULT)
 
     fun relativeTime() = preferenceStore.getBoolean("relative_time_v2", true)
 
