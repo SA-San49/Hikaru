@@ -131,7 +131,7 @@ object SettingsAppearanceScreen : SearchableSettings {
                     )
                 },
                 Preference.PreferenceItem.CustomPreference(
-                    title = "Bottom navigation bar style",
+                    title = "Bottom bar style",
                 ) {
                     BottomBarStylePreferenceWidget(
                         value = bottomBarStyle,

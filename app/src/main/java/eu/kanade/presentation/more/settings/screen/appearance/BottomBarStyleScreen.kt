@@ -1,6 +1,8 @@
 package eu.kanade.presentation.more.settings.screen.appearance
 
-import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -17,8 +19,8 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -38,10 +40,12 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -60,79 +64,74 @@ import eu.kanade.domain.ui.model.BottomBarStyle
 import eu.kanade.presentation.components.AppBar
 import eu.kanade.presentation.home.StyledDockItem
 import eu.kanade.presentation.home.StyledDockPreviewBar
-import eu.kanade.presentation.home.bottomBarTabTransition
 import eu.kanade.presentation.util.Screen
 import kotlinx.collections.immutable.ImmutableList
 import kotlinx.collections.immutable.toImmutableList
+import kotlinx.coroutines.launch
 import tachiyomi.presentation.core.components.material.Scaffold
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
 
-private const val STAGE_BG_ALPHA = 0.14f
-private const val STAGE_BORDER_ALPHA = 0.45f
-private const val STAGE_VIEWPORT_ALPHA = 0.60f
-private const val CHIP_BG_ALPHA = 0.16f
-private const val CARD_SELECTED_BG_ALPHA = 0.14f
-private const val CARD_UNSELECTED_BORDER_ALPHA = 0.30f
-private const val SKELETON_PRIMARY_ALPHA = 0.28f
-private const val SKELETON_SECONDARY_ALPHA = 0.14f
 private const val INITIAL_PREVIEW_TAB = 2
+private const val INDICATOR_ANIM_MS = 220
+private const val CARD_SELECTED_BG_ALPHA = 0.14f
+private const val CARD_BORDER_ACTIVE_ALPHA = 0.65f
+private const val CARD_BORDER_IDLE_ALPHA = 0.25f
+private const val CHIP_BG_ALPHA = 0.16f
+private const val TRAY_BG_ALPHA = 0.55f
+private const val TRAY_BORDER_ALPHA = 0.22f
+private const val DOT_INACTIVE_ALPHA = 0.28f
+private const val MIN_SUMMARY_LINES = 2
 
-private val ListPadH = 16.dp
-private val ListPadTop = 12.dp
-private val ListPadBottom = 24.dp
-private val ListItemGap = 12.dp
-private val StageCorner = 24.dp
-private val StagePadding = 16.dp
-private val StageViewportCorner = 16.dp
-private val StageViewportHeight = 112.dp
-private val StageViewportPad = 14.dp
-private val StageHeaderGap = 10.dp
-private val StageDockGap = 12.dp
-private val CardCorner = 20.dp
-private val CardPadding = 14.dp
-private val CardDockGap = 12.dp
-private val CheckSize = 22.dp
-private val CheckIconSize = 14.dp
+private val PagerHorizontalPad = 20.dp
+private val PagerPageSpacing = 14.dp
+private val CardCorner = 26.dp
+private val CardPadding = 20.dp
+private val CardInnerGap = 14.dp
+private val TrayCorner = 22.dp
+private val TrayPadH = 10.dp
+private val TrayPadV = 14.dp
 private val PreviewIconSize = 16.dp
-private val ChipCorner = 8.dp
-private val ChipPadH = 8.dp
-private val ChipPadV = 3.dp
-private val PillCorner = 6.dp
-private val PillPadH = 6.dp
-private val PillPadV = 2.dp
+private val CheckSize = 24.dp
+private val CheckIconSize = 14.dp
+private val BadgeCorner = 8.dp
+private val BadgePadH = 8.dp
+private val BadgePadV = 4.dp
+private val ActivePillCorner = 6.dp
+private val ActivePillPadH = 7.dp
+private val ActivePillPadV = 3.dp
+private val BadgeGap = 8.dp
+private val HeaderCounterPadEnd = 16.dp
+private val HeaderCounterPadH = 10.dp
+private val HeaderCounterPadV = 4.dp
+private val IndicatorRowGapTop = 20.dp
+private val IndicatorDotGap = 6.dp
+private val IndicatorDotHeight = 8.dp
+private val IndicatorDotActiveWidth = 24.dp
+private val IndicatorDotIdleWidth = 8.dp
+private val HintTopGap = 10.dp
 private val DockBarElevation = 6.dp
 private val ApplyPadH = 16.dp
 private val ApplyPadV = 12.dp
 private val ApplyButtonHeight = 50.dp
 private val ApplyCorner = 16.dp
-private val SkeletonBarWide = 120.dp
-private val SkeletonBarNarrow = 84.dp
-private val SkeletonBarHeight = 10.dp
-private val SkeletonIconBox = 34.dp
-private val SkeletonIconSize = 18.dp
-private val SectionPadTop = 6.dp
-private val SectionPadH = 4.dp
-private val StageHeaderFontSize = 11.sp
-private val BadgeFontSize = 9.sp
-private val HeaderLetterSpacing = 1.4.sp
-private val BadgeLetterSpacing = 0.8.sp
-private val SectionSpacing = 8.dp
 private val ApplyIconSize = 18.dp
+private val ButtonContentGap = 8.dp
+private val SmallBadgeFont = 9.5.sp
+private val BadgeLetterSpacing = 0.8.sp
 
 private data class PreviewTabSpec(
     val id: String,
     val title: String,
-    val subtitle: String,
     val icon: ImageVector,
 )
 
 private val PreviewTabs: List<PreviewTabSpec> = listOf(
-    PreviewTabSpec("library", "Library", "Saved series & watchlists", Icons.Outlined.CollectionsBookmark),
-    PreviewTabSpec("history", "History", "Recently watched episodes", Icons.Outlined.History),
-    PreviewTabSpec("schedule", "Schedule", "Airing calendar & releases", Icons.Outlined.CalendarMonth),
-    PreviewTabSpec("browse", "Browse", "Sources, feed & announcements", Icons.Outlined.Explore),
-    PreviewTabSpec("more", "More", "Downloads, categories & settings", Icons.Outlined.MoreHoriz),
+    PreviewTabSpec("library", "Library", Icons.Outlined.CollectionsBookmark),
+    PreviewTabSpec("history", "History", Icons.Outlined.History),
+    PreviewTabSpec("schedule", "Schedule", Icons.Outlined.CalendarMonth),
+    PreviewTabSpec("browse", "Browse", Icons.Outlined.Explore),
+    PreviewTabSpec("more", "More", Icons.Outlined.MoreHoriz),
 )
 
 class BottomBarStyleScreen : Screen() {
@@ -142,19 +141,42 @@ class BottomBarStyleScreen : Screen() {
         val navigator = LocalNavigator.currentOrThrow
         val uiPreferences = remember { Injekt.get<UiPreferences>() }
         val stylePref = remember { uiPreferences.bottomBarStyle() }
+        val scope = rememberCoroutineScope()
 
+        val styles = remember { BottomBarStyle.entries }
         var activeStyle by remember { mutableStateOf(stylePref.get()) }
         var selectedStyle by remember { mutableStateOf(activeStyle) }
         var previewTabIndex by remember { mutableIntStateOf(INITIAL_PREVIEW_TAB) }
 
-        val styles = remember { BottomBarStyle.entries }
+        val initialPage = remember { styles.indexOf(activeStyle).coerceAtLeast(0) }
+        val pagerState = rememberPagerState(initialPage = initialPage) { styles.size }
         val accentColor = MaterialTheme.colorScheme.primary
+
+        LaunchedEffect(pagerState.currentPage) {
+            selectedStyle = styles[pagerState.currentPage]
+        }
 
         Scaffold(
             topBar = { scrollBehavior ->
                 AppBar(
-                    title = "Bottom navigation bar",
+                    title = "Bottom bar style",
                     navigateUp = navigator::pop,
+                    actions = {
+                        Box(
+                            modifier = Modifier
+                                .padding(end = HeaderCounterPadEnd)
+                                .clip(CircleShape)
+                                .background(accentColor.copy(alpha = CHIP_BG_ALPHA))
+                                .padding(horizontal = HeaderCounterPadH, vertical = HeaderCounterPadV),
+                        ) {
+                            Text(
+                                text = "${pagerState.currentPage + 1} / ${styles.size}",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = accentColor,
+                                fontWeight = FontWeight.Bold,
+                            )
+                        }
+                    },
                     scrollBehavior = scrollBehavior,
                 )
             },
@@ -170,84 +192,94 @@ class BottomBarStyleScreen : Screen() {
                 )
             },
         ) { contentPadding ->
-            LazyColumn(
+            Column(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(contentPadding),
-                contentPadding = PaddingValues(
-                    start = ListPadH,
-                    end = ListPadH,
-                    top = ListPadTop,
-                    bottom = ListPadBottom,
-                ),
-                verticalArrangement = Arrangement.spacedBy(ListItemGap),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center,
             ) {
-                item(key = "interactive-motion-stage") {
-                    InteractiveDockMotionStage(
-                        style = selectedStyle,
+                HorizontalPager(
+                    state = pagerState,
+                    contentPadding = PaddingValues(horizontal = PagerHorizontalPad),
+                    pageSpacing = PagerPageSpacing,
+                    modifier = Modifier.fillMaxWidth(),
+                ) { page ->
+                    val style = styles[page]
+                    DockSlideCard(
+                        style = style,
+                        isSelected = style == selectedStyle,
+                        isActive = style == activeStyle,
                         previewTabIndex = previewTabIndex,
                         onSelectPreviewTab = { previewTabIndex = it },
                         accentColor = accentColor,
                     )
                 }
 
-                item(key = "dock-gallery-header") {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(top = SectionPadTop, start = SectionPadH, end = SectionPadH),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            text = "DOCK STYLES",
-                            style = MaterialTheme.typography.labelLarge,
-                            letterSpacing = HeaderLetterSpacing,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                Spacer(modifier = Modifier.height(IndicatorRowGapTop))
+
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(IndicatorDotGap),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    styles.forEachIndexed { idx, _ ->
+                        val isCurrent = idx == pagerState.currentPage
+                        val dotWidth by animateDpAsState(
+                            targetValue = if (isCurrent) IndicatorDotActiveWidth else IndicatorDotIdleWidth,
+                            animationSpec = tween(durationMillis = INDICATOR_ANIM_MS),
+                            label = "pagerDotWidth",
                         )
-                        Text(
-                            text = "${styles.size} ANIMATED STYLES",
-                            style = MaterialTheme.typography.labelSmall,
-                            fontSize = StageHeaderFontSize,
-                            color = accentColor,
-                            fontWeight = FontWeight.SemiBold,
+                        val dotColor by animateColorAsState(
+                            targetValue = if (isCurrent) {
+                                accentColor
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = DOT_INACTIVE_ALPHA)
+                            },
+                            animationSpec = tween(durationMillis = INDICATOR_ANIM_MS),
+                            label = "pagerDotColor",
+                        )
+                        Box(
+                            modifier = Modifier
+                                .height(IndicatorDotHeight)
+                                .width(dotWidth)
+                                .clip(CircleShape)
+                                .background(dotColor)
+                                .clickable {
+                                    scope.launch { pagerState.animateScrollToPage(idx) }
+                                },
                         )
                     }
                 }
 
-                items(
-                    items = styles,
-                    key = { "dock-style-${it.name}" },
-                ) { style ->
-                    DockStyleShowcaseCard(
-                        style = style,
-                        isSelected = style == selectedStyle,
-                        isActive = style == activeStyle,
-                        previewTabIndex = previewTabIndex,
-                        accentColor = accentColor,
-                        onClick = { selectedStyle = style },
-                    )
-                }
+                Spacer(modifier = Modifier.height(HintTopGap))
+
+                Text(
+                    text = "Swipe to switch styles • Tap dock tabs to preview animation",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
     }
 }
 
 @Composable
-private fun InteractiveDockMotionStage(
+private fun DockSlideCard(
     style: BottomBarStyle,
+    isSelected: Boolean,
+    isActive: Boolean,
     previewTabIndex: Int,
     onSelectPreviewTab: (Int) -> Unit,
     accentColor: Color,
     modifier: Modifier = Modifier,
 ) {
-    val stageShape = RoundedCornerShape(StageCorner)
-    val viewportShape = RoundedCornerShape(StageViewportCorner)
+    val cardShape = RoundedCornerShape(CardCorner)
+    val trayShape = RoundedCornerShape(TrayCorner)
     val surfaceHigh = MaterialTheme.colorScheme.surfaceContainerHigh
+    val surfaceLow = MaterialTheme.colorScheme.surfaceContainerLow
     val surfaceLowest = MaterialTheme.colorScheme.surfaceContainerLowest
 
-    val interactiveDockItems: ImmutableList<StyledDockItem> = remember(onSelectPreviewTab) {
+    val previewItems: ImmutableList<StyledDockItem> = remember(onSelectPreviewTab) {
         PreviewTabs.mapIndexed { idx, spec ->
             StyledDockItem(
                 id = spec.id,
@@ -268,290 +300,83 @@ private fun InteractiveDockMotionStage(
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .clip(stageShape)
+            .clip(cardShape)
             .background(
                 brush = Brush.verticalGradient(
-                    colors = listOf(
-                        accentColor.copy(alpha = STAGE_BG_ALPHA),
-                        surfaceHigh,
-                        surfaceLowest,
-                    ),
+                    colors = if (isSelected) {
+                        listOf(
+                            accentColor.copy(alpha = CARD_SELECTED_BG_ALPHA),
+                            surfaceHigh,
+                            surfaceLow,
+                        )
+                    } else {
+                        listOf(surfaceHigh, surfaceLow)
+                    },
                 ),
             )
             .border(
-                width = 1.dp,
-                color = accentColor.copy(alpha = STAGE_BORDER_ALPHA),
-                shape = stageShape,
-            )
-            .padding(StagePadding),
-    ) {
-        Column(
-            modifier = Modifier.fillMaxWidth(),
-            verticalArrangement = Arrangement.spacedBy(StageDockGap),
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = style.title,
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    Text(
-                        text = "Tap tabs below to preview ${style.animationName}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-
-                Row(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(ChipCorner))
-                        .background(accentColor.copy(alpha = CHIP_BG_ALPHA))
-                        .padding(horizontal = ChipPadH, vertical = ChipPadV),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(SectionPadH),
-                ) {
-                    Icon(
-                        imageVector = Icons.Outlined.Animation,
-                        contentDescription = null,
-                        tint = accentColor,
-                        modifier = Modifier.size(CheckIconSize),
-                    )
-                    Text(
-                        text = style.animationName,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = accentColor,
-                        fontWeight = FontWeight.SemiBold,
-                    )
-                }
-            }
-
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(StageViewportHeight)
-                    .clip(viewportShape)
-                    .background(surfaceLowest.copy(alpha = STAGE_VIEWPORT_ALPHA))
-                    .border(
-                        width = 1.dp,
-                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = CARD_UNSELECTED_BORDER_ALPHA),
-                        shape = viewportShape,
-                    ),
-            ) {
-                AnimatedContent(
-                    targetState = previewTabIndex,
-                    transitionSpec = {
-                        val direction = if (targetState >= initialState) 1 else -1
-                        bottomBarTabTransition(
-                            style = style,
-                            direction = direction,
-                            animatedTransitions = true,
-                        )
-                    },
-                    label = "stageTabSlidePreview",
-                    modifier = Modifier.fillMaxSize(),
-                ) { tabIdx ->
-                    val tabSpec = PreviewTabs[tabIdx.coerceIn(0, PreviewTabs.lastIndex)]
-                    Row(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(StageViewportPad),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(StageHeaderGap),
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .size(SkeletonIconBox)
-                                .clip(CircleShape)
-                                .background(accentColor.copy(alpha = CHIP_BG_ALPHA)),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Icon(
-                                imageVector = tabSpec.icon,
-                                contentDescription = tabSpec.title,
-                                tint = accentColor,
-                                modifier = Modifier.size(SkeletonIconSize),
-                            )
-                        }
-                        Column(
-                            modifier = Modifier.weight(1f),
-                            verticalArrangement = Arrangement.spacedBy(PillPadH),
-                        ) {
-                            Text(
-                                text = tabSpec.title,
-                                style = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.onSurface,
-                            )
-                            Text(
-                                text = tabSpec.subtitle,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                            Spacer(modifier = Modifier.height(PillPadV))
-                            Row(horizontalArrangement = Arrangement.spacedBy(SectionSpacing)) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(width = SkeletonBarWide, height = SkeletonBarHeight)
-                                        .clip(CircleShape)
-                                        .background(accentColor.copy(alpha = SKELETON_PRIMARY_ALPHA)),
-                                )
-                                Box(
-                                    modifier = Modifier
-                                        .size(width = SkeletonBarNarrow, height = SkeletonBarHeight)
-                                        .clip(CircleShape)
-                                        .background(
-                                            MaterialTheme.colorScheme.onSurfaceVariant.copy(
-                                                alpha = SKELETON_SECONDARY_ALPHA,
-                                            ),
-                                        ),
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-
-            StyledDockPreviewBar(
-                style = style,
-                items = interactiveDockItems,
-                selectedIndex = previewTabIndex,
-                compact = false,
-            )
-        }
-    }
-}
-
-@Composable
-private fun DockStyleShowcaseCard(
-    style: BottomBarStyle,
-    isSelected: Boolean,
-    isActive: Boolean,
-    previewTabIndex: Int,
-    accentColor: Color,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    val cardShape = RoundedCornerShape(CardCorner)
-    val surfaceHigh = MaterialTheme.colorScheme.surfaceContainerHigh
-    val surfaceLow = MaterialTheme.colorScheme.surfaceContainerLow
-
-    val cardItems: ImmutableList<StyledDockItem> = remember(onClick) {
-        PreviewTabs.map { spec ->
-            StyledDockItem(
-                id = spec.id,
-                title = spec.title,
-                onClick = onClick,
-                iconContent = { _, tint ->
-                    Icon(
-                        imageVector = spec.icon,
-                        contentDescription = null,
-                        tint = tint,
-                        modifier = Modifier.size(PreviewIconSize),
-                    )
-                },
-            )
-        }.toImmutableList()
-    }
-
-    Box(
-        modifier = modifier
-            .fillMaxWidth()
-            .clip(cardShape)
-            .background(
-                brush = if (isSelected) {
-                    Brush.linearGradient(
-                        colors = listOf(
-                            accentColor.copy(alpha = CARD_SELECTED_BG_ALPHA),
-                            surfaceHigh,
-                        ),
-                    )
-                } else {
-                    Brush.linearGradient(colors = listOf(surfaceHigh, surfaceLow))
-                },
-            )
-            .border(
-                width = if (isSelected) 2.dp else 1.dp,
+                width = if (isSelected) 1.5.dp else 1.dp,
                 color = if (isSelected) {
-                    accentColor
+                    accentColor.copy(alpha = CARD_BORDER_ACTIVE_ALPHA)
                 } else {
-                    MaterialTheme.colorScheme.outlineVariant.copy(alpha = CARD_UNSELECTED_BORDER_ALPHA)
+                    MaterialTheme.colorScheme.outlineVariant.copy(alpha = CARD_BORDER_IDLE_ALPHA)
                 },
                 shape = cardShape,
             )
-            .clickable(onClick = onClick)
             .padding(CardPadding),
     ) {
         Column(
             modifier = Modifier.fillMaxWidth(),
-            verticalArrangement = Arrangement.spacedBy(CardDockGap),
+            verticalArrangement = Arrangement.spacedBy(CardInnerGap),
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(SectionSpacing),
+                horizontalArrangement = Arrangement.SpaceBetween,
             ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(SectionSpacing),
-                    ) {
-                        Text(
-                            text = style.title,
-                            style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onSurface,
-                        )
-                        if (isActive) {
-                            Box(
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(PillCorner))
-                                    .background(accentColor.copy(alpha = CHIP_BG_ALPHA))
-                                    .padding(horizontal = PillPadH, vertical = PillPadV),
-                            ) {
-                                Text(
-                                    text = "ACTIVE",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    fontSize = BadgeFontSize,
-                                    letterSpacing = BadgeLetterSpacing,
-                                    fontWeight = FontWeight.Bold,
-                                    color = accentColor,
-                                )
-                            }
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(BadgeGap),
+                ) {
+                    if (isActive) {
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(ActivePillCorner))
+                                .background(accentColor)
+                                .padding(horizontal = ActivePillPadH, vertical = ActivePillPadV),
+                        ) {
+                            Text(
+                                text = "ACTIVE",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontSize = SmallBadgeFont,
+                                letterSpacing = BadgeLetterSpacing,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onPrimary,
+                            )
                         }
                     }
-                    Text(
-                        text = style.summary,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
 
-                Box(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(ChipCorner))
-                        .background(accentColor.copy(alpha = CHIP_BG_ALPHA))
-                        .padding(horizontal = ChipPadH, vertical = ChipPadV),
-                ) {
-                    Text(
-                        text = style.animationName,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = accentColor,
-                        fontWeight = FontWeight.Medium,
-                    )
+                    Row(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(BadgeCorner))
+                            .background(accentColor.copy(alpha = CHIP_BG_ALPHA))
+                            .padding(horizontal = BadgePadH, vertical = BadgePadV),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(ActivePillPadV),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.Animation,
+                            contentDescription = null,
+                            tint = accentColor,
+                            modifier = Modifier.size(CheckIconSize),
+                        )
+                        Text(
+                            text = style.animationName,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = accentColor,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    }
                 }
 
                 if (isSelected) {
@@ -572,12 +397,45 @@ private fun DockStyleShowcaseCard(
                 }
             }
 
-            StyledDockPreviewBar(
-                style = style,
-                items = cardItems,
-                selectedIndex = previewTabIndex,
-                compact = true,
-            )
+            Column(verticalArrangement = Arrangement.spacedBy(ActivePillPadV)) {
+                Text(
+                    text = style.title,
+                    style = MaterialTheme.typography.headlineSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    text = style.summary,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    minLines = MIN_SUMMARY_LINES,
+                    maxLines = MIN_SUMMARY_LINES,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(trayShape)
+                    .background(surfaceLowest.copy(alpha = TRAY_BG_ALPHA))
+                    .border(
+                        width = 1.dp,
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = TRAY_BORDER_ALPHA),
+                        shape = trayShape,
+                    )
+                    .padding(horizontal = TrayPadH, vertical = TrayPadV),
+                contentAlignment = Alignment.Center,
+            ) {
+                StyledDockPreviewBar(
+                    style = style,
+                    items = previewItems,
+                    selectedIndex = previewTabIndex,
+                    compact = false,
+                )
+            }
         }
     }
 }
@@ -625,7 +483,7 @@ private fun DockApplyBottomBar(
                     contentDescription = null,
                     modifier = Modifier.size(ApplyIconSize),
                 )
-                Spacer(modifier = Modifier.width(SectionSpacing))
+                Spacer(modifier = Modifier.width(ButtonContentGap))
                 Text(
                     text = if (hasPendingChange) {
                         "Apply ${selectedStyle.title}"

@@ -95,24 +95,29 @@ private const val ALPHA_WAVE_FILL_BOT = 0.14f
 private const val ALPHA_WAVE_STROKE = 0.70f
 
 private const val HALF_FLOAT = 0.5f
+private const val THREE_FLOAT = 3.0f
 private const val PILL_CORNER_PERCENT = 50
 private const val FULL_ANGLE = 180f
 private const val RIGHT_ANGLE = 90f
 private const val SEP_FADE_DIST = 1.2f
+private const val EDGE_TAPER_WINDOW = 0.18f
+
 private const val WAVE_CYCLES = 2.0f
-private const val WAVE_STEPS = 28
-private const val WAVE_AMP_RATIO = 0.085f
-private const val WAVE_TOP_OFFSET_MULT = 1.4f
-private const val WAVE_BOT_OFFSET_MULT = 0.8f
+private const val WAVE_STEPS = 48
+private const val WAVE_END_CAP_RATIO = 0.38f
+private const val WAVE_AMP_RATIO = 0.065f
 private const val WAVE_PHASE_OFFSET = 0.6f
-private const val WAVE_CREST_SIGMA = 0.58f
-private const val WAVE_CREST_HEIGHT_RATIO = 0.24f
-private const val WAVE_CREST_WIDTH_MULT = 1.15f
+private const val WAVE_CREST_SIGMA = 0.55f
+private const val WAVE_CREST_HEIGHT_RATIO = 0.14f
+private const val WAVE_CREST_WIDTH_MULT = 1.12f
 private const val WAVE_CREST_GLOW_SPREAD = 1.2f
-private const val WAVE_FILL_TOP_RATIO = 0.06f
-private const val WAVE_FILL_HEIGHT_RATIO = 0.90f
-private const val NOTCH_SIGMA = 0.52f
-private const val NOTCH_DEPTH_RATIO = 0.20f
+private const val WAVE_FILL_TOP_RATIO = 0.10f
+private const val WAVE_FILL_HEIGHT_RATIO = 0.80f
+
+private const val NOTCH_SIGMA = 0.46f
+private const val NOTCH_DEPTH_RATIO = 0.14f
+private const val ORB_DIAMETER_RATIO = 0.80f
+private const val ORB_VERTICAL_CENTER_BIAS = 0.35f
 private const val BUBBLE_DIAMETER_RATIO = 0.88f
 private const val PILL_MEDALLION_WIDTH_RATIO = 0.92f
 private const val RING_RADIUS_RATIO = 0.44f
@@ -160,6 +165,15 @@ private val CompactFontSize = 8.5.sp
 private val CompactClassicFontSize = 9.sp
 private val FullDockFontSize = 10.sp
 private val FullClassicFontSize = 11.sp
+
+private fun smoothstep(edge0: Float, edge1: Float, x: Float): Float {
+    val t = ((x - edge0) / (edge1 - edge0)).coerceIn(0f, 1f)
+    return t * t * (THREE_FLOAT - 2f * t)
+}
+
+private fun edgeWindow(u: Float): Float {
+    return smoothstep(0f, EDGE_TAPER_WINDOW, u) * smoothstep(1f, 1f - EDGE_TAPER_WINDOW, u)
+}
 
 @Immutable
 data class StyledDockItem(
@@ -531,12 +545,14 @@ private fun DockBackdropLayer(
                 val centerX = (animatedIndex + HALF_FLOAT) * slotW
                 val notchBump = h * NOTCH_DEPTH_RATIO
                 val radius = (h - notchBump) / 2f
+                val safeSpan = (w - 2f * radius).coerceAtLeast(1f)
                 path.reset()
                 path.moveTo(radius, notchBump)
                 for (i in 0..WAVE_STEPS) {
-                    val x = radius + (w - 2f * radius) * (i.toFloat() / WAVE_STEPS)
+                    val u = i.toFloat() / WAVE_STEPS
+                    val x = radius + safeSpan * u
                     val norm = (x - centerX) / (slotW * NOTCH_SIGMA)
-                    val swell = exp((-norm * norm).toDouble()).toFloat() * notchBump
+                    val swell = exp((-norm * norm).toDouble()).toFloat() * notchBump * edgeWindow(u)
                     path.lineTo(x, notchBump - swell)
                 }
                 path.arcTo(
@@ -577,32 +593,46 @@ private fun DockBackdropLayer(
                 val h = size.height
                 val slotW = w / slotCount
                 val centerX = (animatedIndex + HALF_FLOAT) * slotW
+                val endCapR = h * WAVE_END_CAP_RATIO
+                val midY = h * HALF_FLOAT
+                val baseTop = midY - endCapR
+                val baseBot = midY + endCapR
+                val safeSpan = (w - 2f * endCapR).coerceAtLeast(1f)
                 val amp = h * WAVE_AMP_RATIO
-                val baseTop = amp * WAVE_TOP_OFFSET_MULT
-                val baseBot = h - amp * WAVE_BOT_OFFSET_MULT
                 wavePath.reset()
                 crestPath.reset()
+                wavePath.moveTo(endCapR, baseTop)
+                crestPath.moveTo(endCapR, baseTop)
                 for (i in 0..WAVE_STEPS) {
-                    val frac = i.toFloat() / WAVE_STEPS
-                    val x = w * frac
-                    val waveY = sin(frac * WAVE_CYCLES * TWO_PI) * amp
+                    val u = i.toFloat() / WAVE_STEPS
+                    val x = endCapR + safeSpan * u
+                    val taper = edgeWindow(u)
+                    val waveY = sin(u * WAVE_CYCLES * TWO_PI) * amp * taper
                     val norm = (x - centerX) / (slotW * WAVE_CREST_SIGMA)
-                    val swell = exp((-norm * norm).toDouble()).toFloat() * (h * WAVE_CREST_HEIGHT_RATIO)
+                    val swell = exp((-norm * norm).toDouble()).toFloat() * (h * WAVE_CREST_HEIGHT_RATIO) * taper
                     val y = (baseTop + waveY - swell).coerceAtLeast(1.dp.toPx())
-                    if (i == 0) {
-                        wavePath.moveTo(x, y)
-                        crestPath.moveTo(x, y)
-                    } else {
-                        wavePath.lineTo(x, y)
-                        crestPath.lineTo(x, y)
-                    }
+                    wavePath.lineTo(x, y)
+                    crestPath.lineTo(x, y)
                 }
+                wavePath.arcTo(
+                    rect = Rect(w - 2f * endCapR, baseTop, w, baseBot),
+                    startAngleDegrees = -RIGHT_ANGLE,
+                    sweepAngleDegrees = FULL_ANGLE,
+                    forceMoveTo = false,
+                )
                 for (i in WAVE_STEPS downTo 0) {
-                    val frac = i.toFloat() / WAVE_STEPS
-                    val x = w * frac
-                    val waveY = sin(frac * WAVE_CYCLES * TWO_PI + WAVE_PHASE_OFFSET) * amp
-                    wavePath.lineTo(x, baseBot + waveY)
+                    val u = i.toFloat() / WAVE_STEPS
+                    val x = endCapR + safeSpan * u
+                    val taper = edgeWindow(u)
+                    val waveY = sin(u * WAVE_CYCLES * TWO_PI + WAVE_PHASE_OFFSET) * amp * taper
+                    wavePath.lineTo(x, (baseBot + waveY).coerceAtMost(h - 1.dp.toPx()))
                 }
+                wavePath.arcTo(
+                    rect = Rect(0f, baseTop, 2f * endCapR, baseBot),
+                    startAngleDegrees = RIGHT_ANGLE,
+                    sweepAngleDegrees = FULL_ANGLE,
+                    forceMoveTo = false,
+                )
                 wavePath.close()
                 drawPath(
                     path = wavePath,
@@ -774,9 +804,9 @@ private fun DockSlidingIndicatorLayer(
             )
         }
         BottomBarStyle.FLOATING_CENTER -> {
-            val orbSize = barHeight * BUBBLE_DIAMETER_RATIO
+            val orbSize = barHeight * ORB_DIAMETER_RATIO
             val xOffset = (slotWidth * animatedIndex) + (slotWidth - orbSize) / 2
-            val yOffset = (barHeight - orbSize) / 2
+            val yOffset = ((barHeight - orbSize) / 2) + (barHeight * NOTCH_DEPTH_RATIO * ORB_VERTICAL_CENTER_BIAS)
             Box(
                 modifier = Modifier
                     .offset { IntOffset(xOffset.roundToPx(), yOffset.roundToPx()) }
@@ -956,6 +986,7 @@ private fun DockTabSlot(
             if (compact) TabBubbleLiftCompact else TabBubbleLiftFull
         selected && style == BottomBarStyle.FLOATING_PILL ->
             if (compact) PillLiftCompact else PillLiftFull
+        selected && style == BottomBarStyle.FLOATING_CENTER -> 2.dp
         else -> 0.dp
     }
     val verticalLift by animateDpAsState(
