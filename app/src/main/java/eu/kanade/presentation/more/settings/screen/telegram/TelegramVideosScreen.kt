@@ -732,7 +732,13 @@ private fun TdVideoPoster(video: Td.ChatVideo, onPlay: () -> Unit) {
 
 @Composable
 private fun VideoMeta(video: Td.ChatVideo) {
+    val resTag = if (video.width > 0 || video.height > 0) {
+        Td.resolutionTag(video.width, video.height)
+    } else {
+        null
+    }
     val meta = listOfNotNull(
+        resTag,
         stamp(video.date),
         duration(video.duration),
         sizeLabel(video.size),
@@ -919,6 +925,8 @@ internal fun playTdVideo(context: Context, scope: CoroutineScope, video: Td.Chat
                     title = video.title,
                     videoUrl = streamUrl,
                     sourceLabel = "Telegram",
+                    width = video.width,
+                    height = video.height,
                 ),
             )
         }.onFailure {

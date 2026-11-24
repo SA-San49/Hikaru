@@ -417,18 +417,79 @@ class PlayerViewModel @JvmOverloads constructor(
     }
 
     private var directVideoMode: Boolean = false
+    private var directBaseUrl: String = ""
+    private var directHeaders: okhttp3.Headers? = null
 
-    fun initDirectVideo(title: String, sourceLabel: String, video: Video) {
+    fun isDirectVideoMode(): Boolean = directVideoMode
+
+    fun initDirectVideo(title: String, sourceLabel: String, videos: List<Video>) {
+        val primary = videos.first()
         directVideoMode = true
+        directBaseUrl = primary.videoUrl.substringBefore("&q=").substringBefore("?q=")
+        directHeaders = primary.headers
         mediaTitle.update { title }
         animeTitle.update { sourceLabel }
-        _isEpisodeOnline.update { video.videoUrl.startsWith("http") }
-        _currentVideo.update { video }
-        _isLoadingEpisode.update { false }
+        _isEpisodeOnline.update { primary.videoUrl.startsWith("http") }
+        _currentVideo.update { primary }
+        val hosterName = "$sourceLabel HLS Stream"
+        _hosterList.update {
+            listOf(
+                Hoster(
+                    hosterUrl = primary.videoUrl,
+                    hosterName = hosterName,
+                    videoList = videos,
+                ),
+            )
+        }
+        _hosterState.update {
+            listOf(
+                HosterState.Ready(
+                    name = hosterName,
+                    videoList = videos,
+                    videoState = List(videos.size) { Video.State.READY },
+                ),
+            )
+        }
+        _hosterExpandedList.update { listOf(true) }
+        _selectedHosterVideoIndex.update { 0 to 0 }
         _isLoadingHosters.update { false }
-        isLoading.update { false }
+        _isLoadingEpisode.update { true }
+        isLoading.update { true }
         _hasPreviousEpisode.update { false }
         _hasNextEpisode.update { false }
+    }
+
+    fun updateDirectVideoResolution(width: Int, height: Int) {
+        if (!directVideoMode || (width <= 0 && height <= 0) || directBaseUrl.isBlank()) return
+        val currentIdx = _selectedHosterVideoIndex.value.second.coerceAtLeast(0)
+        val updatedVideos = eu.kanade.tachiyomi.data.telegram.Td.buildQualityVideos(
+            baseUrl = directBaseUrl,
+            width = width,
+            height = height,
+            headers = directHeaders,
+        )
+        val hosterName = "${animeTitle.value.ifBlank { "Telegram" }} HLS Stream"
+        _hosterList.update {
+            listOf(
+                Hoster(
+                    hosterUrl = updatedVideos.first().videoUrl,
+                    hosterName = hosterName,
+                    videoList = updatedVideos,
+                ),
+            )
+        }
+        _hosterState.update {
+            listOf(
+                HosterState.Ready(
+                    name = hosterName,
+                    videoList = updatedVideos,
+                    videoState = List(updatedVideos.size) { Video.State.READY },
+                ),
+            )
+        }
+        if (currentIdx in updatedVideos.indices) {
+            _selectedHosterVideoIndex.update { 0 to currentIdx }
+        }
     }
 
     fun isEpisodeOnline(): Boolean? {

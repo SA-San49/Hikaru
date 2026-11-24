@@ -24,7 +24,11 @@ class GetEnabledSources(
             repository.getSources(),
         ) { pinnedSourceIds, enabledLanguages, disabledSources, lastUsedSource, sources ->
             sources
-                .filter { it.lang in enabledLanguages || it.id == LocalAnimeSource.ID }
+                .filter {
+                    it.lang in enabledLanguages ||
+                        it.id == LocalAnimeSource.ID ||
+                        eu.kanade.tachiyomi.data.telegram.TelegramBrowseSources.isTelegramSourceId(it.id)
+                }
                 .filterNot { it.id.toString() in disabledSources }
                 .sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.name })
                 .flatMap {

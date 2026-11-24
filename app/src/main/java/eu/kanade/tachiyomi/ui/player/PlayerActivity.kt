@@ -195,6 +195,10 @@ class PlayerActivity : BaseActivity() {
         private const val EXTRA_DIRECT_TITLE = "directTitle"
         private const val EXTRA_DIRECT_SOURCE = "directSource"
         private const val EXTRA_DIRECT_HEADERS = "directHeaders"
+        private const val EXTRA_DIRECT_WIDTH = "directWidth"
+        private const val EXTRA_DIRECT_HEIGHT = "directHeight"
+        private const val TG_DEMUXER_MAX_BYTES = 6 * 1024 * 1024
+        private const val TG_DEMUXER_BACK_BYTES = 2 * 1024 * 1024
 
         fun newIntent(
             context: Context,
@@ -220,11 +224,15 @@ class PlayerActivity : BaseActivity() {
             videoUrl: String,
             sourceLabel: String = "Telegram",
             headers: Map<String, String> = emptyMap(),
+            width: Int = 0,
+            height: Int = 0,
         ): Intent {
             return Intent(context, PlayerActivity::class.java).apply {
                 putExtra(EXTRA_DIRECT_URL, videoUrl)
                 putExtra(EXTRA_DIRECT_TITLE, title)
                 putExtra(EXTRA_DIRECT_SOURCE, sourceLabel)
+                putExtra(EXTRA_DIRECT_WIDTH, width)
+                putExtra(EXTRA_DIRECT_HEIGHT, height)
                 if (headers.isNotEmpty()) {
                     putStringArrayListExtra(
                         EXTRA_DIRECT_HEADERS,
@@ -246,6 +254,8 @@ class PlayerActivity : BaseActivity() {
         if (directUrl.isNullOrBlank()) return false
         val directTitle = intent.getStringExtra(EXTRA_DIRECT_TITLE).orEmpty().ifBlank { "Video" }
         val directSource = intent.getStringExtra(EXTRA_DIRECT_SOURCE).orEmpty().ifBlank { "Telegram" }
+        val directWidth = intent.getIntExtra(EXTRA_DIRECT_WIDTH, 0)
+        val directHeight = intent.getIntExtra(EXTRA_DIRECT_HEIGHT, 0)
         val headerLines = intent.getStringArrayListExtra(EXTRA_DIRECT_HEADERS).orEmpty()
         val headersBuilder = Headers.Builder()
         headerLines.forEach { line ->
@@ -254,13 +264,15 @@ class PlayerActivity : BaseActivity() {
                 headersBuilder.add(line.substring(0, tab), line.substring(tab + 1))
             }
         }
-        val directVideo = Video(
-            videoUrl = directUrl,
-            videoTitle = directTitle,
-            headers = headersBuilder.build(),
+        val builtHeaders = headersBuilder.build()
+        val qualityVideos = eu.kanade.tachiyomi.data.telegram.Td.buildQualityVideos(
+            baseUrl = directUrl,
+            width = directWidth,
+            height = directHeight,
+            headers = builtHeaders,
         )
-        viewModel.initDirectVideo(directTitle, directSource, directVideo)
-        setVideo(directVideo, 0L)
+        viewModel.initDirectVideo(directTitle, directSource, qualityVideos)
+        setVideo(qualityVideos.first(), 0L)
         setIntent(intent)
         return true
     }
@@ -448,6 +460,7 @@ class PlayerActivity : BaseActivity() {
         player.destroy()
         castManager.cleanup()
 
+        eu.kanade.tachiyomi.data.telegram.Td.onPlaybackStopped()
         // AM (DISCORD) -->
         updateDiscordRPC(exitingPlayer = true)
         // <-- AM (DISCORD)
@@ -1462,6 +1475,7 @@ class PlayerActivity : BaseActivity() {
         // runtime defaults can overwrite options set during initialization.
         player.applySubtitlePreferences()
         setHttpOptions(video)
+        applyTelegramStreamingOptions(video)
 
         // Set mime-type for TV or if provided
         val mime = video.mimeType ?: if (isTv) "video/mp4" else null
@@ -1542,6 +1556,23 @@ class PlayerActivity : BaseActivity() {
         }
         logcat(LogPriority.ERROR, error)
         finish()
+    }
+
+    private fun applyTelegramStreamingOptions(video: Video) {
+        val url = video.videoUrl
+        val isTelegramStream = url.contains("127.0.0.1:49731") || viewModel.isDirectVideoMode()
+        if (!isTelegramStream) return
+        MPVLib.setOptionString("cache", "yes")
+        MPVLib.setOptionString("demuxer-max-bytes", "$TG_DEMUXER_MAX_BYTES")
+        MPVLib.setOptionString("demuxer-max-back-bytes", "$TG_DEMUXER_BACK_BYTES")
+        MPVLib.setOptionString("demuxer-readahead-secs", "8")
+        MPVLib.setOptionString("cache-secs", "10")
+        val targetQ = Uri.parse(url).getQueryParameter("q")?.toIntOrNull()
+        if (targetQ != null && targetQ in 240..720) {
+            MPVLib.setPropertyString("vf", "scale=-2:$targetQ")
+        } else {
+            MPVLib.setPropertyString("vf", "")
+        }
     }
 
     private fun parseVideoUrl(videoUrl: String): String {
@@ -1636,6 +1667,14 @@ class PlayerActivity : BaseActivity() {
         setupPlayerOrientation()
         setupChapters()
         setupTracks()
+        viewModel.isLoading.update { viewModel.pausedForCache.value }
+        if (viewModel.isDirectVideoMode()) {
+            val w = MPVLib.getPropertyInt("width") ?: 0
+            val h = MPVLib.getPropertyInt("height") ?: 0
+            if (w > 0 || h > 0) {
+                viewModel.updateDirectVideoResolution(w, h)
+            }
+        }
         viewModel.restoreAspectRatio()
 
         // aniSkip stuff

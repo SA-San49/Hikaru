@@ -5,15 +5,21 @@ import tachiyomi.core.common.preference.PreferenceStore
 class TelegramPreferences(
     private val preferenceStore: PreferenceStore,
 ) {
-    fun apiId() = preferenceStore.getInt("pref_telegram_api_id", 0)
+    fun apiId() = preferenceStore.getInt("pref_telegram_api_id", DEFAULT_API_ID)
 
-    fun apiHash() = preferenceStore.getString("pref_telegram_api_hash", "")
+    fun apiHash() = preferenceStore.getString("pref_telegram_api_hash", DEFAULT_API_HASH)
 
     fun channels() = preferenceStore.getString("pref_telegram_channels", "")
 
     fun links() = preferenceStore.getString("pref_telegram_links", "")
 
-    fun viewMode() = preferenceStore.getString("pref_telegram_view_mode", "list")
+    fun cacheMedia() = preferenceStore.getBoolean("pref_telegram_cache_media", false)
 
-    fun searchIn() = preferenceStore.getString("pref_telegram_search_in", "chat")
+    fun browseSources() = preferenceStore.getString("pref_telegram_browse_sources", "")
+
+    companion object {
+        // Official Telegram Desktop public API credentials so users can sign in out-of-the-box.
+        const val DEFAULT_API_ID = 2040
+        const val DEFAULT_API_HASH = "b18441a1ff607e10a989891a5462e627"
+    }
 }

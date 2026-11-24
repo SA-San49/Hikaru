@@ -5,6 +5,7 @@ import android.os.Build
 import android.util.Base64
 import eu.kanade.domain.telegram.TelegramPreferences
 import eu.kanade.tachiyomi.BuildConfig
+import eu.kanade.tachiyomi.animesource.model.Video
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -12,9 +13,12 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withTimeoutOrNull
 import logcat.LogPriority
+import okhttp3.Headers
 import org.drinkless.tdlib.Client
 import org.drinkless.tdlib.TdApi
 import tachiyomi.core.common.util.system.logcat
@@ -25,6 +29,7 @@ import java.util.Collections
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.coroutines.resume
 
 @Suppress("TooManyFunctions", "LargeClass", "MagicNumber")
@@ -50,8 +55,9 @@ object Td {
         val order: Long,
         val unread: Int,
         val archived: Boolean = false,
+        val photoFileId: Int = 0,
     ) {
-        enum class Kind { SAVED, PRIVATE, GROUP, CHANNEL, SECRET }
+        enum class Kind { SAVED, PRIVATE, BOT, GROUP, CHANNEL, SECRET }
     }
 
     data class ChatVideo(
@@ -66,6 +72,8 @@ object Td {
         val caption: String = "",
         val fileName: String = "",
         val thumbFileId: Int = 0,
+        val width: Int = 0,
+        val height: Int = 0,
     )
 
     enum class SearchIn(val key: String) {
@@ -119,9 +127,10 @@ object Td {
     private const val TAIL_PAGE = 100
     private const val TAIL_MAX_PAGES = 60
     private const val THUMB_WAIT_MS = 8_000L
-    private const val THUMB_POLL_MS = 200L
+    private const val THUMB_POLL_MS = 60L
     private const val DOWNLOAD_PRIORITY = 32
-    const val AHEAD_BYTES: Long = 64L * 1024 * 1024
+    private const val STREAM_EVICT_DELAY_MS = 6_000L
+    const val AHEAD_BYTES: Long = 512L * 1024
 
     @Volatile
     var available: Boolean = false
@@ -178,15 +187,22 @@ object Td {
     val sentTo: StateFlow<String> = _sentTo.asStateFlow()
 
     private val chatValues = ConcurrentHashMap<Long, TdApi.Chat>()
+    private val userValues = ConcurrentHashMap<Long, TdApi.User>()
+    private val pendingUsers = Collections.newSetFromMap(ConcurrentHashMap<Long, Boolean>())
     private val mainOrder = ConcurrentHashMap<Long, Long>()
     private val archiveOrder = ConcurrentHashMap<Long, Long>()
     private val leftBehind = Collections.newSetFromMap(ConcurrentHashMap<Long, Boolean>())
     private val fileValues = ConcurrentHashMap<Int, TdApi.File>()
     private val fetchedFiles = ConcurrentHashMap<Int, TdApi.File>()
     private val downloadErrors = ConcurrentHashMap<Int, String>()
+    private val activeStreams = ConcurrentHashMap<Int, AtomicInteger>()
+    private val streamedVideoFiles = Collections.newSetFromMap(ConcurrentHashMap<Int, Boolean>())
 
     fun init(context: Context) {
         appContext = context.applicationContext
+        if (!isCacheMediaEnabled()) {
+            scope.launch { purgeMediaFiles(context.applicationContext) }
+        }
         if (client != null) return
         if (loadError != null) {
             _auth.value = Auth.Unavailable
@@ -205,6 +221,9 @@ object Td {
             start(apiId, apiHash)
         }
     }
+
+    fun isCacheMediaEnabled(): Boolean =
+        runCatching { Injekt.get<TelegramPreferences>().cacheMedia().get() }.getOrDefault(false)
 
     fun setCredentials(context: Context, apiId: Int, apiHash: String) {
         appContext = context.applicationContext
@@ -337,6 +356,8 @@ object Td {
         _busy.value = false
         runCatching { client?.send(TdApi.LogOut(), null, null) }
         chatValues.clear()
+        userValues.clear()
+        pendingUsers.clear()
         mainOrder.clear()
         archiveOrder.clear()
         leftBehind.clear()
@@ -359,26 +380,24 @@ object Td {
     fun submitPhone(phone: String) {
         val number = normalizePhone(phone)
         if (number.length < MIN_PHONE_LEN) {
-            _problem.value =
-                "Enter the full phone number with its country code, e.g. +91 98512 27864."
+            _problem.value = "Include your country code, for example +1 555 123 4567."
             return
         }
         val c = client ?: run {
-            _problem.value = "Telegram is still starting — give it a second and try again."
+            _problem.value = "Telegram is not connected — tap Change API key or try again."
             return
         }
         _problem.value = null
         _busy.value = true
-        armBusyTimeout()
         _sentTo.value = number
+        armBusyTimeout()
         val settings = TdApi.PhoneNumberAuthenticationSettings(
             false,
             false,
             false,
             false,
-            true,
             null,
-            emptyArray<String>(),
+            emptyArray(),
         )
         runCatching {
             c.send(
@@ -393,7 +412,7 @@ object Td {
     }
 
     fun submitCode(code: String) {
-        val value = code.filter { !it.isWhitespace() }
+        val value = code.trim()
         if (value.isEmpty()) return
         val c = client ?: run {
             _problem.value = "Telegram is not connected — try again."
@@ -495,6 +514,7 @@ object Td {
     private suspend fun refreshMe() {
         val user = query(TdApi.GetMe()) as? TdApi.User ?: return
         myId = user.id
+        userValues[user.id] = user
         _me.value = listOf(user.firstName, user.lastName)
             .filter { it.isNotBlank() }
             .joinToString(" ")
@@ -511,9 +531,26 @@ object Td {
         chatValues[chat.id] = chat
     }
 
+    private fun ensureUserLoaded(userId: Long) {
+        if (userId == 0L || userValues.containsKey(userId) || !pendingUsers.add(userId)) return
+        scope.launch {
+            val u = query(TdApi.GetUser(userId)) as? TdApi.User
+            if (u != null) {
+                userValues[userId] = u
+                publishChats()
+            } else {
+                pendingUsers.remove(userId)
+            }
+        }
+    }
+
     private fun onUpdate(update: TdApi.Object) {
         when (update) {
             is TdApi.UpdateAuthorizationState -> onAuthState(update.authorizationState)
+            is TdApi.UpdateUser -> {
+                userValues[update.user.id] = update.user
+                publishChats()
+            }
             is TdApi.UpdateNewChat -> {
                 chatValues[update.chat.id] = update.chat
                 absorbPositions(update.chat.id, update.chat.positions)
@@ -530,6 +567,12 @@ object Td {
             is TdApi.UpdateChatTitle -> {
                 chatValues[update.chatId]?.let { c ->
                     c.title = update.title
+                    publishChats()
+                }
+            }
+            is TdApi.UpdateChatPhoto -> {
+                chatValues[update.chatId]?.let { c ->
+                    c.photo = update.photo
                     publishChats()
                 }
             }
@@ -615,6 +658,8 @@ object Td {
                 live = null
                 started.set(false)
                 chatValues.clear()
+                userValues.clear()
+                pendingUsers.clear()
                 mainOrder.clear()
                 archiveOrder.clear()
                 leftBehind.clear()
@@ -694,12 +739,17 @@ object Td {
             val order = mainOrder[chat.id] ?: 0L
             val archive = archiveOrder[chat.id] ?: 0L
             val kind = when (val type = chat.type) {
-                is TdApi.ChatTypePrivate ->
+                is TdApi.ChatTypePrivate -> {
                     if (chat.id == saved || (me != 0L && (type.userId == me || chat.id == me))) {
                         Chat.Kind.SAVED
                     } else {
-                        Chat.Kind.PRIVATE
+                        val user = userValues[type.userId]
+                        if (user == null) {
+                            ensureUserLoaded(type.userId)
+                        }
+                        if (user?.type is TdApi.UserTypeBot) Chat.Kind.BOT else Chat.Kind.PRIVATE
                     }
+                }
                 is TdApi.ChatTypeSecret -> Chat.Kind.SECRET
                 is TdApi.ChatTypeSupergroup ->
                     if (type.isChannel) Chat.Kind.CHANNEL else Chat.Kind.GROUP
@@ -713,6 +763,7 @@ object Td {
             if (order == 0L && archive == 0L && !membership && kind != Chat.Kind.SAVED) {
                 return@mapNotNull null
             }
+            val photoId = chat.photo?.small?.id ?: chat.photo?.big?.id ?: 0
             Chat(
                 id = chat.id,
                 title = if (kind == Chat.Kind.SAVED) "Saved Messages" else chat.title.ifBlank { "Chat" },
@@ -720,6 +771,7 @@ object Td {
                 order = if (order != 0L) order else archive,
                 unread = chat.unreadCount,
                 archived = order == 0L && archive != 0L,
+                photoFileId = photoId,
             )
         }.sortedWith(
             compareBy(
@@ -739,6 +791,12 @@ object Td {
     fun isSignedIn(): Boolean = _auth.value is Auth.Ready
 
     suspend fun publicChatId(username: String): Long? = publicChat(username)?.first
+
+    suspend fun publicChatPhotoId(username: String): Int {
+        val name = handleOf(username) ?: return 0
+        val chat = query(TdApi.SearchPublicChat(name)) as? TdApi.Chat ?: return 0
+        return chat.photo?.small?.id ?: chat.photo?.big?.id ?: 0
+    }
 
     suspend fun joinedChat(username: String): Pair<Long, String>? {
         val name = handleOf(username) ?: return null
@@ -829,6 +887,13 @@ object Td {
         )
     }
 
+    suspend fun postVideos(chatId: Long, messageId: Long): List<ChatVideo> {
+        if (chatId == 0L || messageId == 0L) return emptyList()
+        val msg = query(TdApi.GetMessage(chatId, messageId)) as? TdApi.Message ?: return emptyList()
+        val direct = videoOf(chatId, msg)
+        return if (direct != null) listOf(direct) else videosOfPost(chatId, msg, "")
+    }
+
     suspend fun linkVideo(url: String): ChatVideo? {
         val info = query(TdApi.GetMessageLinkInfo(url)) as? TdApi.MessageLinkInfo ?: return null
         val message = info.message ?: return null
@@ -873,6 +938,8 @@ object Td {
                 caption = c.caption.text,
                 fileName = c.video.fileName,
                 thumbFileId = c.video.thumbnail?.file?.id ?: 0,
+                width = c.video.width,
+                height = c.video.height,
             )
             is TdApi.MessageAnimation -> ChatVideo(
                 chatId = chatId,
@@ -886,6 +953,8 @@ object Td {
                 caption = c.caption.text,
                 fileName = c.animation.fileName,
                 thumbFileId = c.animation.thumbnail?.file?.id ?: 0,
+                width = c.animation.width,
+                height = c.animation.height,
             )
             is TdApi.MessageDocument -> {
                 val doc = c.document
@@ -945,7 +1014,7 @@ object Td {
                 val video = videoOf(chatId, m)
                 if (video != null) {
                     val own = video.caption
-                    if (own.isNotBlank() && !own.contains(q, ignoreCase = true)) {
+                    if (own.isNotBlank() && q.isNotBlank() && !own.contains(q, ignoreCase = true)) {
                         done = true
                         break
                     }
@@ -1031,7 +1100,9 @@ object Td {
                 if (!seen.add(m.id)) continue
                 advanced = true
                 val v = videoOf(chatId, m) ?: continue
-                if (v.fileName.contains(q, ignoreCase = true)) out += v
+                if (v.fileName.contains(q, ignoreCase = true) || v.caption.contains(q, ignoreCase = true)) {
+                    out += v
+                }
             }
             from = page.messages.last().id
             more = advanced
@@ -1061,6 +1132,19 @@ object Td {
             if (System.currentTimeMillis() >= deadline) return null
             delay(THUMB_POLL_MS)
         }
+    }
+
+    suspend fun persistAvatar(context: Context, key: String, photoFileId: Int): String? {
+        if (photoFileId == 0) return null
+        val srcPath = thumbPath(photoFileId) ?: return null
+        val srcFile = File(srcPath)
+        if (!srcFile.exists()) return null
+        val dir = File(context.filesDir, "tdlib_avatars").apply { mkdirs() }
+        val dst = File(dir, "$key.jpg")
+        return runCatching {
+            srcFile.copyTo(dst, overwrite = true)
+            dst.absolutePath
+        }.getOrNull()
     }
 
     private fun minithumb(t: TdApi.Minithumbnail?): String? {
@@ -1104,6 +1188,12 @@ object Td {
         downloadErrors.remove(fileId)
     }
 
+    suspend fun awaitUpdate(previousRevision: Int, timeoutMs: Long = 25L) {
+        withTimeoutOrNull(timeoutMs) {
+            revision.first { it != previousRevision }
+        }
+    }
+
     fun request(fileId: Int, offset: Long, limit: Long) {
         val c = client ?: return
         runCatching {
@@ -1125,9 +1215,84 @@ object Td {
         }
     }
 
+    fun cancelDownload(fileId: Int) {
+        if (fileId == 0) return
+        runCatching {
+            client?.send(TdApi.CancelDownloadFile(fileId, false), null, null)
+        }
+    }
+
     fun prewarm(fileId: Int) {
         downloadErrors.remove(fileId)
         request(fileId, 0L, AHEAD_BYTES)
+    }
+
+    fun onStreamOpened(fileId: Int) {
+        if (fileId == 0) return
+        streamedVideoFiles.add(fileId)
+        activeStreams.computeIfAbsent(fileId) { AtomicInteger(0) }.incrementAndGet()
+        if (!isCacheMediaEnabled()) {
+            streamedVideoFiles.forEach { otherId ->
+                if (otherId != fileId && (activeStreams[otherId]?.get() ?: 0) <= 0) {
+                    evictFile(otherId)
+                }
+            }
+        }
+    }
+
+    fun onStreamClosed(fileId: Int) {
+        if (fileId == 0) return
+        val remaining = activeStreams[fileId]?.decrementAndGet() ?: 0
+        if (remaining <= 0 && !isCacheMediaEnabled()) {
+            scope.launch {
+                delay(STREAM_EVICT_DELAY_MS)
+                if ((activeStreams[fileId]?.get() ?: 0) <= 0 && !isCacheMediaEnabled()) {
+                    evictFile(fileId)
+                }
+            }
+        }
+    }
+
+    fun onPlaybackStopped() {
+        if (isCacheMediaEnabled()) return
+        val ids = streamedVideoFiles.toList()
+        ids.forEach { id ->
+            activeStreams.remove(id)
+            evictFile(id)
+        }
+        appContext?.let { ctx ->
+            scope.launch { purgeMediaFiles(ctx) }
+        }
+    }
+
+    private fun evictFile(fileId: Int) {
+        if (fileId == 0) return
+        streamedVideoFiles.remove(fileId)
+        val path = (fileValues[fileId] ?: fetchedFiles[fileId])?.local?.path.orEmpty()
+        cancelDownload(fileId)
+        runCatching {
+            client?.send(TdApi.DeleteFile(fileId), null, null)
+        }
+        fileValues.remove(fileId)
+        fetchedFiles.remove(fileId)
+        if (path.isNotBlank()) {
+            runCatching { File(path).delete() }
+        }
+    }
+
+    fun purgeMediaFiles(context: Context): Long {
+        val filesDir = File(context.filesDir, "tdlib/files")
+        if (!filesDir.exists()) return 0L
+        val mediaDirs = setOf("videos", "documents", "animations", "temp", "music", "voice")
+        var freed = 0L
+        streamedVideoFiles.toList().forEach { evictFile(it) }
+        filesDir.listFiles()?.forEach { child ->
+            if (child.isDirectory && child.name in mediaDirs) {
+                freed += child.walkTopDown().filter { it.isFile }.sumOf { it.length() }
+                child.deleteRecursively()
+            }
+        }
+        return freed
     }
 
     suspend fun availableFrom(fileId: Int, offset: Long): Long =
@@ -1149,19 +1314,66 @@ object Td {
     fun cacheSizeBytes(context: Context): Long {
         val filesDir = File(context.filesDir, "tdlib/files")
         if (!filesDir.exists()) return 0L
-        return filesDir.walkTopDown().filter { it.isFile }.sumOf { it.length() }
+        val mediaDirs = setOf("videos", "documents", "animations", "temp", "music", "voice")
+        return filesDir.listFiles()
+            ?.filter { it.isDirectory && it.name in mediaDirs }
+            ?.sumOf { dir -> dir.walkTopDown().filter { it.isFile }.sumOf { it.length() } }
+            ?: 0L
     }
 
-    fun clearCache(context: Context): Long {
-        val filesDir = File(context.filesDir, "tdlib/files")
-        if (!filesDir.exists()) return 0L
-        var freed = 0L
-        filesDir.listFiles()?.forEach { child ->
-            freed += child.walkTopDown().filter { it.isFile }.sumOf { it.length() }
-            child.deleteRecursively()
+    fun clearCache(context: Context): Long = purgeMediaFiles(context)
+
+    fun resolutionTag(width: Int, height: Int): String {
+        val shortSide = if (width > 0 && height > 0) minOf(width, height) else maxOf(width, height)
+        return when {
+            shortSide >= 2000 -> "2160p (4K)"
+            shortSide >= 1400 -> "1440p (2K)"
+            shortSide >= 1000 -> "1080p"
+            shortSide >= 700 -> "720p"
+            shortSide >= 460 -> "480p"
+            shortSide >= 340 -> "360p"
+            shortSide > 0 -> "${shortSide}p"
+            else -> "1080p"
         }
-        fileValues.clear()
-        fetchedFiles.clear()
-        return freed
+    }
+
+    fun buildQualityVideos(
+        baseUrl: String,
+        width: Int = 0,
+        height: Int = 0,
+        headers: Headers? = null,
+    ): List<Video> {
+        val sep = if (baseUrl.contains("?")) "&" else "?"
+        val nativeLabel = resolutionTag(width, height)
+        val shortSide = if (width > 0 && height > 0) minOf(width, height) else 1080
+        val list = mutableListOf<Video>()
+        list += Video(
+            videoUrl = "${baseUrl}${sep}q=auto",
+            videoTitle = "HLS Auto ($nativeLabel • Fast Stream)",
+            resolution = shortSide,
+            headers = headers,
+            preferred = true,
+            initialized = true,
+        ).apply { status = Video.State.READY }
+
+        val presets = listOf(
+            1080 to "1080p (Full HD)",
+            720 to "720p (HD)",
+            480 to "480p (SD)",
+            360 to "360p (Data Saver)",
+        )
+        for ((res, label) in presets) {
+            if (shortSide <= 0 || res <= shortSide || (res == 1080 && shortSide < 360)) {
+                list += Video(
+                    videoUrl = "${baseUrl}${sep}q=$res",
+                    videoTitle = label,
+                    resolution = res,
+                    headers = headers,
+                    preferred = false,
+                    initialized = true,
+                ).apply { status = Video.State.READY }
+            }
+        }
+        return list
     }
 }
