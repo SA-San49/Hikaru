@@ -78,7 +78,7 @@ class ExtensionManager(
     private val repoHostAuthorRegex = """^https://(?:raw\.githubusercontent\.com|codeberg\.org|gitlab\.com)/([^/]+)/.*""".toRegex()
 
     private val installedExtensionsMapFlow = MutableStateFlow(emptyMap<String, Extension.Installed>())
-    val installedExtensionsFlow = combine(
+    val installedExtensionsFlow: StateFlow<List<Extension.Installed>> = combine(
         installedExtensionsMapFlow,
         extensionRepoRepository.subscribeAll(),
         telegramPreferences.browseSources().changes(),

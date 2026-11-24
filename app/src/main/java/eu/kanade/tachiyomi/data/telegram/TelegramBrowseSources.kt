@@ -17,6 +17,7 @@ import eu.kanade.tachiyomi.R
 import eu.kanade.tachiyomi.extension.model.Extension
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.jsoup.Jsoup
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
 import java.io.File
@@ -28,7 +29,7 @@ object TelegramBrowseSources {
 
     const val PKG_PREFIX = "telegram.source."
     private const val SOURCE_ID_PREFIX = 0x5447_0000_0000_0000L
-    private const val SOURCE_ID_MASK = 0xFFFF_0000_0000_0000L.toLong()
+    private const val SOURCE_ID_MASK = -0x1000000000000L
     private const val SOURCE_HASH_MASK = 0x0000_FFFF_FFFF_FFFFL
     private const val ICON_PX = 128
     private const val CORNER_RADIUS_PX = 28f
@@ -235,11 +236,6 @@ object TelegramBrowseSources {
         return loadDrawable(context, entry)
     }
 
-    fun getDrawableForPkg(context: Context, pkgName: String, raw: String): Drawable? {
-        val entry = parse(raw).firstOrNull { it.pkgName == pkgName } ?: return null
-        return loadDrawable(context, entry)
-    }
-
     fun loadDrawable(context: Context, entry: Entry): Drawable {
         val fileCandidates = buildList {
             if (entry.avatarPath.isNotBlank()) add(File(entry.avatarPath))
@@ -297,11 +293,8 @@ object TelegramBrowseSources {
                     setRequestProperty("User-Agent", "Mozilla/5.0 (Android 14; Mobile)")
                 }
                 val html = pageConn.inputStream.bufferedReader().use { it.readText() }
-                val match = Regex(
-                    "<meta\\s+property=["']og:image["']\\s+content=["']([^"']+)["']",
-                    RegexOption.IGNORE_CASE,
-                ).find(html) ?: return@runCatching null
-                val imageUrl = match.groupValues[1]
+                val doc = Jsoup.parse(html)
+                val imageUrl = doc.selectFirst("meta[property=og:image]")?.attr("content").orEmpty()
                 if (!imageUrl.startsWith("http")) return@runCatching null
                 val imgConn = (URL(imageUrl).openConnection() as HttpURLConnection).apply {
                     connectTimeout = AVATAR_TIMEOUT_MS

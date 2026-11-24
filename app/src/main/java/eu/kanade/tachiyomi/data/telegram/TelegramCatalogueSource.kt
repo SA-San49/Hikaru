@@ -54,9 +54,10 @@ class TelegramCatalogueSource(
             return AnimesPage(items, res.more && res.nextCursor != 0L && items.isNotEmpty())
         }
         if (entry.handle.isNotBlank()) {
-            val webBefore = if (page <= 1) null else before.takeIf { it > 0L }?.toInt()
-            val res = TelegramWeb.loadPublicChannel(entry.handle, webBefore)
-            val next = res.nextBefore?.toLong() ?: 0L
+            val webBefore = if (page <= 1) null else before.takeIf { it > 0L }
+            val res = TelegramWeb.loadPage(entry.handle, before = webBefore)
+                ?: return AnimesPage(emptyList(), false)
+            val next = res.videos.minOfOrNull { it.messageId }?.takeIf { it > 1L } ?: 0L
             if (next != 0L) {
                 pageCursors[page + 1] = next
             }
@@ -91,11 +92,9 @@ class TelegramCatalogueSource(
             return AnimesPage(items, !res.exhausted && res.nextCursor != 0L && items.isNotEmpty())
         }
         if (entry.handle.isNotBlank()) {
-            val res = TelegramWeb.loadPublicChannel(entry.handle, null)
-            val filtered = res.videos.filter {
-                it.title.contains(q, ignoreCase = true) || it.caption.contains(q, ignoreCase = true)
-            }
-            return AnimesPage(filtered.map { webVideoToSAnime(it) }, false)
+            val res = TelegramWeb.loadPage(entry.handle, query = q)
+                ?: return AnimesPage(emptyList(), false)
+            return AnimesPage(res.videos.map { webVideoToSAnime(it) }, false)
         }
         return AnimesPage(emptyList(), false)
     }
@@ -111,13 +110,12 @@ class TelegramCatalogueSource(
             val videoUrl = uri.getQueryParameter("v").orEmpty()
             val referer = uri.getQueryParameter("ref").orEmpty()
             val title = uri.getQueryParameter("title").orEmpty().ifBlank { anime.title }
-            val dateSec = uri.getQueryParameter("date")?.toLongOrNull() ?: 0L
             return listOf(
                 SEpisode.create().apply {
                     url = anime.url
                     name = title
                     episode_number = 1f
-                    date_upload = dateSec * 1000L
+                    date_upload = 0L
                     scanlator = "Telegram Web"
                     summary = referer.ifBlank { videoUrl }
                 },
@@ -187,7 +185,7 @@ class TelegramCatalogueSource(
             val videoUrl = uri.getQueryParameter("v").orEmpty()
             val referer = uri.getQueryParameter("ref").orEmpty()
             val reqHeaders = Headers.Builder().apply {
-                add("User-Agent", TelegramWeb.USER_AGENT)
+                add("User-Agent", network.defaultUserAgentProvider())
                 if (referer.isNotBlank()) add("Referer", referer)
             }.build()
             return Td.buildQualityVideos(
@@ -251,27 +249,28 @@ class TelegramCatalogueSource(
         }
     }
 
-    private fun webVideoToSAnime(v: TelegramWeb.PublicVideo): SAnime {
+    private fun webVideoToSAnime(v: TelegramVideo): SAnime {
         val clean = v.title.lineSequence().firstOrNull { it.isNotBlank() }?.trim()
-            ?.takeIf { it.isNotEmpty() } ?: "Video #${v.postId}"
+            ?.takeIf { it.isNotEmpty() } ?: "Video #${v.messageId}"
+        val postUrl = "https://t.me/${v.channel.removePrefix("@")}/${v.messageId}"
         return SAnime.create().apply {
             url = "/tg/item?mode=web" +
-                "&post=${v.postId}" +
-                "&v=${Uri.encode(v.videoUrl)}" +
-                "&ref=${Uri.encode(v.postUrl)}" +
+                "&post=${v.messageId}" +
+                "&v=${Uri.encode(v.url)}" +
+                "&ref=${Uri.encode(postUrl)}" +
                 "&title=${Uri.encode(clean)}"
             title = clean
             author = entry.title
             genre = "Telegram, Public Channel"
             status = SAnime.COMPLETED
-            thumbnail_url = v.thumbUrl
+            thumbnail_url = v.posterUrl
             description = buildString {
-                if (v.caption.isNotBlank()) {
-                    appendLine(v.caption.trim())
-                    appendLine()
+                appendLine(v.title)
+                if (!v.duration.isNullOrBlank()) {
+                    append("Duration: ${v.duration}")
                 }
-                if (v.durationText.isNotBlank()) {
-                    append("Duration: ${v.durationText}")
+                if (!v.dateLabel.isNullOrBlank()) {
+                    append(" • ${v.dateLabel}")
                 }
             }
             initialized = true
@@ -344,6 +343,12 @@ class TelegramCatalogueSource(
         throw UnsupportedOperationException("Handled by getHosterList")
 
     override fun videoListParse(response: Response, hoster: Hoster): List<Video> =
+        throw UnsupportedOperationException("Handled by getVideoList")
+
+    override fun videoListParse(response: Response): List<Video> =
+        throw UnsupportedOperationException("Handled by getVideoList")
+
+    override fun videoUrlParse(response: Response): String =
         throw UnsupportedOperationException("Handled by getVideoList")
 
     companion object {

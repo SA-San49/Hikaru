@@ -173,7 +173,7 @@ class TelegramScreen : Screen() {
         }
 
         fun addChannel() {
-            val handle = TelegramWeb.normalizeChannel(typed)
+            val handle = TelegramWeb.normalize(typed)
             if (handle == null) {
                 addError = "Enter a channel name like @TelegramTips or a t.me/ link"
                 return
@@ -198,179 +198,67 @@ class TelegramScreen : Screen() {
                     openName = handle
                     return@launch
                 }
-                val result = withContext(Dispatchers.IO) {
-                    runCatching { TelegramWeb.loadPublicChannel(handle) }
+                val page = withContext(Dispatchers.IO) {
+                    runCatching { TelegramWeb.loadPage(handle) }.getOrNull()
                 }
                 adding = false
-                result.onSuccess { page ->
-                    if (page.error != null) {
-                        addError = page.error
-                    } else {
-                        TelegramChannels.add(telegramPrefs, channels, handle, page.channelTitle.ifBlank { handle })
-                        addOpen = false
-                        typed = ""
-                        section = TgSection.ADDED
-                        openName = handle
-                    }
-                }.onFailure { e ->
-                    addError = e.message ?: "Could not load channel"
+                if (page == null) {
+                    addError = "Could not load channel. Check the @name or your internet connection."
+                } else {
+                    val foundTitle = page.title?.takeIf { it.isNotBlank() } ?: handle
+                    TelegramChannels.add(telegramPrefs, channels, handle, foundTitle)
+                    addOpen = false
+                    typed = ""
+                    section = TgSection.ADDED
+                    openName = handle
                 }
             }
         }
 
         fun addLink() {
-            val parsed = TelegramWeb.parsePostLink(linkTyped)
+            val parsed = TelegramLinks.normalize(linkTyped)
             if (parsed == null) {
                 linkError = "Paste a video post link like https://t.me/channel/123"
                 return
             }
-            val (handle, postId) = parsed
-            val url = "https://t.me/$handle/$postId"
             linking = true
             linkError = ""
             scope.launch {
-                val tdVideo = if (Td.isSignedIn()) {
-                    withContext(Dispatchers.IO) { runCatching { Td.linkVideo(url) }.getOrNull() }
-                } else {
-                    null
-                }
-                if (tdVideo != null) {
-                    TelegramLinks.add(
-                        prefs = telegramPrefs,
-                        current = links,
-                        link = TelegramLinks.Link(
-                            url = url,
-                            channel = handle,
-                            messageId = postId,
-                            title = tdVideo.title,
-                            poster = tdVideo.thumb.orEmpty(),
-                            duration = "",
-                        ),
-                    )
-                    linking = false
-                    linkOpen = false
-                    linkTyped = ""
-                    section = TgSection.LINKS
-                    playTdVideo(context, scope, tdVideo)
-                    return@launch
-                }
-                val post = withContext(Dispatchers.IO) {
-                    runCatching { TelegramWeb.loadPost(handle, postId) }.getOrNull()
-                }
+                val described = withContext(Dispatchers.IO) { TelegramLinks.describe(parsed) }
+                TelegramLinks.add(telegramPrefs, links, described)
                 linking = false
-                val web = post?.video
-                when {
-                    web != null -> {
-                        TelegramLinks.add(
-                            prefs = telegramPrefs,
-                            current = links,
-                            link = TelegramLinks.Link(
-                                url = url,
-                                channel = handle,
-                                messageId = postId,
-                                title = web.title,
-                                poster = web.posterUrl.orEmpty(),
-                                duration = web.duration.orEmpty(),
-                            ),
-                        )
-                        linkOpen = false
-                        linkTyped = ""
-                        section = TgSection.LINKS
-                        playTelegramVideo(context, web)
-                    }
-                    post?.withheld == true -> {
-                        TelegramLinks.add(
-                            prefs = telegramPrefs,
-                            current = links,
-                            link = TelegramLinks.Link(
-                                url = url,
-                                channel = handle,
-                                messageId = postId,
-                                title = post.title,
-                                poster = "",
-                                duration = "",
-                            ),
-                        )
-                        linkOpen = false
-                        linkTyped = ""
-                        section = TgSection.LINKS
-                        context.toast("Saved link. Sign in to Telegram above to play this video.")
-                    }
-                    post != null && post.error == null -> {
-                        linkError = "That post doesn't appear to have a playable video."
-                    }
-                    else -> {
-                        TelegramLinks.add(
-                            prefs = telegramPrefs,
-                            current = links,
-                            link = TelegramLinks.Link(
-                                url = url,
-                                channel = handle,
-                                messageId = postId,
-                                title = "$handle #$postId",
-                                poster = "",
-                                duration = "",
-                            ),
-                        )
-                        linkOpen = false
-                        linkTyped = ""
-                        section = TgSection.LINKS
-                        context.toast("Saved link. Sign in to Telegram above if it is from a private chat.")
-                    }
-                }
+                linkOpen = false
+                linkTyped = ""
+                section = TgSection.LINKS
             }
-        }
-
-        val barTitle = when {
-            openChat != 0L -> openChatTitle.ifBlank { "Telegram chat" }
-            openChannel != null -> openChannel.second.ifBlank { openChannel.first }
-            else -> "Telegram"
-        }
-        val barSub = when {
-            openChat != 0L -> "Telegram chat"
-            openChannel != null -> openChannel.first
-            else -> "Your chats, channels & bots"
         }
 
         Scaffold(
             topBar = { scrollBehavior ->
-                AppBar(
-                    titleContent = {
-                        AppBar.Title(title = barTitle, subtitle = barSub)
-                    },
-                    navigateUp = {
-                        when {
-                            openChat != 0L -> {
-                                openChat = 0L
-                                openChatTitle = ""
-                            }
-                            openChannel != null -> openName = null
-                            else -> navigator.pop()
-                        }
-                    },
-                    actions = {
-                        val actionsList = buildList {
-                            if (openChannel == null && openChat == 0L) {
-                                add(
+                if (openChat == 0L && openChannel == null) {
+                    AppBar(
+                        title = "Telegram",
+                        subtitle = "Your chats, channels & bots",
+                        navigateUp = navigator::pop,
+                        actions = {
+                            AppBarActions(
+                                persistentListOf(
                                     AppBar.Action(
                                         title = "Add",
                                         icon = Icons.Outlined.Add,
                                         onClick = { addPicker = true },
                                     ),
-                                )
-                            }
-                            add(
-                                AppBar.Action(
-                                    title = "Settings",
-                                    icon = Icons.Outlined.Settings,
-                                    onClick = { gearOpen = true },
+                                    AppBar.Action(
+                                        title = "Settings",
+                                        icon = Icons.Outlined.Settings,
+                                        onClick = { gearOpen = true },
+                                    ),
                                 ),
                             )
-                        }
-                        AppBarActions(persistentListOf(*actionsList.toTypedArray()))
-                    },
-                    scrollBehavior = scrollBehavior,
-                )
+                        },
+                        scrollBehavior = scrollBehavior,
+                    )
+                }
             },
         ) { paddingValues ->
             Box(
@@ -380,12 +268,19 @@ class TelegramScreen : Screen() {
             ) {
                 when {
                     openChat != 0L -> {
-                        TdChatVideosScreen(chatId = openChat)
+                        TelegramChatVideos(
+                            chatId = openChat,
+                            title = openChatTitle.ifBlank { "Chat" },
+                            onBack = {
+                                openChat = 0L
+                                openChatTitle = ""
+                            },
+                        )
                     }
                     openChannel != null -> {
-                        TelegramChannelVideosScreen(
-                            handle = openChannel.first,
-                            title = openChannel.second,
+                        TelegramChannelVideos(
+                            channel = openChannel.first,
+                            title = openChannel.second.ifBlank { openChannel.first },
                             onBack = { openName = null },
                             onTitle = { fixed ->
                                 TelegramChannels.setTitle(telegramPrefs, channels, openChannel.first, fixed)
