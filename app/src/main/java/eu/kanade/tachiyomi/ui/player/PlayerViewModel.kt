@@ -416,7 +416,25 @@ class PlayerViewModel @JvmOverloads constructor(
         }
     }
 
+    private var directVideoMode: Boolean = false
+
+    fun initDirectVideo(title: String, sourceLabel: String, video: Video) {
+        directVideoMode = true
+        mediaTitle.update { title }
+        animeTitle.update { sourceLabel }
+        _isEpisodeOnline.update { video.videoUrl.startsWith("http") }
+        _currentVideo.update { video }
+        _isLoadingEpisode.update { false }
+        _isLoadingHosters.update { false }
+        isLoading.update { false }
+        _hasPreviousEpisode.update { false }
+        _hasNextEpisode.update { false }
+    }
+
     fun isEpisodeOnline(): Boolean? {
+        if (directVideoMode) {
+            return currentVideo.value?.videoUrl?.startsWith("http") == true
+        }
         val anime = currentAnime.value ?: return null
         val episode = currentEpisode.value ?: return null
         val source = currentSource.value ?: return null

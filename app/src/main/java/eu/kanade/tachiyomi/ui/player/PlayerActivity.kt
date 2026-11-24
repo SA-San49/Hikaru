@@ -96,6 +96,7 @@ import eu.kanade.tachiyomi.util.system.powerManager
 import eu.kanade.tachiyomi.util.system.toShareIntent
 import eu.kanade.tachiyomi.util.system.toast
 import `is`.xyz.mpv.MPVLib
+import okhttp3.Headers
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.launchIn
@@ -190,6 +191,11 @@ class PlayerActivity : BaseActivity() {
     }
 
     companion object {
+        private const val EXTRA_DIRECT_URL = "directUrl"
+        private const val EXTRA_DIRECT_TITLE = "directTitle"
+        private const val EXTRA_DIRECT_SOURCE = "directSource"
+        private const val EXTRA_DIRECT_HEADERS = "directHeaders"
+
         fun newIntent(
             context: Context,
             animeId: Long?,
@@ -207,15 +213,62 @@ class PlayerActivity : BaseActivity() {
                 addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
             }
         }
+
+        fun newDirectIntent(
+            context: Context,
+            title: String,
+            videoUrl: String,
+            sourceLabel: String = "Telegram",
+            headers: Map<String, String> = emptyMap(),
+        ): Intent {
+            return Intent(context, PlayerActivity::class.java).apply {
+                putExtra(EXTRA_DIRECT_URL, videoUrl)
+                putExtra(EXTRA_DIRECT_TITLE, title)
+                putExtra(EXTRA_DIRECT_SOURCE, sourceLabel)
+                if (headers.isNotEmpty()) {
+                    putStringArrayListExtra(
+                        EXTRA_DIRECT_HEADERS,
+                        ArrayList(headers.entries.map { (k, v) -> "$k\t$v" }),
+                    )
+                }
+                addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            }
+        }
     }
 
     // AM (CONNECTIONS) -->
     private val connectionsPreferences: ConnectionsPreferences = Injekt.get()
     // <-- AM (CONNECTIONS)
 
+
+    private fun handleDirectVideoIntent(intent: Intent): Boolean {
+        val directUrl = intent.getStringExtra(EXTRA_DIRECT_URL)
+        if (directUrl.isNullOrBlank()) return false
+        val directTitle = intent.getStringExtra(EXTRA_DIRECT_TITLE).orEmpty().ifBlank { "Video" }
+        val directSource = intent.getStringExtra(EXTRA_DIRECT_SOURCE).orEmpty().ifBlank { "Telegram" }
+        val headerLines = intent.getStringArrayListExtra(EXTRA_DIRECT_HEADERS).orEmpty()
+        val headersBuilder = Headers.Builder()
+        headerLines.forEach { line ->
+            val tab = line.indexOf("\t")
+            if (tab > 0) {
+                headersBuilder.add(line.substring(0, tab), line.substring(tab + 1))
+            }
+        }
+        val directVideo = Video(
+            videoUrl = directUrl,
+            videoTitle = directTitle,
+            headers = headersBuilder.build(),
+        )
+        viewModel.initDirectVideo(directTitle, directSource, directVideo)
+        setVideo(directVideo, 0L)
+        setIntent(intent)
+        return true
+    }
+
     @SuppressLint("MissingSuperCall")
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        if (handleDirectVideoIntent(intent)) return
 
         val animeId = intent.extras?.getLong("animeId") ?: -1
         val episodeId = intent.extras?.getLong("episodeId") ?: -1
@@ -1641,8 +1694,15 @@ class PlayerActivity : BaseActivity() {
 
     private fun setMpvMediaTitle() {
         if (player.isExiting) return
-        val anime = viewModel.currentAnime.value ?: return
-        val episode = viewModel.currentEpisode.value ?: return
+        val anime = viewModel.currentAnime.value
+        val episode = viewModel.currentEpisode.value
+        if (anime == null || episode == null) {
+            val fallbackTitle = viewModel.mediaTitle.value
+            if (fallbackTitle.isNotBlank()) {
+                MPVLib.setPropertyString("force-media-title", fallbackTitle)
+            }
+            return
+        }
 
         // Write to mpv table
         MPVLib.setPropertyString("user-data/current-anime/episode-title", episode.name)

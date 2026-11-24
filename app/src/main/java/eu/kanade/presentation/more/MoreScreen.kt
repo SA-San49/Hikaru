@@ -16,6 +16,7 @@ import androidx.compose.material.icons.automirrored.outlined.Label
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material.icons.outlined.CallToAction
 import androidx.compose.material.icons.outlined.CloudOff
+import androidx.compose.material.icons.outlined.CloudQueue
 import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.GetApp
 import androidx.compose.material.icons.outlined.Info
@@ -80,6 +81,7 @@ fun MoreScreen(
     onClickStats: () -> Unit,
     onClickLibraryUpdateErrors: () -> Unit,
     onClickDataAndStorage: () -> Unit,
+    onClickExternalStorageAndServices: () -> Unit,
     onClickPlayerSettings: () -> Unit,
     onClickSettings: () -> Unit,
     onClickAbout: () -> Unit,
@@ -276,6 +278,14 @@ fun MoreScreen(
                         icon = Icons.Outlined.Storage,
                         iconTint = accentColor,
                         onClick = onClickDataAndStorage,
+                        showDivider = true,
+                    )
+                    MoreItem(
+                        title = "External storage and services",
+                        subtitle = "Telegram & external media services",
+                        icon = Icons.Outlined.CloudQueue,
+                        iconTint = accentColor,
+                        onClick = onClickExternalStorageAndServices,
                         showDivider = true,
                     )
                     MoreItem(

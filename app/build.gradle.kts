@@ -180,6 +180,7 @@ android {
         jniLibs {
             // Keep native libraries uncompressed for the requested APK packaging.
             useLegacyPackaging = false
+            pickFirsts += listOf("**/libc++_shared.so")
         }
         resources {
             excludes += setOf(
@@ -235,6 +236,20 @@ android {
         }
     }
 }
+
+val tdJniStageDir = layout.buildDirectory.dir("td-jni").get().asFile.apply { mkdirs() }
+val stageTdJniLibs = tasks.register<Sync>("stageTdJniLibs") {
+    from(layout.projectDirectory.dir("src/main/jniLibs")) {
+        include("**/libcxx_shared.so")
+    }
+    into(tdJniStageDir)
+    rename { name -> if (name == "libcxx_shared.so") "libc++_shared.so" else name }
+}
+android.sourceSets.getByName("main").jniLibs.srcDir(tdJniStageDir)
+tasks.matching {
+    it.name.contains("JniLibFolders") || it.name.contains("NativeLibs") ||
+        it.name.contains("NativeDebugMetadata")
+}.configureEach { dependsOn(stageTdJniLibs) }
 
 kotlin {
     compilerOptions {

@@ -318,3 +318,7 @@
 -dontwarn org.ietf.jgss.GSSManager
 -dontwarn org.ietf.jgss.GSSName
 -dontwarn org.ietf.jgss.Oid
+
+# TDLib (Telegram client)
+-keep class org.drinkless.tdlib.** { *; }
+-dontwarn org.drinkless.tdlib.**
