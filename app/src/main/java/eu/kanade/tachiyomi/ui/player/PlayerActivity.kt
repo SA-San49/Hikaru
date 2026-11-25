@@ -206,6 +206,7 @@ class PlayerActivity : BaseActivity() {
         private const val TG_EXT_DEMUXER_BACK_BYTES = 4 * 1024 * 1024
         private const val TG_PROBE_ATTEMPTS = 15
         private const val TG_PROBE_DELAY_MS = 200L
+        private val IMAGE_TRACK_CODECS = setOf("mjpeg", "png", "webp", "gif", "bmp", "tiff")
 
         fun newIntent(
             context: Context,
@@ -1482,6 +1483,7 @@ class PlayerActivity : BaseActivity() {
         // Re-apply saved subtitle properties before every file load. Some mpv
         // runtime defaults can overwrite options set during initialization.
         player.applySubtitlePreferences()
+        MPVLib.setPropertyString("audio-display", "no")
         setHttpOptions(video)
         applyTelegramStreamingOptions(video)
 
@@ -1576,13 +1578,14 @@ class PlayerActivity : BaseActivity() {
             viewModel.currentSource.value is TelegramCatalogueSource
         val maxBytes = if (isExtensionStream) TG_EXT_DEMUXER_MAX_BYTES else TG_DEMUXER_MAX_BYTES
         val backBytes = if (isExtensionStream) TG_EXT_DEMUXER_BACK_BYTES else TG_DEMUXER_BACK_BYTES
-        val readaheadSecs = if (isExtensionStream) "15" else "8"
-        val cacheSecs = if (isExtensionStream) "20" else "10"
-        MPVLib.setOptionString("cache", "yes")
-        MPVLib.setOptionString("demuxer-max-bytes", "$maxBytes")
-        MPVLib.setOptionString("demuxer-max-back-bytes", "$backBytes")
-        MPVLib.setOptionString("demuxer-readahead-secs", readaheadSecs)
-        MPVLib.setOptionString("cache-secs", cacheSecs)
+        val readaheadSecs = if (isExtensionStream) "10" else "6"
+        val cacheSecs = if (isExtensionStream) "15" else "8"
+        MPVLib.setPropertyString("cache", "yes")
+        MPVLib.setPropertyString("cache-pause-initial", "no")
+        MPVLib.setPropertyString("demuxer-max-bytes", "$maxBytes")
+        MPVLib.setPropertyString("demuxer-max-back-bytes", "$backBytes")
+        MPVLib.setPropertyString("demuxer-readahead-secs", readaheadSecs)
+        MPVLib.setPropertyString("cache-secs", cacheSecs)
         applyTelegramVideoFilter(url)
     }
 
@@ -1708,6 +1711,7 @@ class PlayerActivity : BaseActivity() {
         setMpvMediaTitle()
         setupPlayerOrientation()
         setupChapters()
+        ensureRealVideoTrackSelected()
         setupTracks()
         viewModel.isLoading.update { viewModel.pausedForCache.value }
         val activeVideoUrl = viewModel.currentVideo.value?.videoUrl.orEmpty()
@@ -1762,6 +1766,31 @@ class PlayerActivity : BaseActivity() {
             }
         }
         updateDiscordRPC(exitingPlayer = false)
+    }
+
+    @Suppress("CyclomaticComplexMethod")
+    private fun ensureRealVideoTrackSelected() {
+        val count = MPVLib.getPropertyInt("track-list/count") ?: 0
+        if (count <= 1) return
+        var selectedIsImage = false
+        var firstRealVidId: Int? = null
+        for (i in 0 until count) {
+            if (MPVLib.getPropertyString("track-list/$i/type") != "video") continue
+            val isAlbumArt = MPVLib.getPropertyBoolean("track-list/$i/albumart") == true
+            val codec = MPVLib.getPropertyString("track-list/$i/codec").orEmpty().lowercase()
+            val isImg = isAlbumArt || codec in IMAGE_TRACK_CODECS
+            val selected = MPVLib.getPropertyBoolean("track-list/$i/selected") == true
+            val id = MPVLib.getPropertyInt("track-list/$i/id") ?: continue
+            if (!isImg && firstRealVidId == null) {
+                firstRealVidId = id
+            }
+            if (selected && isImg) {
+                selectedIsImage = true
+            }
+        }
+        if (selectedIsImage && firstRealVidId != null) {
+            MPVLib.setPropertyInt("vid", firstRealVidId)
+        }
     }
 
     private fun setupTracks() {

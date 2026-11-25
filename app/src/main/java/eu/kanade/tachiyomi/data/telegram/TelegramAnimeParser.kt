@@ -26,6 +26,7 @@ object TelegramAnimeParser {
         val episodeNumber: Float?,
         val episodeLabel: String,
         val qualityTag: String?,
+        val altKeys: List<String> = emptyList(),
     )
 
     data class GroupedSeries(
@@ -43,6 +44,7 @@ object TelegramAnimeParser {
         val latestDate: Int,
         val earliestMessageId: Long = 0L,
         val aliasKeys: Set<String> = emptySet(),
+        val hasRealPoster: Boolean = false,
     )
 
     data class ParsedVideo(
@@ -56,6 +58,7 @@ object TelegramAnimeParser {
         val episodeHint: Float?,
         val kindHint: SeriesKind?,
         val qualityHint: String?,
+        val altTitles: List<String> = emptyList(),
     )
 
     private data class NumberCandidate(
@@ -181,9 +184,21 @@ object TelegramAnimeParser {
         RegexOption.IGNORE_CASE,
     )
 
+    private val YEAR_TOKEN_REGEX = Regex("""\b(?:19|20)\d{2}\b""")
+    private val AIRING_SEASON_REGEX = Regex(
+        """^\s*(?:spring|summer|fall|autumn|winter)\s*$""",
+        RegexOption.IGNORE_CASE,
+    )
+    private val NON_ALNUM_OR_SPACE_REGEX = Regex("""[^a-z0-9\s]""")
+    private val SEQUEL_TAIL_REGEX = Regex(
+        """^(?:s\d+|season\d+|part\d+|cour\d+|\d+(?:st|nd|rd|th)?)$""",
+        RegexOption.IGNORE_CASE,
+    )
+
     private val TITLE_LINE_KEYS = setOf(
         "name", "title", "anime", "series", "movie", "show",
         "english", "eng", "romaji", "alternative", "alt title", "native",
+        "synonym", "synonyms", "aka", "other",
     )
     private val HINT_LINE_KEYS = setOf("season", "episode", "episodes", "ep", "type", "kind", "format", "quality", "resolution")
     private val STOP_LINE_KEYS = setOf("synopsis", "plot", "description", "summary", "story", "about")
@@ -258,8 +273,9 @@ object TelegramAnimeParser {
         var episodeHint: Float? = null
         var kindHint: SeriesKind? = null
         var qualityHint: String? = null
+        val altTitles = ArrayList<String>()
 
-        val lines = caption.lineSequence().map { it.trim() }.filter { it.isNotEmpty() }.take(12).toList()
+        val lines = caption.lineSequence().map { it.trim() }.filter { it.isNotEmpty() }.take(14).toList()
         for (rawLine in lines) {
             var line = URL_REGEX.replace(rawLine, " ")
             line = HANDLE_REGEX.replace(line, " ")
@@ -277,12 +293,21 @@ object TelegramAnimeParser {
                 val valText = stripDecorativeEdges(kv.groupValues[2])
                 if (keyLower in STOP_LINE_KEYS) break
                 if (keyLower in TITLE_LINE_KEYS) {
-                    if (chosenTitle.isBlank() && valText.isNotBlank()) chosenTitle = valText
+                    if (valText.isNotBlank()) {
+                        if (chosenTitle.isBlank()) {
+                            chosenTitle = valText
+                        } else {
+                            val parts = valText.split(Regex("""\s*[,;|/]\s*"""))
+                                .map { it.trim() }
+                                .filter { it.length >= 2 }
+                            altTitles.addAll(parts)
+                        }
+                    }
                     continue
                 }
                 if (keyLower in HINT_LINE_KEYS) {
                     if (keyLower == "season" && seasonHint == 0) {
-                        seasonHint = Regex("""\d{1,2}""").find(valText)?.value?.toIntOrNull() ?: 0
+                        seasonHint = parseSeasonHintValue(valText)
                     } else if ((keyLower == "episode" || keyLower == "ep") && episodeHint == null) {
                         episodeHint = Regex("""\d{1,4}(?:\.\d+)?""").find(valText)?.value?.toFloatOrNull()
                     } else if (kindHint == null) {
@@ -305,7 +330,15 @@ object TelegramAnimeParser {
                 chosenTitle = line
             }
         }
-        return CaptionExtraction(chosenTitle, seasonHint, episodeHint, kindHint, qualityHint)
+        return CaptionExtraction(chosenTitle, seasonHint, episodeHint, kindHint, qualityHint, altTitles)
+    }
+
+    private fun parseSeasonHintValue(valText: String): Int {
+        val withoutYears = YEAR_TOKEN_REGEX.replace(valText, " ").trim()
+        if (withoutYears.isBlank() || AIRING_SEASON_REGEX.matches(withoutYears)) return 0
+        val explicit = detectSeasonOnly(withoutYears)
+        if (explicit > 0) return explicit
+        return Regex("""^\s*(\d{1,2})\s*$""").matchEntire(withoutYears)?.groupValues?.get(1)?.toIntOrNull() ?: 0
     }
 
     private fun isTechnicalOnlyLine(line: String): Boolean {
@@ -422,12 +455,17 @@ object TelegramAnimeParser {
         val season = maxOf(parsed.rawSeason, cap.seasonHint)
         val kind = if (parsed.kind != SeriesKind.MAIN) parsed.kind else (cap.kindHint ?: SeriesKind.MAIN)
         val effSeason = if (season <= 1) 1 else season
+        val altKeys = cap.altTitles
+            .map { parse(it, fallback = "").baseKey }
+            .filter { it.length >= 3 && it != parsed.baseKey }
+            .distinct()
         return parsed.copy(
             rawSeason = season,
             effectiveSeason = effSeason,
             kind = kind,
             groupKey = "${parsed.baseKey}|${kind.name}|$effSeason",
             displayTitle = formatDisplayTitle(parsed.seriesTitle, effSeason, kind),
+            altKeys = altKeys,
         )
     }
 
@@ -764,7 +802,17 @@ object TelegramAnimeParser {
             if (p != null && p.baseKey.isNotBlank()) {
                 titledImages += wi
                 posterBaseKeys += p.baseKey
+                posterBaseKeys.addAll(p.altKeys)
                 exactGroupPosters.putIfAbsent(p.groupKey, wi)
+                for (alt in p.altKeys) {
+                    exactGroupPosters.putIfAbsent("$alt|${p.kind.name}|${p.effectiveSeason}", wi)
+                    if (p.rawSeason == 0) {
+                        baseKindPosters.putIfAbsent("$alt|${p.kind.name}", wi)
+                    }
+                    if (p.kind == SeriesKind.MAIN && p.rawSeason == 0) {
+                        baseMainPosters.putIfAbsent(alt, wi)
+                    }
+                }
                 if (p.rawSeason == 0) {
                     baseKindPosters.putIfAbsent("${p.baseKey}|${p.kind.name}", wi)
                 }
@@ -872,12 +920,14 @@ object TelegramAnimeParser {
                 latestDate = latestDate,
                 earliestMessageId = earliestMsg,
                 aliasKeys = cg.aliasKeys,
+                hasRealPoster = matchedPoster != null,
             )
         }
 
         return result.sortedByDescending { it.latestMessageId }
     }
 
+    @Suppress("ReturnCount")
     private fun shouldPromoteCandidate(
         cand: NumberCandidate,
         siblingCounts: Map<String, Set<Float>>,
@@ -890,6 +940,16 @@ object TelegramAnimeParser {
         if (remKey.length >= 14) {
             if (posterBaseKeys.any { it.startsWith(remKey) || remKey.startsWith(it) }) return true
             if (nonNumericBaseKeys.any { it.startsWith(remKey) || remKey.startsWith(it) }) return true
+            val siblingPrefixNums = HashSet<Float>()
+            val sameSeasonKind = "|${cand.remainderParsed.kind.name}|${cand.remainderParsed.effectiveSeason}"
+            for ((gKey, nums) in siblingCounts) {
+                if (!gKey.endsWith(sameSeasonKind)) continue
+                val otherBase = gKey.substringBefore('|')
+                if (otherBase.length >= 14 && (otherBase.startsWith(remKey) || remKey.startsWith(otherBase))) {
+                    siblingPrefixNums.addAll(nums)
+                    if (siblingPrefixNums.size >= 2) return true
+                }
+            }
         }
         return false
     }
@@ -913,7 +973,7 @@ object TelegramAnimeParser {
                 val exParsed = existing.videos.first().parsed
                 exParsed.kind == parsed.kind &&
                     exParsed.effectiveSeason == parsed.effectiveSeason &&
-                    isTruncatedVariant(bKey, parsed.seriesTitle, exParsed.baseKey)
+                    isTruncatedVariant(bKey, parsed.seriesTitle, exParsed.baseKey, exParsed.seriesTitle)
             }
             if (target != null) {
                 target.videos.addAll(items)
@@ -930,16 +990,34 @@ object TelegramAnimeParser {
         return groups
     }
 
-    private fun isTruncatedVariant(shorterKey: String, shorterTitle: String, longerKey: String): Boolean {
+    @Suppress("ReturnCount")
+    private fun isTruncatedVariant(
+        shorterKey: String,
+        shorterTitle: String,
+        longerKey: String,
+        longerTitle: String = "",
+    ): Boolean {
         if (shorterKey == longerKey) return true
-        val looksTruncated = shorterKey.length >= 24 || shorterTitle.endsWith("...") || shorterTitle.endsWith("…")
-        if (!looksTruncated || shorterKey.length < 12) return false
-        if (!longerKey.startsWith(shorterKey)) return false
+        if (shorterKey.length < 12 || !longerKey.startsWith(shorterKey)) return false
         val suffix = longerKey.removePrefix(shorterKey)
-        return suffix.isNotEmpty() && suffix !in SEQUEL_ONLY_SUFFIXES
+        if (suffix.isEmpty() || suffix in SEQUEL_ONLY_SUFFIXES || SEQUEL_TAIL_REGEX.matches(suffix)) {
+            return false
+        }
+        if (shorterKey.length >= 22 || shorterTitle.endsWith("...") || shorterTitle.endsWith("…")) {
+            return true
+        }
+        val shorterLastWord = NON_ALNUM_OR_SPACE_REGEX.replace(shorterTitle.lowercase(Locale.US), " ")
+            .trim().substringAfterLast(' ')
+        if (shorterLastWord in TITLE_STOPWORDS) return true
+        if (longerTitle.isNotBlank() && shorterLastWord.length in 1..6) {
+            val longerWords = NON_ALNUM_OR_SPACE_REGEX.replace(longerTitle.lowercase(Locale.US), " ")
+                .trim().split(MULTI_SPACE_REGEX)
+            if (shorterLastWord !in longerWords) return true
+        }
+        return false
     }
 
-    @Suppress("ReturnCount")
+    @Suppress("CyclomaticComplexMethod", "ReturnCount")
     private fun findBestTitledPoster(
         target: ParsedMedia,
         targetTokens: Set<String>,
@@ -956,32 +1034,43 @@ object TelegramAnimeParser {
             if (imgParsed.kind != target.kind) continue
             if (imgParsed.rawSeason != 0 && imgParsed.effectiveSeason != target.effectiveSeason) continue
 
-            val minLen = min(target.baseKey.length, imgParsed.baseKey.length)
-            val isPrefixMatch = target.baseKey.startsWith(imgParsed.baseKey) ||
-                imgParsed.baseKey.startsWith(target.baseKey)
-            if (minLen >= 10 && isPrefixMatch) {
-                val longer = if (target.baseKey.length >= imgParsed.baseKey.length) target.baseKey else imgParsed.baseKey
-                val shorter = if (target.baseKey.length < imgParsed.baseKey.length) target.baseKey else imgParsed.baseKey
-                val suffix = longer.removePrefix(shorter)
-                if (suffix !in SEQUEL_ONLY_SUFFIXES) {
-                    if (bestPrefix == null) bestPrefix = wi
-                    continue
+            val candidateKeys = listOf(imgParsed.baseKey) + imgParsed.altKeys
+            var prefixHit = false
+            for (imgKey in candidateKeys) {
+                val minLen = min(target.baseKey.length, imgKey.length)
+                val isPrefix = target.baseKey.startsWith(imgKey) || imgKey.startsWith(target.baseKey)
+                if (minLen >= 10 && isPrefix) {
+                    val longer = if (target.baseKey.length >= imgKey.length) target.baseKey else imgKey
+                    val shorter = if (target.baseKey.length < imgKey.length) target.baseKey else imgKey
+                    val suffix = longer.removePrefix(shorter)
+                    if (suffix !in SEQUEL_ONLY_SUFFIXES && !SEQUEL_TAIL_REGEX.matches(suffix)) {
+                        prefixHit = true
+                        break
+                    }
                 }
             }
+            if (prefixHit) {
+                if (bestPrefix == null) bestPrefix = wi
+                continue
+            }
 
-            if (targetTokens.size >= 3 && wi.tokens.size >= 3) {
+            if (targetTokens.size >= 2 && wi.tokens.size >= 2) {
                 var shared = 0
                 for (tok in targetTokens) {
                     if (tok in wi.tokens) shared++
                 }
-                if (shared >= 3) {
-                    val maxContainment = shared.toDouble() / min(targetTokens.size, wi.tokens.size).toDouble()
-                    val jaccard = shared.toDouble() / (targetTokens.size + wi.tokens.size - shared).toDouble()
-                    val score = if (maxContainment >= 0.9 && jaccard >= 0.65) maxContainment else jaccard
-                    if (score >= 0.78 && score > bestScore) {
-                        bestScore = score
-                        bestOverlap = wi
-                    }
+                val minTokens = min(targetTokens.size, wi.tokens.size)
+                val maxContainment = shared.toDouble() / minTokens.toDouble()
+                val jaccard = shared.toDouble() / (targetTokens.size + wi.tokens.size - shared).toDouble()
+                val enoughShared = shared >= 3 || (shared >= 2 && minTokens == 2 && maxContainment >= 0.99)
+                val score = if (maxContainment >= 0.9 && (jaccard >= 0.55 || shared >= 4)) {
+                    maxContainment
+                } else {
+                    jaccard
+                }
+                if (enoughShared && score >= 0.72 && score > bestScore) {
+                    bestScore = score
+                    bestOverlap = wi
                 }
             }
         }
@@ -1019,14 +1108,94 @@ object TelegramAnimeParser {
         return lo
     }
 
-    private fun chooseBestSeriesTitle(videoTitle: String, posterTitle: String?): String {
+    fun chooseBestSeriesTitle(videoTitle: String, posterTitle: String?): String {
         if (posterTitle.isNullOrBlank()) return videoTitle
         val cleanVideoKey = NON_ALNUM_REGEX.replace(videoTitle.lowercase(Locale.US), "")
         val cleanPosterKey = NON_ALNUM_REGEX.replace(posterTitle.lowercase(Locale.US), "")
         if (cleanPosterKey.length > cleanVideoKey.length && cleanPosterKey.startsWith(cleanVideoKey)) {
             return posterTitle
         }
+        val videoTokens = significantTokens(videoTitle)
+        val posterTokens = significantTokens(posterTitle)
+        if (videoTitle.endsWith("...") || videoTitle.endsWith("…")) {
+            val shared = videoTokens.count { it in posterTokens }
+            if (shared >= 2 && posterTokens.size > videoTokens.size) {
+                return posterTitle
+            }
+        }
         return videoTitle
+    }
+
+    fun formatSeriesDisplayTitle(seriesTitle: String, effectiveSeason: Int, kind: SeriesKind): String =
+        formatDisplayTitle(seriesTitle, effectiveSeason, kind)
+
+    @Suppress("CyclomaticComplexMethod")
+    fun buildPosterSearchChunks(seriesTitle: String): List<String> {
+        val noEllipsis = seriesTitle.trim().replace(Regex("""[.…]+$"""), "").trim()
+        val rawWords = noEllipsis.split(Regex("""[\s_]+|(?<=\w)/(?=\w)"""))
+            .map { it.replace(Regex("""^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$"""), "") }
+            .filter { it.isNotBlank() }
+        if (rawWords.isEmpty()) return emptyList()
+
+        // Drop a trailing truncated stub (e.g. "an" in "I Got a Cheat Skill in Another World an")
+        val words = if (rawWords.size >= 4 && rawWords.last().length <= 3 && rawWords.last().lowercase(Locale.US) in TITLE_STOPWORDS) {
+            rawWords.dropLast(1)
+        } else {
+            rawWords
+        }
+
+        val chunks = LinkedHashSet<String>()
+        // Chunk 1: Leading 3-4 words (<= 30 chars) - fast prefix hit on Telegram server search
+        val c1 = StringBuilder()
+        for (w in words.take(4)) {
+            if (c1.isNotEmpty() && c1.length + 1 + w.length > 30) break
+            if (c1.isNotEmpty()) c1.append(' ')
+            c1.append(w)
+        }
+        if (c1.isNotEmpty()) chunks += c1.toString()
+
+        // Chunk 2: Core middle/trailing 2-3 distinctive words (handles titles with different prefixes)
+        val sigWords = words.filter { it.length >= 3 && it.lowercase(Locale.US) !in TITLE_STOPWORDS }
+        if (sigWords.size >= 2) {
+            chunks += sigWords.take(3).joinToString(" ").take(30).trim()
+            if (sigWords.size >= 4) {
+                chunks += sigWords.drop(sigWords.size / 2).take(2).joinToString(" ")
+            }
+        }
+
+        // Chunk 3: Single rarest long distinctive word (>= 6 chars) as last resort
+        val rarest = sigWords
+            .filter { it.length >= 6 && !it.all { ch -> ch.isDigit() } }
+            .maxByOrNull { it.length }
+        if (rarest != null) chunks += rarest
+
+        return chunks.filter { it.length >= 3 }.take(4)
+    }
+
+    fun matchesSeriesPoster(
+        targetSeriesTitle: String,
+        targetGroupKey: String,
+        targetKind: SeriesKind,
+        targetSeason: Int,
+        image: Td.ChatImage,
+    ): ParsedMedia? {
+        val imgParsed = parseImage(image) ?: return null
+        if (imgParsed.baseKey.length < 3) return null
+        if (imgParsed.kind != targetKind) return null
+        if (imgParsed.rawSeason != 0 && imgParsed.effectiveSeason != targetSeason) return null
+
+        val targetParsed = parse(targetSeriesTitle, fallback = targetSeriesTitle).copy(
+            effectiveSeason = targetSeason,
+            kind = targetKind,
+            groupKey = targetGroupKey,
+        )
+        val wi = WorkImage(image, imgParsed, significantTokens(imgParsed.seriesTitle))
+        val targetTokens = significantTokens(targetSeriesTitle)
+        return if (findBestTitledPoster(targetParsed, targetTokens, listOf(wi)) != null) {
+            imgParsed
+        } else {
+            null
+        }
     }
 
     @Suppress("LongParameterList", "ReturnCount")

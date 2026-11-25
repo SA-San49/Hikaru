@@ -74,6 +74,7 @@ object Td {
         val thumbFileId: Int = 0,
         val width: Int = 0,
         val height: Int = 0,
+        val isAnimation: Boolean = false,
     )
 
     enum class SearchIn(val key: String) {
@@ -147,7 +148,16 @@ object Td {
     private const val THUMB_POLL_MS = 60L
     private const val DOWNLOAD_PRIORITY = 32
     private const val STREAM_EVICT_DELAY_MS = 6_000L
+    private const val POSTER_SEARCH_LIMIT = 20
+    private const val POSTER_CHUNKS_MAX = 4
+    private const val MIN_ANIMATION_BYTES = 256L * 1024
     const val AHEAD_BYTES: Long = 512L * 1024
+    private val IMAGE_EXTENSIONS = setOf(
+        ".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".avif", ".heic", ".tiff",
+    )
+    private val VIDEO_EXTENSIONS = setOf(
+        ".mp4", ".mkv", ".webm", ".avi", ".mov", ".m4v", ".ts", ".flv", ".wmv",
+    )
 
     @Volatile
     var available: Boolean = false
@@ -212,6 +222,7 @@ object Td {
     private val fileValues = ConcurrentHashMap<Int, TdApi.File>()
     private val fetchedFiles = ConcurrentHashMap<Int, TdApi.File>()
     private val downloadErrors = ConcurrentHashMap<Int, String>()
+    private val verifiedVideoFiles = ConcurrentHashMap<Int, String>()
     private val activeStreams = ConcurrentHashMap<Int, AtomicInteger>()
     private val streamedVideoFiles = Collections.newSetFromMap(ConcurrentHashMap<Int, Boolean>())
 
@@ -380,6 +391,7 @@ object Td {
         leftBehind.clear()
         fileValues.clear()
         fetchedFiles.clear()
+        verifiedVideoFiles.clear()
         _chats.value = emptyList()
         _me.value = ""
         _sentTo.value = ""
@@ -1127,60 +1139,117 @@ object Td {
         return null
     }
 
+    private fun isImageFileNameOrMime(fileName: String, mimeType: String): Boolean {
+        if (mimeType.startsWith("image/", ignoreCase = true)) return true
+        val lower = fileName.trim().lowercase(Locale.US)
+        return IMAGE_EXTENSIONS.any { lower.endsWith(it) }
+    }
+
+    private fun isPlayableDocument(fileName: String, mimeType: String): Boolean {
+        if (isImageFileNameOrMime(fileName, mimeType)) return false
+        if (mimeType.startsWith("video/", ignoreCase = true)) return true
+        val lower = fileName.trim().lowercase(Locale.US)
+        val isGenericMime = mimeType.isBlank() || mimeType.equals("application/octet-stream", ignoreCase = true)
+        return isGenericMime && VIDEO_EXTENSIONS.any { lower.endsWith(it) }
+    }
+
+    @Suppress("ReturnCount", "CyclomaticComplexMethod")
     private fun videoOf(chatId: Long, message: TdApi.Message): ChatVideo? =
         when (val c = message.content) {
-            is TdApi.MessageVideo -> ChatVideo(
-                chatId = chatId,
-                messageId = message.id,
-                fileId = c.video.video.id,
-                title = c.caption.text.ifBlank { c.video.fileName }.ifBlank { "Video" },
-                duration = c.video.duration,
-                date = message.date,
-                size = c.video.video.size,
-                thumb = minithumb(c.video.minithumbnail),
-                caption = c.caption.text,
-                fileName = c.video.fileName,
-                thumbFileId = c.video.thumbnail?.file?.id ?: 0,
-                width = c.video.width,
-                height = c.video.height,
-            )
-            is TdApi.MessageAnimation -> ChatVideo(
-                chatId = chatId,
-                messageId = message.id,
-                fileId = c.animation.animation.id,
-                title = c.caption.text.ifBlank { c.animation.fileName }.ifBlank { "Video" },
-                duration = c.animation.duration,
-                date = message.date,
-                size = c.animation.animation.size,
-                thumb = minithumb(c.animation.minithumbnail),
-                caption = c.caption.text,
-                fileName = c.animation.fileName,
-                thumbFileId = c.animation.thumbnail?.file?.id ?: 0,
-                width = c.animation.width,
-                height = c.animation.height,
-            )
+            is TdApi.MessageVideo -> {
+                val id = c.video.video.id
+                if (id == 0 || isImageFileNameOrMime(c.video.fileName, c.video.mimeType)) return null
+                verifiedVideoFiles[id] = c.video.mimeType.ifBlank { "video/mp4" }
+                ChatVideo(
+                    chatId = chatId,
+                    messageId = message.id,
+                    fileId = id,
+                    title = c.caption.text.ifBlank { c.video.fileName }.ifBlank { "Video" },
+                    duration = c.video.duration,
+                    date = message.date,
+                    size = c.video.video.size,
+                    thumb = minithumb(c.video.minithumbnail),
+                    caption = c.caption.text,
+                    fileName = c.video.fileName,
+                    thumbFileId = c.video.thumbnail?.file?.id ?: 0,
+                    width = c.video.width,
+                    height = c.video.height,
+                )
+            }
+            is TdApi.MessageAnimation -> {
+                val id = c.animation.animation.id
+                val animInvalid = id == 0 ||
+                    isImageFileNameOrMime(c.animation.fileName, c.animation.mimeType) ||
+                    (c.animation.duration <= 0 && c.animation.animation.size < MIN_ANIMATION_BYTES)
+                if (animInvalid) return null
+                verifiedVideoFiles[id] = c.animation.mimeType.ifBlank { "video/mp4" }
+                ChatVideo(
+                    chatId = chatId,
+                    messageId = message.id,
+                    fileId = id,
+                    title = c.caption.text.ifBlank { c.animation.fileName }.ifBlank { "Video" },
+                    duration = c.animation.duration,
+                    date = message.date,
+                    size = c.animation.animation.size,
+                    thumb = minithumb(c.animation.minithumbnail),
+                    caption = c.caption.text,
+                    fileName = c.animation.fileName,
+                    thumbFileId = c.animation.thumbnail?.file?.id ?: 0,
+                    width = c.animation.width,
+                    height = c.animation.height,
+                    isAnimation = true,
+                )
+            }
             is TdApi.MessageDocument -> {
                 val doc = c.document
-                if (doc.mimeType.startsWith("video/")) {
-                    ChatVideo(
-                        chatId = chatId,
-                        messageId = message.id,
-                        fileId = doc.document.id,
-                        title = c.caption.text.ifBlank { doc.fileName }.ifBlank { "Video" },
-                        duration = 0,
-                        date = message.date,
-                        size = doc.document.size,
-                        thumb = minithumb(doc.minithumbnail),
-                        caption = c.caption.text,
-                        fileName = doc.fileName,
-                        thumbFileId = doc.thumbnail?.file?.id ?: 0,
-                    )
-                } else {
-                    null
-                }
+                val id = doc.document.id
+                if (id == 0 || !isPlayableDocument(doc.fileName, doc.mimeType)) return null
+                verifiedVideoFiles[id] = doc.mimeType.ifBlank { "video/mp4" }
+                ChatVideo(
+                    chatId = chatId,
+                    messageId = message.id,
+                    fileId = id,
+                    title = c.caption.text.ifBlank { doc.fileName }.ifBlank { "Video" },
+                    duration = 0,
+                    date = message.date,
+                    size = doc.document.size,
+                    thumb = minithumb(doc.minithumbnail),
+                    caption = c.caption.text,
+                    fileName = doc.fileName,
+                    thumbFileId = doc.thumbnail?.file?.id ?: 0,
+                )
             }
             else -> null
         }
+
+    suspend fun searchPosterByChunks(
+        chatId: Long,
+        chunks: List<String>,
+        imageSink: MutableMap<Long, ChatImage>? = null,
+        matcher: (ChatImage) -> Boolean,
+    ): ChatImage? {
+        if (chatId == 0L || chunks.isEmpty() || !isSignedIn()) return null
+        for (chunk in chunks.take(POSTER_CHUNKS_MAX)) {
+            val found = query(
+                TdApi.SearchChatMessages(
+                    chatId,
+                    null,
+                    chunk,
+                    null,
+                    0L,
+                    0,
+                    POSTER_SEARCH_LIMIT,
+                    TdApi.SearchMessagesFilterPhoto(),
+                ),
+            ) as? TdApi.FoundChatMessages ?: continue
+            for (m in found.messages) {
+                val img = imageOf(chatId, m) ?: continue
+                imageSink?.put(img.messageId, img)
+                if (matcher(img)) return img
+            }
+        }
+        return null
+    }
 
     private fun textOf(message: TdApi.Message): String = when (val c = message.content) {
         is TdApi.MessageText -> c.text.text
@@ -1502,16 +1571,42 @@ object Td {
         (query(TdApi.GetFileDownloadedPrefixSize(fileId, offset)) as? TdApi.FileDownloadedPrefixSize)
             ?.size ?: -1L
 
+    fun isVerifiedVideoFile(fileId: Int): Boolean =
+        fileId != 0 && verifiedVideoFiles.containsKey(fileId)
+
+    fun markVerifiedVideo(fileId: Int, mime: String = "video/mp4") {
+        if (fileId != 0) verifiedVideoFiles.putIfAbsent(fileId, mime)
+    }
+
+    fun isImageFilePath(path: String): Boolean {
+        if (path.isBlank()) return false
+        val lower = path.lowercase(Locale.US)
+        if (lower.contains("/photos/") || lower.contains("/thumbnails/")) return true
+        return IMAGE_EXTENSIONS.any { lower.endsWith(it) }
+    }
+
+    fun videoMimeFor(fileId: Int, path: String): String {
+        val lower = path.lowercase(Locale.US)
+        return when {
+            lower.endsWith(".mkv") -> "video/x-matroska"
+            lower.endsWith(".webm") -> "video/webm"
+            else -> verifiedVideoFiles[fileId]?.takeIf { it.startsWith("video/", ignoreCase = true) } ?: "video/mp4"
+        }
+    }
+
+    suspend fun verifyVideoFile(fileId: Int, chatId: Long, messageId: Long): Int {
+        if (isVerifiedVideoFile(fileId)) return fileId
+        if (chatId != 0L && messageId != 0L) {
+            return touchMessage(chatId, messageId)
+        }
+        return fileId
+    }
+
     suspend fun touchMessage(chatId: Long, messageId: Long): Int {
         if (chatId == 0L || messageId == 0L) return 0
         val msg = query(TdApi.GetMessage(chatId, messageId)) as? TdApi.Message ?: return 0
-        val freshId = when (val c = msg.content) {
-            is TdApi.MessageVideo -> c.video.video.id
-            is TdApi.MessageAnimation -> c.animation.animation.id
-            is TdApi.MessageDocument ->
-                if (c.document.mimeType.startsWith("video/")) c.document.document.id else 0
-            else -> 0
-        }
+        val freshVideo = videoOf(chatId, msg) ?: return 0
+        val freshId = freshVideo.fileId
         if (freshId != 0) downloadErrors.remove(freshId)
         return freshId
     }

@@ -15,7 +15,7 @@ import kotlin.math.min
 object TdHttpServer {
 
     private const val PORT = 49731
-    private const val PRIME_BYTES = 256L * 1024
+    private const val PRIME_BYTES = 512L * 1024
     private const val WINDOW_BYTES = 2L * 1024 * 1024
     private const val ADVANCE_BYTES = 1L * 1024 * 1024
     private const val EXT_WINDOW_BYTES = 10L * 1024 * 1024
@@ -24,7 +24,9 @@ object TdHttpServer {
     private const val START_BUDGET_MS = 45_000L
     private const val GRACE_MS = 20_000L
     private const val POLL_MS = 25L
-    private const val SINGLE_BYTE_MASK = 0xff
+    private const val SINGLE_BYTE_MASK = 0xFF
+    private const val HEADER_SNIFF_BYTES = 12
+    private const val MIN_HEADER_SNIFF_BYTES = 3
 
     @Volatile
     private var server: LocalTdServer? = null
@@ -56,6 +58,26 @@ object TdHttpServer {
         return "http://127.0.0.1:$port/thumb?id=$fileId"
     }
 
+    @Suppress("MagicNumber", "ReturnCount")
+    private fun isImageMagicHeader(buf: ByteArray, off: Int, count: Int): Boolean {
+        if (count < MIN_HEADER_SNIFF_BYTES) return false
+        val b0 = buf[off].toInt() and SINGLE_BYTE_MASK
+        val b1 = buf[off + 1].toInt() and SINGLE_BYTE_MASK
+        val b2 = buf[off + 2].toInt() and SINGLE_BYTE_MASK
+        val isJpeg = b0 == 0xFF && b1 == 0xD8 && b2 == 0xFF
+        if (isJpeg || count < 4) return isJpeg
+        val b3 = buf[off + 3].toInt() and SINGLE_BYTE_MASK
+        val isPng = b0 == 0x89 && b1 == 0x50 && b2 == 0x4E && b3 == 0x47
+        val isGif = b0 == 0x47 && b1 == 0x49 && b2 == 0x46 && b3 == 0x38
+        val isRiff = b0 == 0x52 && b1 == 0x49 && b2 == 0x46 && b3 == 0x46
+        val hasWebpTag = count >= 12 &&
+            (buf[off + 8].toInt() and SINGLE_BYTE_MASK) == 0x57 &&
+            (buf[off + 9].toInt() and SINGLE_BYTE_MASK) == 0x45 &&
+            (buf[off + 10].toInt() and SINGLE_BYTE_MASK) == 0x42
+        val isWebp = hasWebpTag && isRiff && (buf[off + 11].toInt() and SINGLE_BYTE_MASK) == 0x50
+        return isPng || isGif || isWebp
+    }
+
     private class LocalTdServer : NanoHTTPD("127.0.0.1", PORT) {
 
         @Suppress("ReturnCount", "CyclomaticComplexMethod")
@@ -77,24 +99,35 @@ object TdHttpServer {
             }
 
             var activeId = fileId
-            var state = runBlocking { Td.stateOf(activeId) }
-            val needsRefresh = state == null || !state.canBeDownloaded || Td.downloadError(activeId) != null
+            if (!Td.isVerifiedVideoFile(activeId) && chatId != 0L && messageId != 0L) {
+                val verifiedId = runBlocking { Td.verifyVideoFile(activeId, chatId, messageId) }
+                if (verifiedId == 0) {
+                    return newFixedLengthResponse(Response.Status.NOT_FOUND, "text/plain", "Not a video message")
+                }
+                activeId = verifiedId
+            }
+
+            var state = Td.fileState(activeId) ?: runBlocking { Td.stateOf(activeId) }
+            val imagePath = state?.path.orEmpty().let { Td.isImageFilePath(it) }
+            val needsRefresh = state == null || !state.canBeDownloaded || Td.downloadError(activeId) != null || imagePath
             if (needsRefresh && chatId != 0L && messageId != 0L) {
                 Td.clearDownloadError(activeId)
                 val refreshed = runBlocking { Td.touchMessage(chatId, messageId) }
-                if (refreshed != 0) {
-                    activeId = refreshed
-                    Td.clearDownloadError(activeId)
-                    state = runBlocking { Td.stateOf(activeId) }
+                if (refreshed == 0) {
+                    return newFixedLengthResponse(Response.Status.NOT_FOUND, "text/plain", "Telegram video unavailable")
                 }
+                activeId = refreshed
+                Td.clearDownloadError(activeId)
+                state = Td.fileState(activeId) ?: runBlocking { Td.stateOf(activeId) }
             }
-            if (state == null || state.size <= 0L) {
+            if (state == null || state.size <= 0L || Td.isImageFilePath(state.path)) {
                 return newFixedLengthResponse(
                     Response.Status.NOT_FOUND,
                     "text/plain",
                     "Telegram file unavailable",
                 )
             }
+            val mime = Td.videoMimeFor(activeId, state.path)
             val totalSize = state.size
             val rangeHeader = session.headers["range"]
             if (rangeHeader != null && rangeHeader.startsWith("bytes=", ignoreCase = true)) {
@@ -124,7 +157,7 @@ object TdHttpServer {
                 } else {
                     TdRangeInputStream(activeId, chatId, messageId, start, len, totalSize, windowBytes, advanceBytes)
                 }
-                val resp = newFixedLengthResponse(Response.Status.PARTIAL_CONTENT, "video/mp4", stream, len)
+                val resp = newFixedLengthResponse(Response.Status.PARTIAL_CONTENT, mime, stream, len)
                 resp.addHeader("Accept-Ranges", "bytes")
                 resp.addHeader("Content-Range", "bytes $start-$end/$totalSize")
                 return resp
@@ -135,7 +168,7 @@ object TdHttpServer {
             } else {
                 TdRangeInputStream(activeId, chatId, messageId, 0L, totalSize, totalSize, windowBytes, advanceBytes)
             }
-            val resp = newFixedLengthResponse(Response.Status.OK, "video/mp4", stream, totalSize)
+            val resp = newFixedLengthResponse(Response.Status.OK, mime, stream, totalSize)
             resp.addHeader("Accept-Ranges", "bytes")
             return resp
         }
@@ -194,6 +227,8 @@ object TdHttpServer {
         private var pos: Long = startOffset
         private var remaining: Long = length
         private var requestedFrom: Long = -1L
+        private var knownAvailableUntil: Long = 0L
+        private var headerChecked: Boolean = startOffset != 0L
         private var raf: RandomAccessFile? = null
         private var rafPath: String = ""
         private var repaired: Boolean = false
@@ -202,9 +237,18 @@ object TdHttpServer {
 
         init {
             Td.onStreamOpened(fileId)
-            val window = computeWindow(startOffset)
-            Td.request(fileId, startOffset, window)
+            val initWindow = computeInitialWindow(startOffset)
+            Td.request(fileId, startOffset, initWindow)
             requestedFrom = startOffset
+        }
+
+        private fun computeInitialWindow(offset: Long): Long {
+            val left = (totalSize - offset).coerceAtLeast(1L)
+            return if (left <= TAIL_THRESHOLD_BYTES) {
+                left
+            } else {
+                min(PRIME_BYTES, left)
+            }
         }
 
         private fun computeWindow(offset: Long): Long {
@@ -226,19 +270,28 @@ object TdHttpServer {
             if (len == 0) return 0
             if (remaining <= 0L || pos >= totalSize) return -1
             val want = min(len.toLong(), remaining).toInt()
-            var state = waitForBytes(pos)
-            var file = openRaf(state.path)
-            var available = availableAt(state, pos)
-            if (available <= 0L) {
-                state = waitForBytes(pos)
+            var available = knownAvailableUntil - pos
+            var file = raf
+            if (available <= 0L || file == null) {
+                val (state, readyAvail) = waitForBytes(pos)
                 file = openRaf(state.path)
-                available = availableAt(state, pos)
+                available = readyAvail
+                knownAvailableUntil = pos + available
             }
             if (available <= 0L) return -1
             val toRead = min(want.toLong(), available).toInt()
             file.seek(pos)
             val readCount = file.read(b, off, toRead)
-            if (readCount <= 0) return -1
+            if (readCount <= 0) {
+                knownAvailableUntil = 0L
+                return -1
+            }
+            if (!headerChecked && pos == 0L && readCount >= MIN_HEADER_SNIFF_BYTES) {
+                headerChecked = true
+                if (isImageMagicHeader(b, off, min(readCount, HEADER_SNIFF_BYTES))) {
+                    throw IOException("Rejected non-video image payload from Telegram stream")
+                }
+            }
             pos += readCount
             remaining -= readCount
             maybeAdvanceWindow()
@@ -247,7 +300,8 @@ object TdHttpServer {
 
         private fun maybeAdvanceWindow() {
             if (remaining <= 0L || pos >= totalSize) return
-            if (pos >= requestedFrom + advanceBytes) {
+            val threshold = if (requestedFrom == 0L) PRIME_BYTES / 2L else advanceBytes
+            if (pos >= requestedFrom + threshold) {
                 val window = computeWindow(pos)
                 Td.request(fileId, pos, window)
                 requestedFrom = pos
@@ -255,24 +309,28 @@ object TdHttpServer {
         }
 
         @Suppress("ReturnCount", "CyclomaticComplexMethod")
-        private fun waitForBytes(offset: Long): Td.FileState {
+        private fun waitForBytes(offset: Long): Pair<Td.FileState, Long> {
             val budget = if (offset == 0L) START_BUDGET_MS else GRACE_MS
             val deadline = System.currentTimeMillis() + budget
             var asked = false
             while (true) {
                 val revBefore = Td.revision.value
-                var state = Td.fileState(fileId) ?: runBlocking { Td.stateOf(fileId) }
-                if (state != null && availableAt(state, offset) > 0L && state.path.isNotBlank()) {
-                    return state
+                val state = Td.fileState(fileId) ?: runBlocking { Td.stateOf(fileId) }
+                if (state != null && state.path.isNotBlank() && !Td.isImageFilePath(state.path)) {
+                    val avail = availableAt(state, offset)
+                    if (avail > 0L) {
+                        return state to avail
+                    }
                 }
                 val err = Td.downloadError(fileId)
-                if ((err != null || state?.canBeDownloaded == false) && !repaired && chatId != 0L && messageId != 0L) {
+                val staleOrErr = err != null || state?.canBeDownloaded == false
+                if (staleOrErr && !repaired && chatId != 0L && messageId != 0L) {
                     repaired = true
                     Td.clearDownloadError(fileId)
                     val freshId = runBlocking { Td.touchMessage(chatId, messageId) }
                     if (freshId != 0) {
                         fileId = freshId
-                        val window = computeWindow(offset)
+                        val window = computeInitialWindow(offset)
                         Td.request(fileId, offset, window)
                         requestedFrom = offset
                         asked = true
@@ -283,7 +341,7 @@ object TdHttpServer {
                     throw IOException("Telegram download failed: $err")
                 }
                 if (!asked) {
-                    val window = computeWindow(offset)
+                    val window = computeInitialWindow(offset)
                     Td.request(fileId, offset, window)
                     requestedFrom = offset
                     asked = true
@@ -295,10 +353,6 @@ object TdHttpServer {
                     throw IOException("Timed out waiting for Telegram stream")
                 }
                 runBlocking { Td.awaitUpdate(revBefore, POLL_MS) }
-                state = Td.fileState(fileId)
-                if (state != null && state.complete && state.path.isNotBlank()) {
-                    return state
-                }
             }
         }
 

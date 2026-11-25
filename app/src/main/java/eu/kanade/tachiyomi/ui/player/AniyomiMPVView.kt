@@ -281,6 +281,7 @@ class AniyomiMPVView(context: Context, attributes: AttributeSet) : BaseMPVView(c
         MPVLib.setOptionString("input-default-bindings", "yes")
         MPVLib.setOptionString("keep-open", "yes")
         MPVLib.setOptionString("ytdl", "no")
+        MPVLib.setOptionString("audio-display", "no")
         MPVLib.setOptionString("cookies", "yes")
         MPVLib.setOptionString("cache", "yes")
         MPVLib.setOptionString("demuxer-thread", "yes")
