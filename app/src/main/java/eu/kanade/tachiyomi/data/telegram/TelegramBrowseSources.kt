@@ -67,7 +67,7 @@ object TelegramBrowseSources {
             .map { it.trim() }
             .filter { it.isNotEmpty() }
             .mapNotNull { line ->
-                val parts = line.split("	")
+                val parts = line.split("\t")
                 if (parts.size < 4) return@mapNotNull null
                 val key = parts[0]
                 val chatId = parts[1].toLongOrNull() ?: 0L
@@ -91,10 +91,8 @@ object TelegramBrowseSources {
 
     fun encode(entries: List<Entry>): String =
         entries.distinctBy { it.key }
-            .joinToString("
-") { e ->
-                val cleanTitle = e.title.replace("	", " ").replace("
-", " ").trim()
+            .joinToString("\n") { e ->
+                val cleanTitle = e.title.replace("\t", " ").replace("\n", " ").trim()
                 listOf(
                     e.key,
                     e.chatId.toString(),
@@ -103,7 +101,7 @@ object TelegramBrowseSources {
                     e.kind,
                     e.photoFileId.toString(),
                     e.avatarPath,
-                ).joinToString("	")
+                ).joinToString("\t")
             }
 
     fun containsChat(raw: String, chatId: Long): Boolean =
