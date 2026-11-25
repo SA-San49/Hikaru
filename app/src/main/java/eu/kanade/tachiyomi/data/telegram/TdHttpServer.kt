@@ -4,6 +4,7 @@ import fi.iki.elonen.NanoHTTPD
 import kotlinx.coroutines.runBlocking
 import logcat.LogPriority
 import tachiyomi.core.common.util.system.logcat
+import java.io.ByteArrayInputStream
 import java.io.File
 import java.io.FileInputStream
 import java.io.IOException
@@ -77,10 +78,13 @@ object TdHttpServer {
 
             var activeId = fileId
             var state = runBlocking { Td.stateOf(activeId) }
-            if ((state == null || !state.canBeDownloaded) && chatId != 0L && messageId != 0L) {
+            val needsRefresh = state == null || !state.canBeDownloaded || Td.downloadError(activeId) != null
+            if (needsRefresh && chatId != 0L && messageId != 0L) {
+                Td.clearDownloadError(activeId)
                 val refreshed = runBlocking { Td.touchMessage(chatId, messageId) }
                 if (refreshed != 0) {
                     activeId = refreshed
+                    Td.clearDownloadError(activeId)
                     state = runBlocking { Td.stateOf(activeId) }
                 }
             }
@@ -116,7 +120,7 @@ object TdHttpServer {
                 }
                 val len = end - start + 1L
                 val stream: InputStream = if (session.method == Method.HEAD) {
-                    InputStream.nullInputStream()
+                    ByteArrayInputStream(ByteArray(0))
                 } else {
                     TdRangeInputStream(activeId, chatId, messageId, start, len, totalSize, windowBytes, advanceBytes)
                 }
@@ -127,7 +131,7 @@ object TdHttpServer {
             }
 
             val stream: InputStream = if (session.method == Method.HEAD) {
-                InputStream.nullInputStream()
+                ByteArrayInputStream(ByteArray(0))
             } else {
                 TdRangeInputStream(activeId, chatId, messageId, 0L, totalSize, totalSize, windowBytes, advanceBytes)
             }
@@ -151,10 +155,15 @@ object TdHttpServer {
             if (!file.exists() || file.length() <= 0L) {
                 return newFixedLengthResponse(Response.Status.NOT_FOUND, "text/plain", "Thumb missing")
             }
+            val thumbStream: InputStream = if (session.method == Method.HEAD) {
+                ByteArrayInputStream(ByteArray(0))
+            } else {
+                FileInputStream(file)
+            }
             return newFixedLengthResponse(
                 Response.Status.OK,
                 "image/jpeg",
-                FileInputStream(file),
+                thumbStream,
                 file.length(),
             )
         }

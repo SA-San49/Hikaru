@@ -116,7 +116,12 @@ class TelegramCatalogueSource(
                 )
                 grouped.forEach { group ->
                     seriesCache[group.groupKey] = group
-                    if (seenSeriesKeys.add(group.groupKey)) {
+                    group.aliasKeys.forEach { ak -> seriesCache[ak] = group }
+                    val alreadySeen = group.groupKey in seenSeriesKeys ||
+                        group.aliasKeys.any { it in seenSeriesKeys }
+                    seenSeriesKeys.add(group.groupKey)
+                    seenSeriesKeys.addAll(group.aliasKeys)
+                    if (!alreadySeen) {
                         newItems += seriesToSAnime(chatId, group)
                     }
                 }
@@ -213,15 +218,21 @@ class TelegramCatalogueSource(
             val chatId = uri.getQueryParameter("chat")?.toLongOrNull() ?: resolveChatId()
             val groupKey = uri.getQueryParameter("key").orEmpty()
             val seriesTitle = uri.getQueryParameter("title").orEmpty().ifBlank { anime.title }
-            val merged = LinkedHashMap<Long, Td.ChatVideo>()
+            val targetSeason = uri.getQueryParameter("season")?.toIntOrNull() ?: 1
+            val targetKind = uri.getQueryParameter("kind")?.let { k ->
+                TelegramAnimeParser.SeriesKind.entries.firstOrNull { it.name == k }
+            } ?: TelegramAnimeParser.SeriesKind.MAIN
+            val merged = LinkedHashMap<Long, TelegramAnimeParser.ParsedVideo>()
 
-            seriesCache[groupKey]?.videos?.forEach { pv ->
-                merged[pv.video.messageId] = pv.video
+            var cachedSeries = seriesCache[groupKey]
+            cachedSeries?.videos?.forEach { pv ->
+                merged[pv.video.messageId] = pv
             }
+            val coldStart = merged.isEmpty()
 
             if (chatId != 0L && Td.ensureReady(appContext)) {
                 Td.ensureChatLoaded(chatId)
-                if (merged.isEmpty()) {
+                if (coldStart) {
                     val batch = Td.chatCatalogueBatch(
                         chatId = chatId,
                         before = 0L,
@@ -234,35 +245,88 @@ class TelegramCatalogueSource(
                         images = collectedImages.values.toList(),
                     )
                     grouped.forEach { seriesCache[it.groupKey] = it }
-                    seriesCache[groupKey]?.videos?.forEach { pv ->
-                        merged[pv.video.messageId] = pv.video
+                    cachedSeries = seriesCache[groupKey]
+                        ?: grouped.firstOrNull { groupKey in it.aliasKeys }
+                    cachedSeries?.videos?.forEach { pv ->
+                        merged[pv.video.messageId] = pv
                     }
                 }
-                if (seriesTitle.isNotBlank()) {
-                    val searched = Td.searchChatVideos(
+
+                val aliases = cachedSeries?.aliasKeys ?: emptySet()
+                val searchText = TelegramAnimeParser.buildSearchQuery(seriesTitle)
+                if (searchText.isNotBlank()) {
+                    val fastHits = Td.searchChatVideos(
                         chatId = chatId,
-                        text = seriesTitle,
-                        inText = Td.SearchIn.BOTH,
+                        text = searchText,
+                        inText = Td.SearchIn.CHAT,
                         cursor = 0L,
                         limit = EPISODE_SEARCH_LIMIT,
                     )
-                    for (v in searched.videos) {
-                        val parsed = TelegramAnimeParser.parseVideo(v)
-                        if (parsed.groupKey == groupKey) {
-                            merged.putIfAbsent(v.messageId, v)
-                        }
+                    for (v in fastHits.videos) {
+                        if (merged.containsKey(v.messageId)) continue
+                        TelegramAnimeParser.matchesSeriesVideo(
+                            video = v,
+                            targetGroupKey = groupKey,
+                            targetSeriesTitle = seriesTitle,
+                            targetKind = targetKind,
+                            targetSeason = targetSeason,
+                            aliasKeys = aliases,
+                        )?.let { merged[v.messageId] = it }
+                    }
+                }
+
+                val minEp = merged.values.mapNotNull { it.parsed.episodeNumber }.minOrNull()
+                val tailCursor = pageCursors[pageCursors.keys.maxOrNull() ?: 2] ?: 0L
+                val missingEarly = minEp != null && minEp > 1f && tailCursor != 0L
+                if (missingEarly) {
+                    val extraBatch = Td.chatCatalogueBatch(
+                        chatId = chatId,
+                        before = tailCursor,
+                        targetMessages = BACKFILL_SCAN_MESSAGES,
+                    )
+                    extraBatch.videos.forEach { collectedVideos[it.messageId] = it }
+                    extraBatch.images.forEach { collectedImages[it.messageId] = it }
+                    for (v in extraBatch.videos) {
+                        if (merged.containsKey(v.messageId)) continue
+                        TelegramAnimeParser.matchesSeriesVideo(
+                            video = v,
+                            targetGroupKey = groupKey,
+                            targetSeriesTitle = seriesTitle,
+                            targetKind = targetKind,
+                            targetSeason = targetSeason,
+                            aliasKeys = aliases,
+                        )?.let { merged[v.messageId] = it }
+                    }
+                }
+
+                if (coldStart && merged.isEmpty() && searchText.isNotBlank()) {
+                    val fallbackHits = Td.searchChatVideos(
+                        chatId = chatId,
+                        text = searchText,
+                        inText = Td.SearchIn.VIDEO,
+                        cursor = 0L,
+                        limit = EPISODE_SEARCH_LIMIT,
+                    )
+                    for (v in fallbackHits.videos) {
+                        if (merged.containsKey(v.messageId)) continue
+                        TelegramAnimeParser.matchesSeriesVideo(
+                            video = v,
+                            targetGroupKey = groupKey,
+                            targetSeriesTitle = seriesTitle,
+                            targetKind = targetKind,
+                            targetSeason = targetSeason,
+                            aliasKeys = aliases,
+                        )?.let { merged[v.messageId] = it }
                     }
                 }
             }
 
-            val parsedList = merged.values
-                .map { v -> TelegramAnimeParser.ParsedVideo(v, TelegramAnimeParser.parseVideo(v)) }
-                .sortedWith(
-                    compareBy<TelegramAnimeParser.ParsedVideo>(
-                        { it.parsed.episodeNumber ?: Float.MAX_VALUE },
-                        { it.video.messageId },
-                    ),
-                )
+            val parsedList = merged.values.sortedWith(
+                compareBy<TelegramAnimeParser.ParsedVideo>(
+                    { it.parsed.episodeNumber ?: Float.MAX_VALUE },
+                    { it.video.messageId },
+                ),
+            )
 
             return parsedList.mapIndexed { idx, pv ->
                 val v = pv.video
@@ -278,7 +342,7 @@ class TelegramCatalogueSource(
                     if (v.size > 0L) add(formatBytes(v.size))
                 }
                 SEpisode.create().apply {
-                    url = buildTdItemUrl(v)
+                    url = buildTdItemUrl(v, parsed)
                     name = parsed.episodeLabel
                     episode_number = epNum
                     date_upload = v.date.toLong() * 1000L
@@ -373,8 +437,13 @@ class TelegramCatalogueSource(
         var fileId = uri.getQueryParameter("file")?.toIntOrNull() ?: 0
         val width = uri.getQueryParameter("w")?.toIntOrNull() ?: 0
         val height = uri.getQueryParameter("h")?.toIntOrNull() ?: 0
-        if (fileId == 0 && chatId != 0L && msgId != 0L) {
-            fileId = Td.touchMessage(chatId, msgId)
+        val staleFile = fileId == 0 ||
+            Td.downloadError(fileId) != null ||
+            Td.stateOf(fileId)?.canBeDownloaded != true
+        if (staleFile && chatId != 0L && msgId != 0L) {
+            Td.clearDownloadError(fileId)
+            val refreshed = Td.touchMessage(chatId, msgId)
+            if (refreshed != 0) fileId = refreshed
         }
         if (fileId != 0) {
             Td.prewarm(fileId)
@@ -465,8 +534,11 @@ class TelegramCatalogueSource(
         }
     }
 
-    private fun buildTdItemUrl(v: Td.ChatVideo): String {
-        val parsed = TelegramAnimeParser.parseVideo(v)
+    private fun buildTdItemUrl(
+        v: Td.ChatVideo,
+        preParsed: TelegramAnimeParser.ParsedMedia? = null,
+    ): String {
+        val parsed = preParsed ?: TelegramAnimeParser.parseVideo(v)
         return "/tg/item?mode=td" +
             "&chat=${v.chatId}" +
             "&msg=${v.messageId}" +
@@ -531,6 +603,7 @@ class TelegramCatalogueSource(
     companion object {
         private const val PAGE_LIMIT = 40
         private const val CATALOGUE_SCAN_MESSAGES = 250
+        private const val BACKFILL_SCAN_MESSAGES = 120
         private const val MAX_SCAN_ROUNDS = 3
         private const val EPISODE_SEARCH_LIMIT = 100
         private const val PREF_PREFERRED_QUALITY = "preferred_quality"

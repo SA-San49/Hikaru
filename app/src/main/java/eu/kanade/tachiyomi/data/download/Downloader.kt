@@ -153,6 +153,7 @@ class Downloader(
     }
 
     private fun calculateDynamicConcurrency(host: String): Int {
+        if (host == "127.0.0.1" || host == "localhost") return 1
         if (host.contains("animepahe") || host.contains("sibnet") || host.contains("video.sibnet")) return 1 // Adaptive: Hosters failing with multi-threading
         
         val userThreads = preferences.downloadThreads().get().coerceAtLeast(1)

@@ -963,20 +963,29 @@ object Td {
         var note: String? = null
 
         if (before == 0L) {
-            val photoHits = query(
-                TdApi.SearchChatMessages(
-                    chatId,
-                    null,
-                    "",
-                    null,
-                    0L,
-                    0,
-                    SEARCH_HITS_PER_CALL,
-                    TdApi.SearchMessagesFilterPhoto(),
-                ),
-            ) as? TdApi.FoundChatMessages
-            photoHits?.messages?.forEach { m ->
-                imageOf(chatId, m)?.let { images.putIfAbsent(it.messageId, it) }
+            var photoCursor = 0L
+            for (pageIdx in 0 until 2) {
+                val photoHits = query(
+                    TdApi.SearchChatMessages(
+                        chatId,
+                        null,
+                        "",
+                        null,
+                        photoCursor,
+                        0,
+                        SEARCH_HITS_PER_CALL,
+                        TdApi.SearchMessagesFilterPhoto(),
+                    ),
+                ) as? TdApi.FoundChatMessages ?: break
+                val batchMsgs = photoHits.messages
+                if (batchMsgs.isEmpty()) break
+                var oldestId = Long.MAX_VALUE
+                for (m in batchMsgs) {
+                    if (m.id < oldestId) oldestId = m.id
+                    imageOf(chatId, m)?.let { images.putIfAbsent(it.messageId, it) }
+                }
+                if (oldestId == Long.MAX_VALUE || (photoCursor != 0L && oldestId >= photoCursor)) break
+                photoCursor = oldestId
             }
         }
 
@@ -1496,13 +1505,15 @@ object Td {
     suspend fun touchMessage(chatId: Long, messageId: Long): Int {
         if (chatId == 0L || messageId == 0L) return 0
         val msg = query(TdApi.GetMessage(chatId, messageId)) as? TdApi.Message ?: return 0
-        return when (val c = msg.content) {
+        val freshId = when (val c = msg.content) {
             is TdApi.MessageVideo -> c.video.video.id
             is TdApi.MessageAnimation -> c.animation.animation.id
             is TdApi.MessageDocument ->
                 if (c.document.mimeType.startsWith("video/")) c.document.document.id else 0
             else -> 0
         }
+        if (freshId != 0) downloadErrors.remove(freshId)
+        return freshId
     }
 
     fun cacheSizeBytes(context: Context): Long {
