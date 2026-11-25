@@ -280,7 +280,12 @@ private fun TelegramConnectorRow(
         }
         Spacer(modifier = Modifier.width(8.dp))
         if (isSignedIn) {
-            ExpressiveStatusPill(text = "CONNECTED", accentColor = accentColor)
+            ExpressiveStatusPill(
+                text = "CONNECTED",
+                containerColor = accentColor.copy(alpha = 0.2f),
+                contentColor = accentColor,
+                borderColor = accentColor.copy(alpha = 0.45f),
+            )
             Spacer(modifier = Modifier.width(8.dp))
         }
         Surface(
