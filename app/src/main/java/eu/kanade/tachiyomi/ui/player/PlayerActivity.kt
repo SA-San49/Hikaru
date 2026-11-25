@@ -76,6 +76,8 @@ import eu.kanade.tachiyomi.data.connections.discord.DiscordRPCService
 import eu.kanade.tachiyomi.data.connections.discord.PlayerData
 import eu.kanade.tachiyomi.data.notification.NotificationReceiver
 import eu.kanade.tachiyomi.data.notification.Notifications
+import eu.kanade.tachiyomi.data.telegram.Td
+import eu.kanade.tachiyomi.data.telegram.TelegramCatalogueSource
 import eu.kanade.tachiyomi.data.torrentServer.service.TorrentServerService
 import eu.kanade.tachiyomi.databinding.PlayerLayoutBinding
 import eu.kanade.tachiyomi.network.NetworkHelper
@@ -107,6 +109,7 @@ import kotlinx.coroutines.runBlocking
 import logcat.LogPriority
 import tachiyomi.domain.anime.model.asAnimeCover
 import tachiyomi.core.common.i18n.stringResource
+import kotlinx.coroutines.delay
 import tachiyomi.core.common.util.lang.launchIO
 import tachiyomi.core.common.util.lang.launchNonCancellable
 import tachiyomi.core.common.util.lang.launchUI
@@ -199,6 +202,10 @@ class PlayerActivity : BaseActivity() {
         private const val EXTRA_DIRECT_HEIGHT = "directHeight"
         private const val TG_DEMUXER_MAX_BYTES = 6 * 1024 * 1024
         private const val TG_DEMUXER_BACK_BYTES = 2 * 1024 * 1024
+        private const val TG_EXT_DEMUXER_MAX_BYTES = 10 * 1024 * 1024
+        private const val TG_EXT_DEMUXER_BACK_BYTES = 4 * 1024 * 1024
+        private const val TG_PROBE_ATTEMPTS = 15
+        private const val TG_PROBE_DELAY_MS = 200L
 
         fun newIntent(
             context: Context,
@@ -265,14 +272,15 @@ class PlayerActivity : BaseActivity() {
             }
         }
         val builtHeaders = headersBuilder.build()
-        val qualityVideos = eu.kanade.tachiyomi.data.telegram.Td.buildQualityVideos(
+        val qualityVideos = Td.buildQualityVideos(
             baseUrl = directUrl,
             width = directWidth,
             height = directHeight,
             headers = builtHeaders,
+            displayShortSide = Td.displayShortSide(this),
         )
         viewModel.initDirectVideo(directTitle, directSource, qualityVideos)
-        setVideo(qualityVideos.first(), 0L)
+        setVideo(qualityVideos.firstOrNull { it.preferred } ?: qualityVideos.first(), 0L)
         setIntent(intent)
         return true
     }
@@ -1560,18 +1568,52 @@ class PlayerActivity : BaseActivity() {
 
     private fun applyTelegramStreamingOptions(video: Video) {
         val url = video.videoUrl
-        val isTelegramStream = url.contains("127.0.0.1:49731") || viewModel.isDirectVideoMode()
+        val isTelegramStream = url.contains("127.0.0.1:49731") ||
+            viewModel.isDirectVideoMode() ||
+            viewModel.currentSource.value is TelegramCatalogueSource
         if (!isTelegramStream) return
+        val isExtensionStream = url.contains("src=ext") ||
+            viewModel.currentSource.value is TelegramCatalogueSource
+        val maxBytes = if (isExtensionStream) TG_EXT_DEMUXER_MAX_BYTES else TG_DEMUXER_MAX_BYTES
+        val backBytes = if (isExtensionStream) TG_EXT_DEMUXER_BACK_BYTES else TG_DEMUXER_BACK_BYTES
+        val readaheadSecs = if (isExtensionStream) "15" else "8"
+        val cacheSecs = if (isExtensionStream) "20" else "10"
         MPVLib.setOptionString("cache", "yes")
-        MPVLib.setOptionString("demuxer-max-bytes", "$TG_DEMUXER_MAX_BYTES")
-        MPVLib.setOptionString("demuxer-max-back-bytes", "$TG_DEMUXER_BACK_BYTES")
-        MPVLib.setOptionString("demuxer-readahead-secs", "8")
-        MPVLib.setOptionString("cache-secs", "10")
-        val targetQ = Uri.parse(url).getQueryParameter("q")?.toIntOrNull()
-        if (targetQ != null && targetQ in 240..720) {
-            MPVLib.setPropertyString("vf", "scale=-2:$targetQ")
+        MPVLib.setOptionString("demuxer-max-bytes", "$maxBytes")
+        MPVLib.setOptionString("demuxer-max-back-bytes", "$backBytes")
+        MPVLib.setOptionString("demuxer-readahead-secs", readaheadSecs)
+        MPVLib.setOptionString("cache-secs", cacheSecs)
+        applyTelegramVideoFilter(url)
+    }
+
+    @Suppress("MagicNumber")
+    private fun applyTelegramVideoFilter(url: String, actualWidth: Int = 0, actualHeight: Int = 0) {
+        val displayShort = Td.displayShortSide(this)
+        val actualShort = if (actualWidth > 0 && actualHeight > 0) {
+            minOf(actualWidth, actualHeight)
         } else {
-            MPVLib.setPropertyString("vf", "")
+            0
+        }
+        val qParam = Uri.parse(url).getQueryParameter("q").orEmpty()
+        when {
+            qParam == "original" -> {
+                MPVLib.setPropertyString("vf", "")
+            }
+            qParam == "hls" || qParam == "auto" -> {
+                if (actualShort > displayShort && displayShort > 0) {
+                    MPVLib.setPropertyString("vf", "scale=-2:$displayShort")
+                } else {
+                    MPVLib.setPropertyString("vf", "")
+                }
+            }
+            else -> {
+                val targetQ = qParam.toIntOrNull()
+                if (targetQ != null && targetQ in 240..2160 && (actualShort == 0 || targetQ < actualShort)) {
+                    MPVLib.setPropertyString("vf", "scale=-2:$targetQ")
+                } else {
+                    MPVLib.setPropertyString("vf", "")
+                }
+            }
         }
     }
 
@@ -1668,11 +1710,33 @@ class PlayerActivity : BaseActivity() {
         setupChapters()
         setupTracks()
         viewModel.isLoading.update { viewModel.pausedForCache.value }
-        if (viewModel.isDirectVideoMode()) {
-            val w = MPVLib.getPropertyInt("width") ?: 0
-            val h = MPVLib.getPropertyInt("height") ?: 0
-            if (w > 0 || h > 0) {
-                viewModel.updateDirectVideoResolution(w, h)
+        val activeVideoUrl = viewModel.currentVideo.value?.videoUrl.orEmpty()
+        val isTelegramStream = viewModel.isDirectVideoMode() ||
+            viewModel.currentSource.value is TelegramCatalogueSource ||
+            activeVideoUrl.contains("127.0.0.1:49731")
+        if (isTelegramStream) {
+            lifecycleScope.launchIO {
+                var w = MPVLib.getPropertyInt("width") ?: 0
+                var h = MPVLib.getPropertyInt("height") ?: 0
+                var tries = 0
+                while ((w <= 0 || h <= 0) && tries < TG_PROBE_ATTEMPTS && !player.isExiting) {
+                    delay(TG_PROBE_DELAY_MS)
+                    w = MPVLib.getPropertyInt("width") ?: 0
+                    h = MPVLib.getPropertyInt("height") ?: 0
+                    tries++
+                }
+                if (!player.isExiting && (w > 0 || h > 0)) {
+                    val displayShort = Td.displayShortSide(this@PlayerActivity)
+                    val chosen = viewModel.updateTelegramVideoResolution(w, h, displayShort)
+                    val targetUrl = chosen?.videoUrl ?: activeVideoUrl
+                    if (targetUrl.isNotBlank()) {
+                        withUIContext {
+                            if (!player.isExiting) {
+                                applyTelegramVideoFilter(targetUrl, w, h)
+                            }
+                        }
+                    }
+                }
             }
         }
         viewModel.restoreAspectRatio()

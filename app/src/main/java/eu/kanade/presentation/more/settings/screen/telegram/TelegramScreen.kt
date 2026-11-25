@@ -109,7 +109,7 @@ import java.io.File
 
 private enum class TgSection { CHATS, ADDED, LINKS }
 
-private enum class ChatKindFilter { ALL, CHANNELS, BOTS, GROUPS }
+private enum class ChatKindFilter { ALL, CHATS, CHANNELS, BOTS, GROUPS, IN_BROWSE }
 
 private const val QR_CODE_SIZE_PX = 512
 
@@ -709,16 +709,34 @@ private fun TelegramHome(
     var query by rememberSaveable { mutableStateOf("") }
     var kindFilter by rememberSaveable { mutableStateOf(ChatKindFilter.ALL) }
 
+    val personalChatCount = remember(chatList) {
+        chatList.count {
+            it.kind == Td.Chat.Kind.PRIVATE ||
+                it.kind == Td.Chat.Kind.SAVED ||
+                it.kind == Td.Chat.Kind.SECRET
+        }
+    }
     val channelCount = remember(chatList) { chatList.count { it.kind == Td.Chat.Kind.CHANNEL } }
     val botCount = remember(chatList) { chatList.count { it.kind == Td.Chat.Kind.BOT } }
     val groupCount = remember(chatList) { chatList.count { it.kind == Td.Chat.Kind.GROUP } }
+    val inBrowseCount = remember(chatList, browseSourcesRaw) {
+        chatList.count { TelegramBrowseSources.containsChat(browseSourcesRaw, it.id) }
+    }
 
-    val visibleChats = remember(chatList, query, kindFilter) {
+    val visibleChats = remember(chatList, browseSourcesRaw, query, kindFilter) {
         val byKind = when (kindFilter) {
             ChatKindFilter.ALL -> chatList
+            ChatKindFilter.CHATS -> chatList.filter {
+                it.kind == Td.Chat.Kind.PRIVATE ||
+                    it.kind == Td.Chat.Kind.SAVED ||
+                    it.kind == Td.Chat.Kind.SECRET
+            }
             ChatKindFilter.CHANNELS -> chatList.filter { it.kind == Td.Chat.Kind.CHANNEL }
             ChatKindFilter.BOTS -> chatList.filter { it.kind == Td.Chat.Kind.BOT }
             ChatKindFilter.GROUPS -> chatList.filter { it.kind == Td.Chat.Kind.GROUP }
+            ChatKindFilter.IN_BROWSE -> chatList.filter {
+                TelegramBrowseSources.containsChat(browseSourcesRaw, it.id)
+            }
         }
         val q = query.trim()
         if (q.isEmpty()) byKind else byKind.filter { it.title.contains(q, ignoreCase = true) }
@@ -813,6 +831,11 @@ private fun TelegramHome(
                                             onClick = { kindFilter = ChatKindFilter.ALL },
                                         )
                                         TgPill(
+                                            label = "Chats ($personalChatCount)",
+                                            selected = kindFilter == ChatKindFilter.CHATS,
+                                            onClick = { kindFilter = ChatKindFilter.CHATS },
+                                        )
+                                        TgPill(
                                             label = "Channels ($channelCount)",
                                             selected = kindFilter == ChatKindFilter.CHANNELS,
                                             onClick = { kindFilter = ChatKindFilter.CHANNELS },
@@ -826,6 +849,11 @@ private fun TelegramHome(
                                             label = "Groups ($groupCount)",
                                             selected = kindFilter == ChatKindFilter.GROUPS,
                                             onClick = { kindFilter = ChatKindFilter.GROUPS },
+                                        )
+                                        TgPill(
+                                            label = "In Browse ($inBrowseCount)",
+                                            selected = kindFilter == ChatKindFilter.IN_BROWSE,
+                                            onClick = { kindFilter = ChatKindFilter.IN_BROWSE },
                                         )
                                     }
                                     Row(
@@ -844,7 +872,7 @@ private fun TelegramHome(
                                         )
                                         Spacer(Modifier.width(8.dp))
                                         Text(
-                                            text = "Long-press any channel or bot to add it as an " +
+                                            text = "Long-press any chat, channel or bot to add it as an " +
                                                 "extension in Browse with its original logo.",
                                             style = MaterialTheme.typography.labelSmall,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant,

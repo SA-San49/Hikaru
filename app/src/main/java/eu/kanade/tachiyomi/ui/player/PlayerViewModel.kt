@@ -57,6 +57,8 @@ import eu.kanade.tachiyomi.data.database.models.Episode
 import eu.kanade.tachiyomi.data.database.models.toDomainEpisode
 import eu.kanade.tachiyomi.data.download.DownloadManager
 import eu.kanade.tachiyomi.data.download.model.Download
+import eu.kanade.tachiyomi.data.telegram.Td
+import eu.kanade.tachiyomi.data.telegram.TelegramCatalogueSource
 import eu.kanade.tachiyomi.data.saver.Image
 import eu.kanade.tachiyomi.data.saver.ImageSaver
 import eu.kanade.tachiyomi.data.saver.Location
@@ -419,12 +421,14 @@ class PlayerViewModel @JvmOverloads constructor(
     private var directVideoMode: Boolean = false
     private var directBaseUrl: String = ""
     private var directHeaders: okhttp3.Headers? = null
+    private var telegramQualityManuallySelected: Boolean = false
 
     fun isDirectVideoMode(): Boolean = directVideoMode
 
     fun initDirectVideo(title: String, sourceLabel: String, videos: List<Video>) {
-        val primary = videos.first()
+        val primary = videos.firstOrNull { it.preferred } ?: videos.first()
         directVideoMode = true
+        telegramQualityManuallySelected = false
         directBaseUrl = primary.videoUrl.substringBefore("&q=").substringBefore("?q=")
         directHeaders = primary.headers
         mediaTitle.update { title }
@@ -460,15 +464,40 @@ class PlayerViewModel @JvmOverloads constructor(
     }
 
     fun updateDirectVideoResolution(width: Int, height: Int) {
-        if (!directVideoMode || (width <= 0 && height <= 0) || directBaseUrl.isBlank()) return
-        val currentIdx = _selectedHosterVideoIndex.value.second.coerceAtLeast(0)
-        val updatedVideos = eu.kanade.tachiyomi.data.telegram.Td.buildQualityVideos(
-            baseUrl = directBaseUrl,
+        updateTelegramVideoResolution(width, height, Td.displayShortSide(activity))
+    }
+
+    @Suppress("ReturnCount")
+    fun updateTelegramVideoResolution(width: Int, height: Int, displayShortSide: Int): Video? {
+        if (width <= 0 && height <= 0) return null
+        val isTelegram = directVideoMode ||
+            currentSource.value is TelegramCatalogueSource ||
+            currentVideo.value?.videoUrl?.contains("127.0.0.1:49731") == true
+        if (!isTelegram) return null
+
+        val activeVideo = currentVideo.value
+        val baseUrl = if (directVideoMode) {
+            directBaseUrl
+        } else {
+            activeVideo?.videoUrl?.substringBefore("&q=")?.substringBefore("?q=").orEmpty()
+        }
+        if (baseUrl.isBlank()) return null
+
+        val prefQ = (currentSource.value as? TelegramCatalogueSource)?.preferredQuality() ?: "hls"
+        val headers = if (directVideoMode) directHeaders else activeVideo?.headers
+        val updatedVideos = Td.buildQualityVideos(
+            baseUrl = baseUrl,
             width = width,
             height = height,
-            headers = directHeaders,
+            headers = headers,
+            preferredQuality = prefQ,
+            displayShortSide = displayShortSide,
         )
-        val hosterName = "${animeTitle.value.ifBlank { "Telegram" }} HLS Stream"
+        val hosterName = if (directVideoMode) {
+            "${animeTitle.value.ifBlank { "Telegram" }} HLS Stream"
+        } else {
+            (_hosterList.value.firstOrNull()?.hosterName).orEmpty().ifBlank { "Telegram HLS Stream" }
+        }
         _hosterList.update {
             listOf(
                 Hoster(
@@ -487,9 +516,19 @@ class PlayerViewModel @JvmOverloads constructor(
                 ),
             )
         }
-        if (currentIdx in updatedVideos.indices) {
-            _selectedHosterVideoIndex.update { 0 to currentIdx }
+
+        val currentQ = activeVideo?.videoUrl?.let { Uri.parse(it).getQueryParameter("q") }.orEmpty()
+        val chosenIdx = if (telegramQualityManuallySelected && currentQ.isNotBlank()) {
+            updatedVideos.indexOfFirst { v -> Uri.parse(v.videoUrl).getQueryParameter("q") == currentQ }
+                .takeIf { it >= 0 } ?: 0
+        } else {
+            updatedVideos.indexOfFirst { it.preferred }.takeIf { it >= 0 } ?: 0
         }
+        val chosen = updatedVideos[chosenIdx]
+        _selectedHosterVideoIndex.update { 0 to chosenIdx }
+        _currentVideo.update { chosen }
+        qualityIndex = Pair(0, chosenIdx)
+        return chosen
     }
 
     fun isEpisodeOnline(): Boolean? {
@@ -1991,6 +2030,9 @@ class PlayerViewModel @JvmOverloads constructor(
      * Set the video list for hosters.
      */
     fun loadHosters(source: AnimeSource, hosterList: List<Hoster>, hosterIndex: Int, videoIndex: Int) {
+        if (hosterIndex == -1) {
+            telegramQualityManuallySelected = false
+        }
         val hasFoundPreferredVideo = AtomicBoolean(false)
 
         _hosterList.update { _ -> hosterList }
@@ -2039,7 +2081,13 @@ class PlayerViewModel @JvmOverloads constructor(
                                         }
                                     }
                                 } else if (hosterIndex == -1 && !hasFoundPreferredVideo.get()) {
-                                    if (defaultSelector.isNotBlank()) {
+                                    if (source is TelegramCatalogueSource && hosterIdx == 0) {
+                                        val prefIndex = hosterState.videoList.indexOfFirst { it.preferred }
+                                        val chosenIdx = if (prefIndex != -1) prefIndex else 0
+                                        hosterState.videoList.getOrNull(chosenIdx)?.let { video ->
+                                            tryAcquireAndLoadVideo(source, video, 0, chosenIdx, hasFoundPreferredVideo)
+                                        }
+                                    } else if (defaultSelector.isNotBlank()) {
                                         val ranked = DefaultStreamSelector.findRankedInHosters(defaultSelector, listOf(hosterState))
                                         ranked.firstOrNull()?.let { (_, vIdx) ->
                                             hosterState.videoList.getOrNull(vIdx)?.let { video ->
@@ -2073,7 +2121,7 @@ class PlayerViewModel @JvmOverloads constructor(
                         }
 
                         // 2) User-saved default (strict then relaxed) — always before extension sort order
-                        if (!hasFoundPreferredVideo.get() && defaultSelector.isNotBlank()) {
+                        if (!hasFoundPreferredVideo.get() && source !is TelegramCatalogueSource && defaultSelector.isNotBlank()) {
                             val strictRanked = DefaultStreamSelector.findRankedInHosters(defaultSelector, states)
                             tryLoadRankedVideos(source, states, strictRanked, hasFoundPreferredVideo)
                             if (!hasFoundPreferredVideo.get()) {
@@ -2083,8 +2131,8 @@ class PlayerViewModel @JvmOverloads constructor(
                             }
                         }
 
-                        // 3) Extension preferred — only when user has no saved default
-                        if (!hasFoundPreferredVideo.get() && defaultSelector.isBlank()) {
+                        // 3) Extension preferred — always for Telegram extension or when user has no saved default
+                        if (!hasFoundPreferredVideo.get() && (source is TelegramCatalogueSource || defaultSelector.isBlank())) {
                             tryLoadExtensionPreferred(source, states, hasFoundPreferredVideo)
                         }
                     }
@@ -2313,7 +2361,10 @@ class PlayerViewModel @JvmOverloads constructor(
     }
 
     fun onVideoClicked(hosterIndex: Int, videoIndex: Int) {
-        setDefaultStreamSelector(hosterIndex, videoIndex)
+        telegramQualityManuallySelected = true
+        if (currentSource.value !is TelegramCatalogueSource && !directVideoMode) {
+            setDefaultStreamSelector(hosterIndex, videoIndex)
+        }
         val hosterState = _hosterState.value[hosterIndex] as? HosterState.Ready
         val video = hosterState?.videoList
             ?.getOrNull(videoIndex)

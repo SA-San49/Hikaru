@@ -101,6 +101,23 @@ object Td {
         val note: String? = null,
     )
 
+    data class ChatImage(
+        val chatId: Long,
+        val messageId: Long,
+        val fileId: Int,
+        val fileName: String = "",
+        val caption: String = "",
+        val minithumb: String? = null,
+    )
+
+    data class ChatCatalogueBatch(
+        val videos: List<ChatVideo>,
+        val images: List<ChatImage>,
+        val nextCursor: Long,
+        val more: Boolean,
+        val note: String? = null,
+    )
+
     data class FileState(
         val path: String,
         val size: Long,
@@ -791,6 +808,49 @@ object Td {
 
     fun isSignedIn(): Boolean = _auth.value is Auth.Ready
 
+    fun hasSavedSession(context: Context): Boolean {
+        val dbDir = File(context.filesDir, "tdlib/db")
+        return dbDir.exists() && (dbDir.listFiles()?.isNotEmpty() == true)
+    }
+
+    fun displayShortSide(context: Context? = appContext): Int {
+        val ctx = context ?: appContext ?: return 0
+        val dm = ctx.resources.displayMetrics
+        return minOf(dm.widthPixels, dm.heightPixels)
+    }
+
+    suspend fun ensureReady(context: Context? = appContext, timeoutMs: Long = 12_000L): Boolean {
+        if (isSignedIn()) return true
+        val ctx = context ?: appContext
+        if (ctx != null && client == null) {
+            init(ctx)
+        }
+        val state = withTimeoutOrNull(timeoutMs) {
+            auth.first { s ->
+                when (s) {
+                    is Auth.Ready,
+                    is Auth.WaitPhone,
+                    is Auth.WaitCode,
+                    is Auth.WaitPassword,
+                    is Auth.WaitRegistration,
+                    is Auth.Unavailable,
+                    -> true
+                    else -> false
+                }
+            }
+        }
+        return state is Auth.Ready || isSignedIn()
+    }
+
+    suspend fun ensureChatLoaded(chatId: Long): Boolean {
+        if (chatId == 0L || !isSignedIn()) return false
+        if (chatValues.containsKey(chatId)) return true
+        val chat = query(TdApi.GetChat(chatId)) as? TdApi.Chat ?: return false
+        chatValues[chat.id] = chat
+        absorbPositions(chat.id, chat.positions)
+        return true
+    }
+
     suspend fun publicChatId(username: String): Long? = publicChat(username)?.first
 
     suspend fun publicChatPhotoId(username: String): Int {
@@ -887,6 +947,139 @@ object Td {
             note = if (page.isEmpty()) note else null,
         )
     }
+
+    @Suppress("CyclomaticComplexMethod")
+    suspend fun chatCatalogueBatch(
+        chatId: Long,
+        before: Long = 0L,
+        targetMessages: Int = 250,
+    ): ChatCatalogueBatch {
+        ensureChatLoaded(chatId)
+        val videos = LinkedHashMap<Long, ChatVideo>()
+        val images = LinkedHashMap<Long, ChatImage>()
+        var cursor = before
+        var sawMessages = false
+        var scanned = 0
+        var note: String? = null
+
+        if (before == 0L) {
+            val photoHits = query(
+                TdApi.SearchChatMessages(
+                    chatId,
+                    null,
+                    "",
+                    null,
+                    0L,
+                    0,
+                    SEARCH_HITS_PER_CALL,
+                    TdApi.SearchMessagesFilterPhoto(),
+                ),
+            ) as? TdApi.FoundChatMessages
+            photoHits?.messages?.forEach { m ->
+                imageOf(chatId, m)?.let { images.putIfAbsent(it.messageId, it) }
+            }
+        }
+
+        while (scanned < targetMessages) {
+            var historyError: String? = null
+            val history = query(TdApi.GetChatHistory(chatId, cursor, 0, HISTORY_PAGE, false)) {
+                historyError = errorText(it)
+            } as? TdApi.Messages
+            if (history == null) {
+                if (historyError != null) note = note ?: historyError
+                break
+            }
+            if (history.messages.isEmpty()) break
+            var next = Long.MAX_VALUE
+            for (m in history.messages) {
+                scanned++
+                sawMessages = true
+                if (m.id < next) next = m.id
+                videoOf(chatId, m)?.let { videos.putIfAbsent(it.messageId, it) }
+                imageOf(chatId, m)?.let { images.putIfAbsent(it.messageId, it) }
+            }
+            if (next == Long.MAX_VALUE || (cursor != 0L && next >= cursor)) {
+                cursor = 0L
+                break
+            }
+            cursor = next
+        }
+
+        return ChatCatalogueBatch(
+            videos = videos.values.sortedByDescending { it.messageId },
+            images = images.values.sortedByDescending { it.messageId },
+            nextCursor = if (cursor == Long.MAX_VALUE) 0L else cursor,
+            more = sawMessages && cursor != 0L,
+            note = if (videos.isEmpty()) note else null,
+        )
+    }
+
+    suspend fun chatRecentImages(chatId: Long, limit: Int = SEARCH_HITS_PER_CALL): List<ChatImage> {
+        ensureChatLoaded(chatId)
+        val images = LinkedHashMap<Long, ChatImage>()
+        val photoHits = query(
+            TdApi.SearchChatMessages(
+                chatId,
+                null,
+                "",
+                null,
+                0L,
+                0,
+                limit.coerceIn(1, SEARCH_HITS_PER_CALL),
+                TdApi.SearchMessagesFilterPhoto(),
+            ),
+        ) as? TdApi.FoundChatMessages
+        photoHits?.messages?.forEach { m ->
+            imageOf(chatId, m)?.let { images.putIfAbsent(it.messageId, it) }
+        }
+        val history = query(TdApi.GetChatHistory(chatId, 0L, 0, HISTORY_PAGE, false)) as? TdApi.Messages
+        history?.messages?.forEach { m ->
+            imageOf(chatId, m)?.let { images.putIfAbsent(it.messageId, it) }
+        }
+        return images.values.toList()
+    }
+
+    private fun imageOf(chatId: Long, message: TdApi.Message): ChatImage? =
+        when (val c = message.content) {
+            is TdApi.MessagePhoto -> {
+                val best = c.photo.sizes.maxByOrNull { it.width * it.height }
+                val fileId = best?.photo?.id ?: 0
+                if (fileId == 0) {
+                    null
+                } else {
+                    ChatImage(
+                        chatId = chatId,
+                        messageId = message.id,
+                        fileId = fileId,
+                        fileName = "",
+                        caption = c.caption.text,
+                        minithumb = minithumb(c.photo.minithumbnail),
+                    )
+                }
+            }
+            is TdApi.MessageDocument -> {
+                val doc = c.document
+                val lower = doc.fileName.lowercase(Locale.US)
+                val isImg = doc.mimeType.startsWith("image/", ignoreCase = true) ||
+                    lower.endsWith(".jpg") ||
+                    lower.endsWith(".jpeg") ||
+                    lower.endsWith(".png") ||
+                    lower.endsWith(".webp")
+                if (isImg && doc.document.id != 0) {
+                    ChatImage(
+                        chatId = chatId,
+                        messageId = message.id,
+                        fileId = doc.document.id,
+                        fileName = doc.fileName,
+                        caption = c.caption.text,
+                        minithumb = minithumb(doc.minithumbnail),
+                    )
+                } else {
+                    null
+                }
+            }
+            else -> null
+        }
 
     suspend fun postVideos(chatId: Long, messageId: Long): List<ChatVideo> {
         if (chatId == 0L || messageId == 0L) return emptyList()
@@ -1324,56 +1517,99 @@ object Td {
 
     fun clearCache(context: Context): Long = purgeMediaFiles(context)
 
-    fun resolutionTag(width: Int, height: Int): String {
-        val shortSide = if (width > 0 && height > 0) minOf(width, height) else maxOf(width, height)
+    fun effectiveResolution(width: Int, height: Int): Int {
+        if (width <= 0 && height <= 0) return 0
+        val longSide = maxOf(width, height)
+        val shortSide = if (width > 0 && height > 0) minOf(width, height) else longSide
         return when {
-            shortSide >= 2000 -> "2160p (4K)"
-            shortSide >= 1400 -> "1440p (2K)"
-            shortSide >= 1000 -> "1080p"
-            shortSide >= 700 -> "720p"
-            shortSide >= 460 -> "480p"
-            shortSide >= 340 -> "360p"
-            shortSide > 0 -> "${shortSide}p"
-            else -> "1080p"
+            longSide >= 3800 || shortSide >= 2000 -> 2160
+            longSide >= 2500 || shortSide >= 1400 -> 1440
+            longSide >= 1880 || shortSide >= 1000 -> 1080
+            longSide >= 1240 || shortSide >= 700 -> 720
+            longSide >= 820 || shortSide >= 460 -> 480
+            else -> 360
         }
     }
 
+    fun resolutionTag(width: Int, height: Int): String = when (effectiveResolution(width, height)) {
+        2160 -> "2160p (4K)"
+        1440 -> "1440p (2K)"
+        1080 -> "1080p"
+        720 -> "720p"
+        480 -> "480p"
+        360 -> "360p"
+        else -> "Auto"
+    }
+
+    @Suppress("CyclomaticComplexMethod")
     fun buildQualityVideos(
         baseUrl: String,
         width: Int = 0,
         height: Int = 0,
         headers: Headers? = null,
+        preferredQuality: String = "hls",
+        displayShortSide: Int = 0,
     ): List<Video> {
         val sep = if (baseUrl.contains("?")) "&" else "?"
-        val nativeLabel = resolutionTag(width, height)
-        val shortSide = if (width > 0 && height > 0) minOf(width, height) else 1080
+        val sourceRes = effectiveResolution(width, height)
+        val pref = preferredQuality.lowercase(Locale.US).ifBlank { "hls" }
+        val presets = listOf(
+            2160 to "2160p (4K)",
+            1440 to "1440p (2K)",
+            1080 to "1080p",
+            720 to "720p",
+            480 to "480p",
+            360 to "360p",
+        )
+        val availablePresets = if (sourceRes > 0) {
+            presets.filter { (res, _) -> res <= sourceRes }
+        } else {
+            emptyList()
+        }
+        val targetPresetRes = pref.toIntOrNull()?.let { wanted ->
+            if (availablePresets.isEmpty()) {
+                null
+            } else {
+                availablePresets.firstOrNull { (res, _) -> res <= wanted }?.first
+                    ?: availablePresets.lastOrNull()?.first
+            }
+        }
+        val hlsSelected = pref == "hls" || (pref != "original" && targetPresetRes == null)
+        val hlsRes = when {
+            sourceRes > 0 && displayShortSide > 0 -> minOf(sourceRes, displayShortSide)
+            sourceRes > 0 -> sourceRes
+            displayShortSide > 0 -> displayShortSide
+            else -> 0
+        }
+
         val list = mutableListOf<Video>()
         list += Video(
-            videoUrl = "${baseUrl}${sep}q=auto",
-            videoTitle = "HLS Auto ($nativeLabel • Fast Stream)",
-            resolution = shortSide,
+            videoUrl = "${baseUrl}${sep}q=hls",
+            videoTitle = "HLS",
+            resolution = hlsRes,
             headers = headers,
-            preferred = true,
+            preferred = hlsSelected,
             initialized = true,
         ).apply { status = Video.State.READY }
 
-        val presets = listOf(
-            1080 to "1080p (Full HD)",
-            720 to "720p (HD)",
-            480 to "480p (SD)",
-            360 to "360p (Data Saver)",
-        )
-        for ((res, label) in presets) {
-            if (shortSide <= 0 || res <= shortSide || (res == 1080 && shortSide < 360)) {
-                list += Video(
-                    videoUrl = "${baseUrl}${sep}q=$res",
-                    videoTitle = label,
-                    resolution = res,
-                    headers = headers,
-                    preferred = false,
-                    initialized = true,
-                ).apply { status = Video.State.READY }
-            }
+        list += Video(
+            videoUrl = "${baseUrl}${sep}q=original",
+            videoTitle = "Original",
+            resolution = sourceRes,
+            headers = headers,
+            preferred = pref == "original",
+            initialized = true,
+        ).apply { status = Video.State.READY }
+
+        for ((res, label) in availablePresets) {
+            list += Video(
+                videoUrl = "${baseUrl}${sep}q=$res",
+                videoTitle = label,
+                resolution = res,
+                headers = headers,
+                preferred = targetPresetRes == res,
+                initialized = true,
+            ).apply { status = Video.State.READY }
         }
         return list
     }

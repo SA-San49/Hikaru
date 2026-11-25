@@ -17,6 +17,8 @@ object TdHttpServer {
     private const val PRIME_BYTES = 256L * 1024
     private const val WINDOW_BYTES = 2L * 1024 * 1024
     private const val ADVANCE_BYTES = 1L * 1024 * 1024
+    private const val EXT_WINDOW_BYTES = 10L * 1024 * 1024
+    private const val EXT_ADVANCE_BYTES = 2L * 1024 * 1024
     private const val TAIL_THRESHOLD_BYTES = 1L * 1024 * 1024
     private const val START_BUDGET_MS = 45_000L
     private const val GRACE_MS = 20_000L
@@ -37,9 +39,15 @@ object TdHttpServer {
         return PORT
     }
 
-    fun urlFor(fileId: Int, chatId: Long = 0, messageId: Long = 0): String {
+    fun urlFor(
+        fileId: Int,
+        chatId: Long = 0,
+        messageId: Long = 0,
+        isExtension: Boolean = false,
+    ): String {
         val port = ensureStarted()
-        return "http://127.0.0.1:$port/tg?id=$fileId&chat=$chatId&msg=$messageId"
+        val ext = if (isExtension) "&src=ext" else ""
+        return "http://127.0.0.1:$port/tg?id=$fileId&chat=$chatId&msg=$messageId$ext"
     }
 
     fun thumbUrlFor(fileId: Int): String {
@@ -60,6 +68,9 @@ object TdHttpServer {
             val fileId = session.parameters["id"]?.firstOrNull()?.toIntOrNull() ?: 0
             val chatId = session.parameters["chat"]?.firstOrNull()?.toLongOrNull() ?: 0L
             val messageId = session.parameters["msg"]?.firstOrNull()?.toLongOrNull() ?: 0L
+            val isExtension = session.parameters["src"]?.firstOrNull() == "ext"
+            val windowBytes = if (isExtension) EXT_WINDOW_BYTES else WINDOW_BYTES
+            val advanceBytes = if (isExtension) EXT_ADVANCE_BYTES else ADVANCE_BYTES
             if (fileId == 0) {
                 return newFixedLengthResponse(Response.Status.BAD_REQUEST, "text/plain", "Missing file id")
             }
@@ -107,7 +118,7 @@ object TdHttpServer {
                 val stream: InputStream = if (session.method == Method.HEAD) {
                     InputStream.nullInputStream()
                 } else {
-                    TdRangeInputStream(activeId, chatId, messageId, start, len, totalSize)
+                    TdRangeInputStream(activeId, chatId, messageId, start, len, totalSize, windowBytes, advanceBytes)
                 }
                 val resp = newFixedLengthResponse(Response.Status.PARTIAL_CONTENT, "video/mp4", stream, len)
                 resp.addHeader("Accept-Ranges", "bytes")
@@ -118,7 +129,7 @@ object TdHttpServer {
             val stream: InputStream = if (session.method == Method.HEAD) {
                 InputStream.nullInputStream()
             } else {
-                TdRangeInputStream(activeId, chatId, messageId, 0L, totalSize, totalSize)
+                TdRangeInputStream(activeId, chatId, messageId, 0L, totalSize, totalSize, windowBytes, advanceBytes)
             }
             val resp = newFixedLengthResponse(Response.Status.OK, "video/mp4", stream, totalSize)
             resp.addHeader("Accept-Ranges", "bytes")
@@ -131,7 +142,10 @@ object TdHttpServer {
             if (fileId == 0) {
                 return newFixedLengthResponse(Response.Status.BAD_REQUEST, "text/plain", "Missing thumb id")
             }
-            val path = runBlocking { Td.thumbPath(fileId) }
+            val path = runBlocking {
+                Td.ensureReady()
+                Td.thumbPath(fileId)
+            }
                 ?: return newFixedLengthResponse(Response.Status.NOT_FOUND, "text/plain", "Thumb not ready")
             val file = File(path)
             if (!file.exists() || file.length() <= 0L) {
@@ -156,6 +170,7 @@ object TdHttpServer {
         }
     }
 
+    @Suppress("LongParameterList")
     private class TdRangeInputStream(
         private var fileId: Int,
         private val chatId: Long,
@@ -163,6 +178,8 @@ object TdHttpServer {
         startOffset: Long,
         length: Long,
         private val totalSize: Long,
+        private val windowBytes: Long,
+        private val advanceBytes: Long,
     ) : InputStream() {
 
         private var pos: Long = startOffset
@@ -186,7 +203,7 @@ object TdHttpServer {
             return if (left <= TAIL_THRESHOLD_BYTES) {
                 left
             } else {
-                min(WINDOW_BYTES, left.coerceAtLeast(PRIME_BYTES))
+                min(windowBytes, left.coerceAtLeast(PRIME_BYTES))
             }
         }
 
@@ -221,7 +238,7 @@ object TdHttpServer {
 
         private fun maybeAdvanceWindow() {
             if (remaining <= 0L || pos >= totalSize) return
-            if (pos >= requestedFrom + ADVANCE_BYTES) {
+            if (pos >= requestedFrom + advanceBytes) {
                 val window = computeWindow(pos)
                 Td.request(fileId, pos, window)
                 requestedFrom = pos

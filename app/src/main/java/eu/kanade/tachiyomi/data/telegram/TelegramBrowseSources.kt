@@ -206,6 +206,9 @@ object TelegramBrowseSources {
             val kindLabel = when (entry.kind) {
                 "BOT" -> "Telegram Bot"
                 "GROUP" -> "Telegram Group"
+                "SAVED" -> "Saved Messages"
+                "PRIVATE" -> "Telegram Chat"
+                "SECRET" -> "Secret Chat"
                 else -> "Telegram Channel"
             }
             Extension.Installed(

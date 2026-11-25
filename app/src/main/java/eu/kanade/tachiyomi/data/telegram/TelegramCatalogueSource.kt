@@ -1,6 +1,11 @@
 package eu.kanade.tachiyomi.data.telegram
 
+import android.app.Application
+import android.content.Context
 import android.net.Uri
+import androidx.preference.ListPreference
+import androidx.preference.PreferenceScreen
+import eu.kanade.tachiyomi.animesource.ConfigurableAnimeSource
 import eu.kanade.tachiyomi.animesource.model.AnimeFilterList
 import eu.kanade.tachiyomi.animesource.model.AnimesPage
 import eu.kanade.tachiyomi.animesource.model.Hoster
@@ -11,12 +16,15 @@ import eu.kanade.tachiyomi.animesource.online.AnimeHttpSource
 import okhttp3.Headers
 import okhttp3.Request
 import okhttp3.Response
+import uy.kohesive.injekt.Injekt
+import uy.kohesive.injekt.api.get
+import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 
 @Suppress("MagicNumber", "TooManyFunctions")
 class TelegramCatalogueSource(
     val entry: TelegramBrowseSources.Entry,
-) : AnimeHttpSource() {
+) : AnimeHttpSource(), ConfigurableAnimeSource {
 
     override val id: Long = entry.sourceId
     override val name: String = entry.title
@@ -25,14 +33,51 @@ class TelegramCatalogueSource(
     override val supportsLatest: Boolean = true
     override val supportsRelatedAnimes: Boolean = false
 
+    private val appContext: Context by lazy { Injekt.get<Application>().applicationContext }
     private val pageCursors = ConcurrentHashMap<Int, Long>()
     private val searchCursors = ConcurrentHashMap<String, Long>()
+    private val collectedVideos = ConcurrentHashMap<Long, Td.ChatVideo>()
+    private val collectedImages = ConcurrentHashMap<Long, Td.ChatImage>()
+    private val seriesCache = ConcurrentHashMap<String, TelegramAnimeParser.GroupedSeries>()
+    private val seenSeriesKeys = ConcurrentHashMap.newKeySet<String>()
+
+    override fun setupPreferenceScreen(screen: PreferenceScreen) {
+        ListPreference(screen.context).apply {
+            key = PREF_PREFERRED_QUALITY
+            title = "Preferred quality"
+            entries = arrayOf(
+                "HLS (Match display)",
+                "Original (Uploaded quality)",
+                "1080p",
+                "720p",
+                "480p",
+                "360p",
+            )
+            entryValues = arrayOf("hls", "original", "1080", "720", "480", "360")
+            setDefaultValue(DEFAULT_QUALITY)
+            summary = "%s"
+        }.also(screen::addPreference)
+    }
+
+    fun preferredQuality(): String =
+        getSourcePreferences()
+            .getString(PREF_PREFERRED_QUALITY, DEFAULT_QUALITY)
+            .orEmpty()
+            .ifBlank { DEFAULT_QUALITY }
 
     private suspend fun resolveChatId(): Long {
-        if (entry.chatId != 0L) return entry.chatId
-        if (entry.handle.isNotBlank() && Td.isSignedIn()) {
-            val id = Td.joinedChat(entry.handle)?.first ?: Td.publicChatId(entry.handle)
-            if (id != null && id != 0L) return id
+        if (entry.chatId != 0L) {
+            if (Td.ensureReady(appContext)) {
+                Td.ensureChatLoaded(entry.chatId)
+            }
+            return entry.chatId
+        }
+        if (entry.handle.isNotBlank() && Td.ensureReady(appContext)) {
+            val found = Td.joinedChat(entry.handle)?.first ?: Td.publicChatId(entry.handle)
+            if (found != null && found != 0L) {
+                Td.ensureChatLoaded(found)
+                return found
+            }
         }
         return 0L
     }
@@ -41,17 +86,48 @@ class TelegramCatalogueSource(
 
     override suspend fun getLatestUpdates(page: Int): AnimesPage = loadChannelPage(page)
 
+    @Suppress("CyclomaticComplexMethod", "ReturnCount")
     private suspend fun loadChannelPage(page: Int): AnimesPage {
-        if (page <= 1) pageCursors.clear()
-        val before = if (page <= 1) 0L else (pageCursors[page] ?: 0L)
+        if (page <= 1) {
+            pageCursors.clear()
+            seenSeriesKeys.clear()
+            collectedVideos.clear()
+            collectedImages.clear()
+        }
+        var before = if (page <= 1) 0L else (pageCursors[page] ?: 0L)
         val chatId = resolveChatId()
         if (chatId != 0L && Td.isSignedIn()) {
-            val res = Td.chatVideosPage(chatId = chatId, before = before, limit = PAGE_LIMIT)
-            if (res.nextCursor != 0L) {
-                pageCursors[page + 1] = res.nextCursor
+            val newItems = ArrayList<SAnime>()
+            var moreAvailable = false
+            var rounds = 0
+            while (rounds < MAX_SCAN_ROUNDS) {
+                rounds++
+                val batch = Td.chatCatalogueBatch(
+                    chatId = chatId,
+                    before = before,
+                    targetMessages = CATALOGUE_SCAN_MESSAGES,
+                )
+                batch.videos.forEach { collectedVideos[it.messageId] = it }
+                batch.images.forEach { collectedImages[it.messageId] = it }
+
+                val grouped = TelegramAnimeParser.groupVideosAndPosters(
+                    videos = collectedVideos.values.toList(),
+                    images = collectedImages.values.toList(),
+                )
+                grouped.forEach { group ->
+                    seriesCache[group.groupKey] = group
+                    if (seenSeriesKeys.add(group.groupKey)) {
+                        newItems += seriesToSAnime(chatId, group)
+                    }
+                }
+                before = batch.nextCursor
+                moreAvailable = batch.more && batch.nextCursor != 0L
+                if (newItems.isNotEmpty() || !moreAvailable) break
             }
-            val items = res.videos.map { videoToSAnime(it) }
-            return AnimesPage(items, res.more && res.nextCursor != 0L && items.isNotEmpty())
+            if (before != 0L) {
+                pageCursors[page + 1] = before
+            }
+            return AnimesPage(newItems, moreAvailable && before != 0L)
         }
         if (entry.handle.isNotBlank()) {
             val webBefore = if (page <= 1) null else before.takeIf { it > 0L }
@@ -67,6 +143,7 @@ class TelegramCatalogueSource(
         return AnimesPage(emptyList(), false)
     }
 
+    @Suppress("ReturnCount")
     override suspend fun getSearchAnime(
         page: Int,
         query: String,
@@ -88,7 +165,16 @@ class TelegramCatalogueSource(
             if (res.nextCursor != 0L) {
                 searchCursors["$q:${page + 1}"] = res.nextCursor
             }
-            val items = res.videos.map { videoToSAnime(it) }
+            val images = if (collectedImages.isNotEmpty()) {
+                collectedImages.values.toList()
+            } else {
+                Td.chatRecentImages(chatId).also { list ->
+                    list.forEach { collectedImages[it.messageId] = it }
+                }
+            }
+            val grouped = TelegramAnimeParser.groupVideosAndPosters(res.videos, images)
+            grouped.forEach { seriesCache[it.groupKey] = it }
+            val items = grouped.map { seriesToSAnime(chatId, it) }
             return AnimesPage(items, !res.exhausted && res.nextCursor != 0L && items.isNotEmpty())
         }
         if (entry.handle.isNotBlank()) {
@@ -103,6 +189,7 @@ class TelegramCatalogueSource(
         return anime.apply { initialized = true }
     }
 
+    @Suppress("CyclomaticComplexMethod", "LongMethod", "ReturnCount")
     override suspend fun getEpisodeList(anime: SAnime): List<SEpisode> {
         val uri = Uri.parse("https://t.me" + anime.url)
         val mode = uri.getQueryParameter("mode").orEmpty()
@@ -122,22 +209,105 @@ class TelegramCatalogueSource(
             )
         }
 
+        if (anime.url.startsWith("/tg/series")) {
+            val chatId = uri.getQueryParameter("chat")?.toLongOrNull() ?: resolveChatId()
+            val groupKey = uri.getQueryParameter("key").orEmpty()
+            val seriesTitle = uri.getQueryParameter("title").orEmpty().ifBlank { anime.title }
+            val merged = LinkedHashMap<Long, Td.ChatVideo>()
+
+            seriesCache[groupKey]?.videos?.forEach { pv ->
+                merged[pv.video.messageId] = pv.video
+            }
+
+            if (chatId != 0L && Td.ensureReady(appContext)) {
+                Td.ensureChatLoaded(chatId)
+                if (merged.isEmpty()) {
+                    val batch = Td.chatCatalogueBatch(
+                        chatId = chatId,
+                        before = 0L,
+                        targetMessages = CATALOGUE_SCAN_MESSAGES,
+                    )
+                    batch.videos.forEach { collectedVideos[it.messageId] = it }
+                    batch.images.forEach { collectedImages[it.messageId] = it }
+                    val grouped = TelegramAnimeParser.groupVideosAndPosters(
+                        videos = collectedVideos.values.toList(),
+                        images = collectedImages.values.toList(),
+                    )
+                    grouped.forEach { seriesCache[it.groupKey] = it }
+                    seriesCache[groupKey]?.videos?.forEach { pv ->
+                        merged[pv.video.messageId] = pv.video
+                    }
+                }
+                if (seriesTitle.isNotBlank()) {
+                    val searched = Td.searchChatVideos(
+                        chatId = chatId,
+                        text = seriesTitle,
+                        inText = Td.SearchIn.BOTH,
+                        cursor = 0L,
+                        limit = EPISODE_SEARCH_LIMIT,
+                    )
+                    for (v in searched.videos) {
+                        val parsed = TelegramAnimeParser.parseVideo(v)
+                        if (parsed.groupKey == groupKey) {
+                            merged.putIfAbsent(v.messageId, v)
+                        }
+                    }
+                }
+            }
+
+            val parsedList = merged.values
+                .map { v -> TelegramAnimeParser.ParsedVideo(v, TelegramAnimeParser.parseVideo(v)) }
+                .sortedWith(
+                    compareBy<TelegramAnimeParser.ParsedVideo>(
+                        { it.parsed.episodeNumber ?: Float.MAX_VALUE },
+                        { it.video.messageId },
+                    ),
+                )
+
+            return parsedList.mapIndexed { idx, pv ->
+                val v = pv.video
+                val parsed = pv.parsed
+                val epNum = parsed.episodeNumber ?: (idx + 1).toFloat()
+                val resTag = when {
+                    v.width > 0 || v.height > 0 -> Td.resolutionTag(v.width, v.height)
+                    !parsed.qualityTag.isNullOrBlank() -> parsed.qualityTag
+                    else -> null
+                }
+                val metaParts = buildList {
+                    resTag?.let(::add)
+                    if (v.size > 0L) add(formatBytes(v.size))
+                }
+                SEpisode.create().apply {
+                    url = buildTdItemUrl(v)
+                    name = parsed.episodeLabel
+                    episode_number = epNum
+                    date_upload = v.date.toLong() * 1000L
+                    scanlator = metaParts.joinToString(" • ").ifBlank { entry.title }
+                }
+            }.reversed()
+        }
+
         val chatId = uri.getQueryParameter("chat")?.toLongOrNull() ?: resolveChatId()
         val msgId = uri.getQueryParameter("msg")?.toLongOrNull() ?: 0L
-        val postVideos = if (chatId != 0L && msgId != 0L && Td.isSignedIn()) {
+        val postVideos = if (chatId != 0L && msgId != 0L && Td.ensureReady(appContext)) {
+            Td.ensureChatLoaded(chatId)
             Td.postVideos(chatId, msgId)
         } else {
             emptyList()
         }
         if (postVideos.size > 1) {
             return postVideos.mapIndexed { idx, v ->
-                val epNum = (idx + 1).toFloat()
+                val parsed = TelegramAnimeParser.parseVideo(v)
+                val epNum = parsed.episodeNumber ?: (idx + 1).toFloat()
                 SEpisode.create().apply {
                     url = buildTdItemUrl(v)
-                    name = "Episode ${idx + 1} • " + cleanTitle(v)
+                    name = parsed.episodeLabel
                     episode_number = epNum
                     date_upload = v.date.toLong() * 1000L
-                    scanlator = "${Td.resolutionTag(v.width, v.height)} • ${formatBytes(v.size)}"
+                    scanlator = listOfNotNull(
+                        Td.resolutionTag(v.width, v.height).takeIf { v.width > 0 || v.height > 0 } ?: parsed.qualityTag,
+                        formatBytes(v.size).takeIf { v.size > 0L },
+                    ).joinToString(" • ")
                 }
             }.reversed()
         }
@@ -147,7 +317,7 @@ class TelegramCatalogueSource(
         val height = single?.height ?: (uri.getQueryParameter("h")?.toIntOrNull() ?: 0)
         val size = single?.size ?: (uri.getQueryParameter("size")?.toLongOrNull() ?: 0L)
         val dateSec = single?.date?.toLong() ?: (uri.getQueryParameter("date")?.toLongOrNull() ?: 0L)
-        val epTitle = single?.let { cleanTitle(it) }
+        val epTitle = single?.let { TelegramAnimeParser.parseVideo(it).episodeLabel }
             ?: uri.getQueryParameter("title").orEmpty().ifBlank { anime.title }
         return listOf(
             SEpisode.create().apply {
@@ -155,13 +325,10 @@ class TelegramCatalogueSource(
                 name = epTitle
                 episode_number = 1f
                 date_upload = dateSec * 1000L
-                scanlator = buildString {
-                    append(Td.resolutionTag(width, height))
-                    if (size > 0L) {
-                        append(" • ")
-                        append(formatBytes(size))
-                    }
-                }
+                scanlator = listOfNotNull(
+                    Td.resolutionTag(width, height).takeIf { width > 0 || height > 0 },
+                    formatBytes(size).takeIf { size > 0L },
+                ).joinToString(" • ")
             },
         )
     }
@@ -181,6 +348,8 @@ class TelegramCatalogueSource(
     override suspend fun getVideoList(episode: SEpisode): List<Video> {
         val uri = Uri.parse("https://t.me" + episode.url)
         val mode = uri.getQueryParameter("mode").orEmpty()
+        val prefQ = preferredQuality()
+        val displayShort = Td.displayShortSide(appContext)
         if (mode == "web") {
             val videoUrl = uri.getQueryParameter("v").orEmpty()
             val referer = uri.getQueryParameter("ref").orEmpty()
@@ -190,12 +359,16 @@ class TelegramCatalogueSource(
             }.build()
             return Td.buildQualityVideos(
                 baseUrl = videoUrl,
-                width = 1920,
-                height = 1080,
+                width = 0,
+                height = 0,
                 headers = reqHeaders,
+                preferredQuality = prefQ,
+                displayShortSide = displayShort,
             )
         }
         val chatId = uri.getQueryParameter("chat")?.toLongOrNull() ?: resolveChatId()
+        Td.ensureReady(appContext)
+        if (chatId != 0L) Td.ensureChatLoaded(chatId)
         val msgId = uri.getQueryParameter("msg")?.toLongOrNull() ?: 0L
         var fileId = uri.getQueryParameter("file")?.toIntOrNull() ?: 0
         val width = uri.getQueryParameter("w")?.toIntOrNull() ?: 0
@@ -206,43 +379,58 @@ class TelegramCatalogueSource(
         if (fileId != 0) {
             Td.prewarm(fileId)
         }
-        val streamUrl = TdHttpServer.urlFor(fileId, chatId, msgId)
+        val streamUrl = TdHttpServer.urlFor(
+            fileId = fileId,
+            chatId = chatId,
+            messageId = msgId,
+            isExtension = true,
+        )
         return Td.buildQualityVideos(
             baseUrl = streamUrl,
             width = width,
             height = height,
+            preferredQuality = prefQ,
+            displayShortSide = displayShort,
         )
     }
 
-    private fun videoToSAnime(v: Td.ChatVideo): SAnime {
-        val clean = cleanTitle(v)
-        val resTag = Td.resolutionTag(v.width, v.height)
+    private fun seriesToSAnime(chatId: Long, series: TelegramAnimeParser.GroupedSeries): SAnime {
+        val firstVideo = series.videos.firstOrNull()?.video
+        val detectedRes = series.videos.firstNotNullOfOrNull { pv ->
+            when {
+                pv.video.width > 0 || pv.video.height > 0 -> Td.resolutionTag(pv.video.width, pv.video.height)
+                !pv.parsed.qualityTag.isNullOrBlank() -> pv.parsed.qualityTag
+                else -> null
+            }
+        }
+        val epCount = series.videos.size
+        val kindTag = series.kind.label.takeIf { it.isNotBlank() }
+        val seasonTag = if (series.effectiveSeason >= 2) "Season ${series.effectiveSeason}" else null
         return SAnime.create().apply {
-            url = buildTdItemUrl(v)
-            title = clean
+            url = "/tg/series?chat=$chatId" +
+                "&key=${Uri.encode(series.groupKey)}" +
+                "&title=${Uri.encode(series.seriesTitle)}" +
+                "&disp=${Uri.encode(series.displayTitle)}" +
+                "&season=${series.effectiveSeason}" +
+                "&kind=${series.kind.name}"
+            title = series.displayTitle
             author = entry.title
-            artist = resTag
-            genre = "Telegram, $resTag"
+            artist = listOfNotNull(kindTag, seasonTag, detectedRes).joinToString(" • ").ifBlank { null }
+            genre = listOfNotNull("Telegram", kindTag, seasonTag, detectedRes).joinToString(", ")
             status = SAnime.COMPLETED
             thumbnail_url = when {
-                v.thumbFileId != 0 -> TdHttpServer.thumbUrlFor(v.thumbFileId)
-                !v.thumb.isNullOrBlank() -> v.thumb
+                series.posterFileId != 0 -> TdHttpServer.thumbUrlFor(series.posterFileId)
+                !series.posterFallbackThumb.isNullOrBlank() -> series.posterFallbackThumb
                 else -> null
             }
             description = buildString {
-                if (v.caption.isNotBlank()) {
-                    appendLine(v.caption.trim())
+                appendLine(series.displayTitle)
+                append("Episodes: $epCount")
+                detectedRes?.let { append(" • $it") }
+                firstVideo?.caption?.trim()?.takeIf { it.isNotBlank() }?.let { cap ->
                     appendLine()
-                }
-                if (v.fileName.isNotBlank()) {
-                    appendLine("File: ${v.fileName}")
-                }
-                append("Quality: $resTag")
-                if (v.size > 0L) {
-                    append(" • Size: ${formatBytes(v.size)}")
-                }
-                if (v.duration > 0) {
-                    append(" • Duration: ${v.duration / 60}m ${v.duration % 60}s")
+                    appendLine()
+                    append(cap)
                 }
             }
             initialized = true
@@ -278,7 +466,7 @@ class TelegramCatalogueSource(
     }
 
     private fun buildTdItemUrl(v: Td.ChatVideo): String {
-        val clean = cleanTitle(v)
+        val parsed = TelegramAnimeParser.parseVideo(v)
         return "/tg/item?mode=td" +
             "&chat=${v.chatId}" +
             "&msg=${v.messageId}" +
@@ -288,27 +476,16 @@ class TelegramCatalogueSource(
             "&dur=${v.duration}" +
             "&size=${v.size}" +
             "&date=${v.date}" +
-            "&title=${Uri.encode(clean)}"
-    }
-
-    private fun cleanTitle(v: Td.ChatVideo): String {
-        val firstLine = v.caption.lineSequence()
-            .map { it.trim() }
-            .firstOrNull { it.isNotEmpty() }
-        return when {
-            !firstLine.isNullOrBlank() -> firstLine.take(MAX_TITLE_LEN)
-            v.fileName.isNotBlank() -> v.fileName.substringBeforeLast(".").ifBlank { v.fileName }
-            else -> v.title.ifBlank { "Video #${v.messageId}" }
-        }
+            "&title=${Uri.encode(parsed.episodeLabel)}"
     }
 
     private fun formatBytes(bytes: Long): String {
         if (bytes <= 0L) return "0 B"
         val mb = bytes.toDouble() / (1024.0 * 1024.0)
         return if (mb >= 1024.0) {
-            String.format(java.util.Locale.US, "%.2f GB", mb / 1024.0)
+            String.format(Locale.US, "%.2f GB", mb / 1024.0)
         } else {
-            String.format(java.util.Locale.US, "%.1f MB", mb)
+            String.format(Locale.US, "%.1f MB", mb)
         }
     }
 
@@ -353,6 +530,10 @@ class TelegramCatalogueSource(
 
     companion object {
         private const val PAGE_LIMIT = 40
-        private const val MAX_TITLE_LEN = 90
+        private const val CATALOGUE_SCAN_MESSAGES = 250
+        private const val MAX_SCAN_ROUNDS = 3
+        private const val EPISODE_SEARCH_LIMIT = 100
+        private const val PREF_PREFERRED_QUALITY = "preferred_quality"
+        private const val DEFAULT_QUALITY = "hls"
     }
 }
