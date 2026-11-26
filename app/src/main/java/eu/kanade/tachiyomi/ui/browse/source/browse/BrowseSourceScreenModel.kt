@@ -213,7 +213,7 @@ class BrowseSourceScreenModel(
                                 ),
                             )
                             localAnime = localAnime.copy(
-                                thumbnailUrl = freshThumb,
+                                ogThumbnailUrl = freshThumb,
                                 coverLastModified = now,
                             )
                         }
