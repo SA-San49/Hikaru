@@ -766,7 +766,9 @@ class TelegramCatalogueSource(
     }
 
     private fun webVideoToSAnime(v: TelegramVideo): SAnime {
-        val clean = v.title.lineSequence().firstOrNull { it.isNotBlank() }?.trim()
+        val clean = v.title.lineSequence().firstOrNull { it.isNotBlank() }
+            ?.replace('_', ' ')
+            ?.trim()
             ?.takeIf { it.isNotEmpty() } ?: "Video #${v.messageId}"
         val postUrl = "https://t.me/${v.channel.removePrefix("@")}/${v.messageId}"
         return SAnime.create().apply {

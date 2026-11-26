@@ -1297,7 +1297,11 @@ object Td {
                 val video = videoOf(chatId, m)
                 if (video != null) {
                     val own = video.caption
-                    if (own.isNotBlank() && q.isNotBlank() && !own.contains(q, ignoreCase = true)) {
+                    if (
+                        own.isNotBlank() &&
+                        q.isNotBlank() &&
+                        !own.replace('_', ' ').contains(q.replace('_', ' '), ignoreCase = true)
+                    ) {
                         done = true
                         break
                     }
@@ -1383,7 +1387,11 @@ object Td {
                 if (!seen.add(m.id)) continue
                 advanced = true
                 val v = videoOf(chatId, m) ?: continue
-                if (v.fileName.contains(q, ignoreCase = true) || v.caption.contains(q, ignoreCase = true)) {
+                val normQ = q.replace('_', ' ')
+                if (
+                    v.fileName.replace('_', ' ').contains(normQ, ignoreCase = true) ||
+                    v.caption.replace('_', ' ').contains(normQ, ignoreCase = true)
+                ) {
                     out += v
                 }
             }

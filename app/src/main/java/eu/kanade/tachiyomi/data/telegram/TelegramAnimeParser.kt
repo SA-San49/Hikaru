@@ -282,6 +282,7 @@ object TelegramAnimeParser {
             var line = URL_REGEX.replace(rawLine, " ")
             line = HANDLE_REGEX.replace(line, " ")
             line = LETTER_HASHTAG_REGEX.replace(line, " ")
+            line = MULTI_SPACE_REGEX.replace(line.replace('_', ' '), " ").trim()
             line = stripDecorativeEdges(line)
             if (line.isBlank() || PROMO_LINE_REGEX.containsMatchIn(line)) continue
 
@@ -480,6 +481,7 @@ object TelegramAnimeParser {
         text = EXT_REGEX.replace(text, "")
         text = text.replace('_', ' ')
         text = DOT_BETWEEN_TEXT_REGEX.replace(text, " ")
+        text = MULTI_SPACE_REGEX.replace(text, " ").trim()
 
         val qualityTag = extractQualityTag(text)
 
@@ -647,7 +649,7 @@ object TelegramAnimeParser {
         text = EDGE_PUNCT_REGEX.replace(text, "").trim()
         text = stripDecorativeEdges(text)
 
-        val seriesTitle = text.ifBlank { fallback.trim() }
+        val seriesTitle = text.ifBlank { MULTI_SPACE_REGEX.replace(fallback.replace('_', ' '), " ").trim() }
         val baseKey = NON_ALNUM_REGEX.replace(seriesTitle.lowercase(Locale.US), "")
             .ifBlank { seriesTitle.lowercase(Locale.US) }
         val effectiveSeason = if (season <= 1) 1 else season
@@ -1252,7 +1254,10 @@ object TelegramAnimeParser {
     }
 
     fun buildSearchQuery(seriesTitle: String): String {
-        val clean = seriesTitle.trim().replace(Regex("""[.…]+$"""), "").trim()
+        val clean = MULTI_SPACE_REGEX.replace(seriesTitle.replace('_', ' '), " ")
+            .trim()
+            .replace(Regex("""[.…]+$"""), "")
+            .trim()
         val words = clean.split(Regex("""\s+""")).filter { it.isNotBlank() }
         if (words.size <= 4 && clean.length <= 36) return clean
         val sb = StringBuilder()
