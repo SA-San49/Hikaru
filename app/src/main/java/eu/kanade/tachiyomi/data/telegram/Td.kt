@@ -1154,8 +1154,8 @@ object Td {
     }
 
     @Suppress("ReturnCount", "CyclomaticComplexMethod")
-    private fun videoOf(chatId: Long, message: TdApi.Message): ChatVideo? =
-        when (val c = message.content) {
+    private fun videoOf(chatId: Long, message: TdApi.Message): ChatVideo? {
+        return when (val c = message.content) {
             is TdApi.MessageVideo -> {
                 val id = c.video.video.id
                 if (id == 0 || isImageFileNameOrMime(c.video.fileName, c.video.mimeType)) return null
@@ -1221,6 +1221,7 @@ object Td {
             }
             else -> null
         }
+    }
 
     suspend fun searchPosterByChunks(
         chatId: Long,
