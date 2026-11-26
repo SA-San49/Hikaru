@@ -47,6 +47,9 @@ open /* SY <-- */ class NetworkHelper(
                 },
             )
             .connectionPool(ConnectionPool(256, 5, TimeUnit.MINUTES)) // More aggressive pooling
+            .connectTimeout(DOWNLOAD_CONNECT_TIMEOUT_SECS, TimeUnit.SECONDS)
+            .readTimeout(DOWNLOAD_READ_TIMEOUT_SECS, TimeUnit.SECONDS)
+            .callTimeout(0, TimeUnit.SECONDS)
             .retryOnConnectionFailure(true)
             .build()
     }
@@ -146,5 +149,7 @@ open /* SY <-- */ class NetworkHelper(
     }
 
     companion object {
+        private const val DOWNLOAD_CONNECT_TIMEOUT_SECS = 30L
+        private const val DOWNLOAD_READ_TIMEOUT_SECS = 60L
     }
 }

@@ -55,6 +55,8 @@ import tachiyomi.core.common.util.lang.launchIO
 import tachiyomi.domain.anime.interactor.GetDuplicateLibraryAnime
 import tachiyomi.domain.anime.interactor.NetworkToLocalAnime
 import tachiyomi.domain.anime.model.Anime
+import eu.kanade.tachiyomi.data.telegram.TelegramCatalogueSource
+import tachiyomi.domain.anime.model.AnimeUpdate
 import tachiyomi.domain.anime.model.toAnimeUpdate
 import tachiyomi.domain.category.interactor.GetCategories
 import tachiyomi.domain.category.interactor.SetAnimeCategories
@@ -196,7 +198,26 @@ class BrowseSourceScreenModel(
                 getRemoteAnime.subscribe(sourceId, listing.query ?: "", listing.filters)
             }.flow.map { pagingData ->
                 val filtered = pagingData.map {
-                    val localAnime = networkToLocalAnime.getLocal(it.toDomainAnime(sourceId))
+                    val domainAnime = it.toDomainAnime(sourceId)
+                    var localAnime = networkToLocalAnime.getLocal(domainAnime)
+                    if (source is TelegramCatalogueSource) {
+                        val freshThumb = domainAnime.thumbnailUrl
+                        val thumbChanged = !freshThumb.isNullOrBlank() && freshThumb != localAnime.thumbnailUrl
+                        if (thumbChanged && (!localAnime.favorite || localAnime.thumbnailUrl.isNullOrBlank())) {
+                            val now = System.currentTimeMillis()
+                            updateAnime.await(
+                                AnimeUpdate(
+                                    id = localAnime.id,
+                                    thumbnailUrl = freshThumb,
+                                    coverLastModified = now,
+                                ),
+                            )
+                            localAnime = localAnime.copy(
+                                thumbnailUrl = freshThumb,
+                                coverLastModified = now,
+                            )
+                        }
+                    }
                     MutableStateFlow(localAnime).asStateFlow()
                 }
                 if (hideInLibraryItems) {

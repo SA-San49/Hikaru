@@ -144,14 +144,16 @@ object Td {
     private const val POST_VIDEOS_MAX = 2_000
     private const val TAIL_PAGE = 100
     private const val TAIL_MAX_PAGES = 60
-    private const val THUMB_WAIT_MS = 8_000L
-    private const val THUMB_POLL_MS = 60L
+    private const val THUMB_WAIT_MS = 20_000L
+    private const val THUMB_POLL_MS = 120L
+    private const val THUMB_MIN_WIDTH = 320
+    private const val THUMB_DOWNLOAD_PRIORITY = 24
     private const val DOWNLOAD_PRIORITY = 32
-    private const val STREAM_EVICT_DELAY_MS = 6_000L
+    private const val STREAM_EVICT_DELAY_MS = 10_000L
     private const val POSTER_SEARCH_LIMIT = 20
     private const val POSTER_CHUNKS_MAX = 4
     private const val MIN_ANIMATION_BYTES = 256L * 1024
-    const val AHEAD_BYTES: Long = 512L * 1024
+    const val AHEAD_BYTES: Long = 1024L * 1024
     private val IMAGE_EXTENSIONS = setOf(
         ".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".avif", ".heic", ".tiff",
     )
@@ -974,31 +976,30 @@ object Td {
         var scanned = 0
         var note: String? = null
 
-        if (before == 0L) {
-            var photoCursor = 0L
-            for (pageIdx in 0 until 2) {
-                val photoHits = query(
-                    TdApi.SearchChatMessages(
-                        chatId,
-                        null,
-                        "",
-                        null,
-                        photoCursor,
-                        0,
-                        SEARCH_HITS_PER_CALL,
-                        TdApi.SearchMessagesFilterPhoto(),
-                    ),
-                ) as? TdApi.FoundChatMessages ?: break
-                val batchMsgs = photoHits.messages
-                if (batchMsgs.isEmpty()) break
-                var oldestId = Long.MAX_VALUE
-                for (m in batchMsgs) {
-                    if (m.id < oldestId) oldestId = m.id
-                    imageOf(chatId, m)?.let { images.putIfAbsent(it.messageId, it) }
-                }
-                if (oldestId == Long.MAX_VALUE || (photoCursor != 0L && oldestId >= photoCursor)) break
-                photoCursor = oldestId
+        val photoPages = if (before == 0L) 2 else 1
+        var photoCursor = before
+        for (pageIdx in 0 until photoPages) {
+            val photoHits = query(
+                TdApi.SearchChatMessages(
+                    chatId,
+                    null,
+                    "",
+                    null,
+                    photoCursor,
+                    0,
+                    SEARCH_HITS_PER_CALL,
+                    TdApi.SearchMessagesFilterPhoto(),
+                ),
+            ) as? TdApi.FoundChatMessages ?: break
+            val batchMsgs = photoHits.messages
+            if (batchMsgs.isEmpty()) break
+            var oldestId = Long.MAX_VALUE
+            for (m in batchMsgs) {
+                if (m.id < oldestId) oldestId = m.id
+                imageOf(chatId, m)?.let { images.putIfAbsent(it.messageId, it) }
             }
+            if (oldestId == Long.MAX_VALUE || (photoCursor != 0L && oldestId >= photoCursor)) break
+            photoCursor = oldestId
         }
 
         while (scanned < targetMessages) {
@@ -1063,11 +1064,16 @@ object Td {
     private fun imageOf(chatId: Long, message: TdApi.Message): ChatImage? =
         when (val c = message.content) {
             is TdApi.MessagePhoto -> {
-                val best = c.photo.sizes.maxByOrNull { it.width * it.height }
-                val fileId = best?.photo?.id ?: 0
-                if (fileId == 0) {
+                val best = c.photo.sizes
+                    .filter { it.width >= THUMB_MIN_WIDTH }
+                    .minByOrNull { it.width }
+                    ?: c.photo.sizes.maxByOrNull { it.width * it.height }
+                val photoFile = best?.photo
+                val fileId = photoFile?.id ?: 0
+                if (fileId == 0 || photoFile == null) {
                     null
                 } else {
+                    fileValues.putIfAbsent(fileId, photoFile)
                     ChatImage(
                         chatId = chatId,
                         messageId = message.id,
@@ -1087,6 +1093,7 @@ object Td {
                     lower.endsWith(".png") ||
                     lower.endsWith(".webp")
                 if (isImg && doc.document.id != 0) {
+                    fileValues.putIfAbsent(doc.document.id, doc.document)
                     ChatImage(
                         chatId = chatId,
                         messageId = message.id,
@@ -1160,6 +1167,7 @@ object Td {
                 val id = c.video.video.id
                 if (id == 0 || isImageFileNameOrMime(c.video.fileName, c.video.mimeType)) return null
                 verifiedVideoFiles[id] = c.video.mimeType.ifBlank { "video/mp4" }
+                fileValues.putIfAbsent(id, c.video.video)
                 ChatVideo(
                     chatId = chatId,
                     messageId = message.id,
@@ -1183,6 +1191,7 @@ object Td {
                     (c.animation.duration <= 0 && c.animation.animation.size < MIN_ANIMATION_BYTES)
                 if (animInvalid) return null
                 verifiedVideoFiles[id] = c.animation.mimeType.ifBlank { "video/mp4" }
+                fileValues.putIfAbsent(id, c.animation.animation)
                 ChatVideo(
                     chatId = chatId,
                     messageId = message.id,
@@ -1205,6 +1214,7 @@ object Td {
                 val id = doc.document.id
                 if (id == 0 || !isPlayableDocument(doc.fileName, doc.mimeType)) return null
                 verifiedVideoFiles[id] = doc.mimeType.ifBlank { "video/mp4" }
+                fileValues.putIfAbsent(id, doc.document)
                 ChatVideo(
                     chatId = chatId,
                     messageId = message.id,
@@ -1389,21 +1399,62 @@ object Td {
         )
     }
 
-    suspend fun thumbPath(fileId: Int, waitMs: Long = THUMB_WAIT_MS): String? {
-        if (fileId == 0) return null
-        runCatching { loadFile(fileId) }
+    suspend fun touchMessagePhoto(chatId: Long, messageId: Long): Int {
+        if (chatId == 0L || messageId == 0L) return 0
+        val msg = query(TdApi.GetMessage(chatId, messageId)) as? TdApi.Message ?: return 0
+        val freshImg = imageOf(chatId, msg)
+        if (freshImg != null && freshImg.fileId != 0) {
+            downloadErrors.remove(freshImg.fileId)
+            return freshImg.fileId
+        }
+        val freshVid = videoOf(chatId, msg)
+        val thumbId = freshVid?.thumbFileId ?: 0
+        if (thumbId != 0) downloadErrors.remove(thumbId)
+        return thumbId
+    }
+
+    @Suppress("CyclomaticComplexMethod", "ReturnCount")
+    suspend fun thumbPath(
+        fileId: Int,
+        chatId: Long = 0L,
+        messageId: Long = 0L,
+        waitMs: Long = THUMB_WAIT_MS,
+    ): String? {
+        var activeId = fileId
+        if (activeId == 0 && chatId != 0L && messageId != 0L) {
+            activeId = touchMessagePhoto(chatId, messageId)
+        }
+        if (activeId == 0) return null
+        runCatching { loadFile(activeId) }
         val deadline = System.currentTimeMillis() + waitMs
         var asked = false
+        var repaired = false
         while (true) {
-            val f = fileValues[fileId] ?: fetchedFiles[fileId]
+            val revBefore = revision.value
+            val f = fileValues[activeId] ?: fetchedFiles[activeId]
             val local = f?.local
-            if (local?.isDownloadingCompleted == true && local.path.isNotBlank()) return local.path
-            if (!asked) {
-                request(fileId, 0, 0)
+            if (local?.isDownloadingCompleted == true && local.path.isNotBlank()) {
+                val diskFile = File(local.path)
+                if (diskFile.exists() && diskFile.length() > 0L) return local.path
+            }
+            val hasErr = downloadErrors[activeId] != null || (local != null && !local.canBeDownloaded)
+            val hasMsgRef = chatId != 0L && messageId != 0L
+            if (hasErr && !repaired && hasMsgRef) {
+                repaired = true
+                downloadErrors.remove(activeId)
+                val freshId = touchMessagePhoto(chatId, messageId)
+                if (freshId != 0) {
+                    activeId = freshId
+                    asked = false
+                    continue
+                }
+            }
+            if (!asked || local?.isDownloadingActive != true) {
+                request(activeId, 0L, 0L, THUMB_DOWNLOAD_PRIORITY)
                 asked = true
             }
             if (System.currentTimeMillis() >= deadline) return null
-            delay(THUMB_POLL_MS)
+            awaitUpdate(revBefore, THUMB_POLL_MS)
         }
     }
 
@@ -1467,11 +1518,11 @@ object Td {
         }
     }
 
-    fun request(fileId: Int, offset: Long, limit: Long) {
+    fun request(fileId: Int, offset: Long, limit: Long, priority: Int = DOWNLOAD_PRIORITY) {
         val c = client ?: return
         runCatching {
             c.send(
-                TdApi.DownloadFile(fileId, DOWNLOAD_PRIORITY, offset, limit, false),
+                TdApi.DownloadFile(fileId, priority, offset, limit, false),
                 Client.ResultHandler { result ->
                     if (result is TdApi.Error) {
                         downloadErrors[fileId] = result.message

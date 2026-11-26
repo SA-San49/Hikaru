@@ -41,6 +41,8 @@ class TelegramCatalogueSource(
 
     private data class CachedPoster(
         val fileId: Int,
+        val chatId: Long,
+        val messageId: Long,
         val fallbackThumb: String?,
         val upgradedTitle: String,
         val upgradedDisplayTitle: String,
@@ -235,6 +237,7 @@ class TelegramCatalogueSource(
             if (needsRealPoster && chatId != 0L && Td.isSignedIn() && groupKey !in posterMissKeys) {
                 val chunks = TelegramAnimeParser.buildPosterSearchChunks(seriesTitle)
                 if (chunks.isNotEmpty()) {
+                    var completed = false
                     val matched = withTimeoutOrNull(POSTER_SEARCH_TIMEOUT_MS) {
                         Td.searchPosterByChunks(chatId, chunks, collectedImages) { img ->
                             TelegramAnimeParser.matchesSeriesPoster(
@@ -244,7 +247,7 @@ class TelegramCatalogueSource(
                                 targetSeason = targetSeason,
                                 image = img,
                             ) != null
-                        }
+                        }.also { completed = true }
                     }
                     if (matched != null && matched.fileId != 0) {
                         val imgParsed = TelegramAnimeParser.parseImage(matched)
@@ -252,6 +255,8 @@ class TelegramCatalogueSource(
                         val bestDisplay = TelegramAnimeParser.formatSeriesDisplayTitle(bestTitle, targetSeason, targetKind)
                         val entryPoster = CachedPoster(
                             fileId = matched.fileId,
+                            chatId = matched.chatId,
+                            messageId = matched.messageId,
                             fallbackThumb = matched.minithumb,
                             upgradedTitle = bestTitle,
                             upgradedDisplayTitle = bestDisplay,
@@ -265,13 +270,17 @@ class TelegramCatalogueSource(
                                 seriesCache[ak] = upgraded
                             }
                         }
-                        anime.thumbnail_url = TdHttpServer.thumbUrlFor(matched.fileId)
-                    } else {
+                        anime.thumbnail_url = TdHttpServer.thumbUrlFor(matched.fileId, matched.chatId, matched.messageId)
+                    } else if (completed) {
                         posterMissKeys += groupKey
                     }
                 }
             } else if (cachedPoster != null && cachedPoster.fileId != 0) {
-                anime.thumbnail_url = TdHttpServer.thumbUrlFor(cachedPoster.fileId)
+                anime.thumbnail_url = TdHttpServer.thumbUrlFor(
+                    cachedPoster.fileId,
+                    cachedPoster.chatId,
+                    cachedPoster.messageId,
+                )
             }
         }
         return anime.apply { initialized = true }
@@ -600,7 +609,14 @@ class TelegramCatalogueSource(
 
         val preResolved = groups.map { g ->
             if (g.hasRealPoster) {
-                val cached = CachedPoster(g.posterFileId, g.posterFallbackThumb, g.seriesTitle, g.displayTitle)
+                val cached = CachedPoster(
+                    fileId = g.posterFileId,
+                    chatId = g.posterChatId,
+                    messageId = g.posterMessageId,
+                    fallbackThumb = g.posterFallbackThumb,
+                    upgradedTitle = g.seriesTitle,
+                    upgradedDisplayTitle = g.displayTitle,
+                )
                 posterCache[g.groupKey] = cached
                 g.aliasKeys.forEach { ak -> posterCache[ak] = cached }
                 g
@@ -610,9 +626,7 @@ class TelegramCatalogueSource(
             }
         }
 
-        val toSearch = preResolved
-            .filter { !it.hasRealPoster && it.groupKey !in posterMissKeys }
-            .take(MAX_POSTER_SEARCHES_PER_PAGE)
+        val toSearch = preResolved.filter { !it.hasRealPoster && it.groupKey !in posterMissKeys }
         if (toSearch.isEmpty()) return preResolved
 
         val sem = Semaphore(POSTER_SEARCH_CONCURRENCY)
@@ -631,9 +645,11 @@ class TelegramCatalogueSource(
                                 image = img,
                             ) != null
                         }
+                        var completed = localHit != null
                         val matched = localHit ?: run {
                             val chunks = TelegramAnimeParser.buildPosterSearchChunks(g.seriesTitle)
                             if (chunks.isEmpty()) {
+                                completed = true
                                 null
                             } else {
                                 withTimeoutOrNull(POSTER_SEARCH_TIMEOUT_MS) {
@@ -645,7 +661,7 @@ class TelegramCatalogueSource(
                                             targetSeason = g.effectiveSeason,
                                             image = img,
                                         ) != null
-                                    }
+                                    }.also { completed = true }
                                 }
                             }
                         }
@@ -659,13 +675,15 @@ class TelegramCatalogueSource(
                             )
                             val cached = CachedPoster(
                                 fileId = matched.fileId,
+                                chatId = matched.chatId,
+                                messageId = matched.messageId,
                                 fallbackThumb = matched.minithumb,
                                 upgradedTitle = bestTitle,
                                 upgradedDisplayTitle = bestDisplay,
                             )
                             posterCache[g.groupKey] = cached
                             g.aliasKeys.forEach { ak -> posterCache[ak] = cached }
-                        } else {
+                        } else if (completed) {
                             posterMissKeys += g.groupKey
                         }
                     }
@@ -691,6 +709,8 @@ class TelegramCatalogueSource(
         cached: CachedPoster,
     ): TelegramAnimeParser.GroupedSeries = g.copy(
         posterFileId = cached.fileId,
+        posterChatId = cached.chatId,
+        posterMessageId = cached.messageId,
         posterFallbackThumb = cached.fallbackThumb ?: g.posterFallbackThumb,
         seriesTitle = cached.upgradedTitle.ifBlank { g.seriesTitle },
         displayTitle = cached.upgradedDisplayTitle.ifBlank { g.displayTitle },
@@ -722,8 +742,13 @@ class TelegramCatalogueSource(
             genre = listOfNotNull("Telegram", kindTag, seasonTag, detectedRes).joinToString(", ")
             status = SAnime.COMPLETED
             thumbnail_url = when {
-                series.posterFileId != 0 -> TdHttpServer.thumbUrlFor(series.posterFileId)
-                !series.posterFallbackThumb.isNullOrBlank() -> series.posterFallbackThumb
+                series.posterFileId != 0 -> TdHttpServer.thumbUrlFor(
+                    fileId = series.posterFileId,
+                    chatId = series.posterChatId,
+                    messageId = series.posterMessageId,
+                )
+                !series.posterFallbackThumb.isNullOrBlank() &&
+                    series.posterFallbackThumb.startsWith("http", ignoreCase = true) -> series.posterFallbackThumb
                 else -> null
             }
             description = buildString {
@@ -841,9 +866,8 @@ class TelegramCatalogueSource(
         private const val MAX_SCAN_ROUNDS = 3
         private const val EPISODE_SEARCH_LIMIT = 100
         private const val MAX_EPISODE_SEARCH_CHUNKS = 3
-        private const val MAX_POSTER_SEARCHES_PER_PAGE = 12
-        private const val POSTER_SEARCH_CONCURRENCY = 4
-        private const val POSTER_SEARCH_TIMEOUT_MS = 1800L
+        private const val POSTER_SEARCH_CONCURRENCY = 6
+        private const val POSTER_SEARCH_TIMEOUT_MS = 4500L
         private const val MIN_ANIMATION_SECS = 3
         private const val MIN_ANIMATION_BYTES = 2L * 1024L * 1024L
         private const val PREF_PREFERRED_QUALITY = "preferred_quality"

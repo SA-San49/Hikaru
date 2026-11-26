@@ -200,10 +200,10 @@ class PlayerActivity : BaseActivity() {
         private const val EXTRA_DIRECT_HEADERS = "directHeaders"
         private const val EXTRA_DIRECT_WIDTH = "directWidth"
         private const val EXTRA_DIRECT_HEIGHT = "directHeight"
-        private const val TG_DEMUXER_MAX_BYTES = 6 * 1024 * 1024
-        private const val TG_DEMUXER_BACK_BYTES = 2 * 1024 * 1024
-        private const val TG_EXT_DEMUXER_MAX_BYTES = 10 * 1024 * 1024
-        private const val TG_EXT_DEMUXER_BACK_BYTES = 4 * 1024 * 1024
+        private const val TG_DEMUXER_MAX_BYTES = 12 * 1024 * 1024
+        private const val TG_DEMUXER_BACK_BYTES = 4 * 1024 * 1024
+        private const val TG_EXT_DEMUXER_MAX_BYTES = 15 * 1024 * 1024
+        private const val TG_EXT_DEMUXER_BACK_BYTES = 5 * 1024 * 1024
         private const val TG_PROBE_ATTEMPTS = 15
         private const val TG_PROBE_DELAY_MS = 200L
         private val IMAGE_TRACK_CODECS = setOf("mjpeg", "png", "webp", "gif", "bmp", "tiff")
@@ -823,7 +823,12 @@ class PlayerActivity : BaseActivity() {
 
     override fun onResume() {
         if (player.initialized && player.paused == false) {
-            player.restoreCache()
+            val activeVideo = viewModel.currentVideo.value
+            if (activeVideo != null && isTelegramVideo(activeVideo)) {
+                applyTelegramStreamingOptions(activeVideo)
+            } else {
+                player.restoreCache()
+            }
         }
         // Reconectar Cast si estaba activo
         castManager.apply {
@@ -1075,7 +1080,12 @@ class PlayerActivity : BaseActivity() {
     @SuppressLint("UnspecifiedRegisterReceiverFlag")
     override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration) {
         if (!isInPictureInPictureMode) {
-            player.restoreCache()
+            val activeVideo = viewModel.currentVideo.value
+            if (activeVideo != null && isTelegramVideo(activeVideo)) {
+                applyTelegramStreamingOptions(activeVideo)
+            } else {
+                player.restoreCache()
+            }
             pipReceiver?.let {
                 unregisterReceiver(pipReceiver)
                 pipReceiver = null
@@ -1568,20 +1578,24 @@ class PlayerActivity : BaseActivity() {
         finish()
     }
 
-    private fun applyTelegramStreamingOptions(video: Video) {
-        val url = video.videoUrl
-        val isTelegramStream = url.contains("127.0.0.1:49731") ||
+    private fun isTelegramVideo(video: Video): Boolean =
+        video.videoUrl.contains("127.0.0.1:49731") ||
             viewModel.isDirectVideoMode() ||
             viewModel.currentSource.value is TelegramCatalogueSource
-        if (!isTelegramStream) return
+
+    private fun applyTelegramStreamingOptions(video: Video) {
+        val url = video.videoUrl
+        if (!isTelegramVideo(video)) return
         val isExtensionStream = url.contains("src=ext") ||
             viewModel.currentSource.value is TelegramCatalogueSource
         val maxBytes = if (isExtensionStream) TG_EXT_DEMUXER_MAX_BYTES else TG_DEMUXER_MAX_BYTES
         val backBytes = if (isExtensionStream) TG_EXT_DEMUXER_BACK_BYTES else TG_DEMUXER_BACK_BYTES
-        val readaheadSecs = if (isExtensionStream) "10" else "6"
-        val cacheSecs = if (isExtensionStream) "15" else "8"
+        val readaheadSecs = "300"
+        val cacheSecs = "300"
         MPVLib.setPropertyString("cache", "yes")
+        MPVLib.setPropertyString("cache-pause", "yes")
         MPVLib.setPropertyString("cache-pause-initial", "no")
+        MPVLib.setPropertyString("cache-pause-wait", "1")
         MPVLib.setPropertyString("demuxer-max-bytes", "$maxBytes")
         MPVLib.setPropertyString("demuxer-max-back-bytes", "$backBytes")
         MPVLib.setPropertyString("demuxer-readahead-secs", readaheadSecs)

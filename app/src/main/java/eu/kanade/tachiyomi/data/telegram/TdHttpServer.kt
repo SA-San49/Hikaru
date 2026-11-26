@@ -10,26 +10,34 @@ import java.io.FileInputStream
 import java.io.IOException
 import java.io.InputStream
 import java.io.RandomAccessFile
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.min
 
 object TdHttpServer {
 
     private const val PORT = 49731
-    private const val PRIME_BYTES = 512L * 1024
-    private const val WINDOW_BYTES = 2L * 1024 * 1024
-    private const val ADVANCE_BYTES = 1L * 1024 * 1024
-    private const val EXT_WINDOW_BYTES = 10L * 1024 * 1024
-    private const val EXT_ADVANCE_BYTES = 2L * 1024 * 1024
-    private const val TAIL_THRESHOLD_BYTES = 1L * 1024 * 1024
-    private const val START_BUDGET_MS = 45_000L
-    private const val GRACE_MS = 20_000L
+    private const val PRIME_BYTES = 1L * 1024 * 1024
+    private const val RAMP_TRIGGER_BYTES = 256L * 1024
+    private const val WINDOW_BYTES = 12L * 1024 * 1024
+    private const val ADVANCE_BYTES = 4L * 1024 * 1024
+    private const val EXT_WINDOW_BYTES = 16L * 1024 * 1024
+    private const val EXT_ADVANCE_BYTES = 6L * 1024 * 1024
+    private const val TAIL_THRESHOLD_BYTES = 8L * 1024 * 1024
+    private const val START_BUDGET_MS = 60_000L
+    private const val GRACE_MS = 35_000L
     private const val POLL_MS = 25L
+    private const val REASK_INTERVAL_MS = 600L
     private const val SINGLE_BYTE_MASK = 0xFF
     private const val HEADER_SNIFF_BYTES = 12
     private const val MIN_HEADER_SNIFF_BYTES = 3
+    private const val THUMB_CACHE_MAX_AGE_SECS = 604_800
 
     @Volatile
     private var server: LocalTdServer? = null
+
+    private val latestStreamGen = ConcurrentHashMap<Int, AtomicLong>()
 
     @Synchronized
     fun ensureStarted(): Int {
@@ -53,10 +61,21 @@ object TdHttpServer {
         return "http://127.0.0.1:$port/tg?id=$fileId&chat=$chatId&msg=$messageId$ext"
     }
 
-    fun thumbUrlFor(fileId: Int): String {
+    fun thumbUrlFor(
+        fileId: Int,
+        chatId: Long = 0L,
+        messageId: Long = 0L,
+    ): String {
         val port = ensureStarted()
-        return "http://127.0.0.1:$port/thumb?id=$fileId"
+        val extra = if (chatId != 0L && messageId != 0L) "&chat=$chatId&msg=$messageId" else ""
+        return "http://127.0.0.1:$port/thumb?id=$fileId$extra"
     }
+
+    private fun nextGeneration(fileId: Int): Long =
+        latestStreamGen.computeIfAbsent(fileId) { AtomicLong(0L) }.incrementAndGet()
+
+    private fun currentGeneration(fileId: Int): Long =
+        latestStreamGen[fileId]?.get() ?: 0L
 
     @Suppress("MagicNumber", "ReturnCount")
     private fun isImageMagicHeader(buf: ByteArray, off: Int, count: Int): Boolean {
@@ -92,6 +111,7 @@ object TdHttpServer {
             val chatId = session.parameters["chat"]?.firstOrNull()?.toLongOrNull() ?: 0L
             val messageId = session.parameters["msg"]?.firstOrNull()?.toLongOrNull() ?: 0L
             val isExtension = session.parameters["src"]?.firstOrNull() == "ext"
+            val isDownload = session.parameters["dl"]?.firstOrNull() == "1"
             val windowBytes = if (isExtension) EXT_WINDOW_BYTES else WINDOW_BYTES
             val advanceBytes = if (isExtension) EXT_ADVANCE_BYTES else ADVANCE_BYTES
             if (fileId == 0) {
@@ -109,7 +129,8 @@ object TdHttpServer {
 
             var state = Td.fileState(activeId) ?: runBlocking { Td.stateOf(activeId) }
             val imagePath = state?.path.orEmpty().let { Td.isImageFilePath(it) }
-            val needsRefresh = state == null || !state.canBeDownloaded || Td.downloadError(activeId) != null || imagePath
+            val invalidState = state == null || !state.canBeDownloaded || imagePath
+            val needsRefresh = invalidState || Td.downloadError(activeId) != null
             if (needsRefresh && chatId != 0L && messageId != 0L) {
                 Td.clearDownloadError(activeId)
                 val refreshed = runBlocking { Td.touchMessage(chatId, messageId) }
@@ -155,7 +176,17 @@ object TdHttpServer {
                 val stream: InputStream = if (session.method == Method.HEAD) {
                     ByteArrayInputStream(ByteArray(0))
                 } else {
-                    TdRangeInputStream(activeId, chatId, messageId, start, len, totalSize, windowBytes, advanceBytes)
+                    TdRangeInputStream(
+                        fileId = activeId,
+                        chatId = chatId,
+                        messageId = messageId,
+                        startOffset = start,
+                        length = len,
+                        totalSize = totalSize,
+                        windowBytes = windowBytes,
+                        advanceBytes = advanceBytes,
+                        continuousDownload = isDownload,
+                    )
                 }
                 val resp = newFixedLengthResponse(Response.Status.PARTIAL_CONTENT, mime, stream, len)
                 resp.addHeader("Accept-Ranges", "bytes")
@@ -166,7 +197,17 @@ object TdHttpServer {
             val stream: InputStream = if (session.method == Method.HEAD) {
                 ByteArrayInputStream(ByteArray(0))
             } else {
-                TdRangeInputStream(activeId, chatId, messageId, 0L, totalSize, totalSize, windowBytes, advanceBytes)
+                TdRangeInputStream(
+                    fileId = activeId,
+                    chatId = chatId,
+                    messageId = messageId,
+                    startOffset = 0L,
+                    length = totalSize,
+                    totalSize = totalSize,
+                    windowBytes = windowBytes,
+                    advanceBytes = advanceBytes,
+                    continuousDownload = isDownload,
+                )
             }
             val resp = newFixedLengthResponse(Response.Status.OK, mime, stream, totalSize)
             resp.addHeader("Accept-Ranges", "bytes")
@@ -176,12 +217,14 @@ object TdHttpServer {
         @Suppress("ReturnCount")
         private fun serveThumb(session: IHTTPSession): Response {
             val fileId = session.parameters["id"]?.firstOrNull()?.toIntOrNull() ?: 0
-            if (fileId == 0) {
+            val chatId = session.parameters["chat"]?.firstOrNull()?.toLongOrNull() ?: 0L
+            val messageId = session.parameters["msg"]?.firstOrNull()?.toLongOrNull() ?: 0L
+            if (fileId == 0 && (chatId == 0L || messageId == 0L)) {
                 return newFixedLengthResponse(Response.Status.BAD_REQUEST, "text/plain", "Missing thumb id")
             }
             val path = runBlocking {
                 Td.ensureReady()
-                Td.thumbPath(fileId)
+                Td.thumbPath(fileId, chatId, messageId)
             }
                 ?: return newFixedLengthResponse(Response.Status.NOT_FOUND, "text/plain", "Thumb not ready")
             val file = File(path)
@@ -193,12 +236,14 @@ object TdHttpServer {
             } else {
                 FileInputStream(file)
             }
-            return newFixedLengthResponse(
+            val resp = newFixedLengthResponse(
                 Response.Status.OK,
                 "image/jpeg",
                 thumbStream,
                 file.length(),
             )
+            resp.addHeader("Cache-Control", "public, max-age=$THUMB_CACHE_MAX_AGE_SECS")
+            return resp
         }
 
         private fun rangeNotSatisfiable(totalSize: Long): Response {
@@ -222,32 +267,48 @@ object TdHttpServer {
         private val totalSize: Long,
         private val windowBytes: Long,
         private val advanceBytes: Long,
+        private val continuousDownload: Boolean,
     ) : InputStream() {
 
         private var pos: Long = startOffset
         private var remaining: Long = length
         private var requestedFrom: Long = -1L
+        private var requestedEnd: Long = 0L
+        private var lastAskMs: Long = 0L
         private var knownAvailableUntil: Long = 0L
         private var headerChecked: Boolean = startOffset != 0L
         private var raf: RandomAccessFile? = null
         private var rafPath: String = ""
         private var repaired: Boolean = false
-        private val closed = java.util.concurrent.atomic.AtomicBoolean(false)
+        private val closed = AtomicBoolean(false)
         private val singleByte = ByteArray(1)
+        private var generation: Long = if (continuousDownload) 0L else nextGeneration(fileId)
 
         init {
             Td.onStreamOpened(fileId)
-            val initWindow = computeInitialWindow(startOffset)
-            Td.request(fileId, startOffset, initWindow)
-            requestedFrom = startOffset
+            if (continuousDownload) {
+                Td.request(fileId, startOffset, 0L)
+                requestedFrom = startOffset
+                requestedEnd = totalSize
+                lastAskMs = System.currentTimeMillis()
+            } else {
+                val initWindow = computeInitialWindow(startOffset)
+                Td.request(fileId, startOffset, initWindow)
+                requestedFrom = startOffset
+                requestedEnd = min(totalSize, startOffset + initWindow)
+                lastAskMs = System.currentTimeMillis()
+            }
         }
+
+        private fun isSuperseded(): Boolean =
+            !continuousDownload && generation != 0L && currentGeneration(fileId) != generation
 
         private fun computeInitialWindow(offset: Long): Long {
             val left = (totalSize - offset).coerceAtLeast(1L)
-            return if (left <= TAIL_THRESHOLD_BYTES) {
-                left
-            } else {
-                min(PRIME_BYTES, left)
+            return when {
+                left <= TAIL_THRESHOLD_BYTES -> left
+                offset == 0L -> min(PRIME_BYTES, left)
+                else -> min(windowBytes, left)
             }
         }
 
@@ -269,19 +330,17 @@ object TdHttpServer {
         override fun read(b: ByteArray, off: Int, len: Int): Int {
             if (len == 0) return 0
             if (remaining <= 0L || pos >= totalSize) return -1
+            if (isSuperseded()) throw IOException("Telegram stream superseded by newer seek")
             val want = min(len.toLong(), remaining).toInt()
-            var available = knownAvailableUntil - pos
-            var file = raf
-            if (available <= 0L || file == null) {
-                val (state, readyAvail) = waitForBytes(pos)
-                file = openRaf(state.path)
-                available = readyAvail
-                knownAvailableUntil = pos + available
+            var readCount = readOnce(b, off, want)
+            if (readCount <= 0 && pos < totalSize && remaining > 0L) {
+                // Retry once after reopening in case TDLib was still flushing sparse bytes
+                knownAvailableUntil = 0L
+                runCatching { raf?.close() }
+                raf = null
+                rafPath = ""
+                readCount = readOnce(b, off, want)
             }
-            if (available <= 0L) return -1
-            val toRead = min(want.toLong(), available).toInt()
-            file.seek(pos)
-            val readCount = file.read(b, off, toRead)
             if (readCount <= 0) {
                 knownAvailableUntil = 0L
                 return -1
@@ -298,22 +357,46 @@ object TdHttpServer {
             return readCount
         }
 
+        private fun readOnce(b: ByteArray, off: Int, want: Int): Int {
+            var available = knownAvailableUntil - pos
+            var file = raf
+            if (available <= 0L || file == null) {
+                val (state, readyAvail) = waitForBytes(pos)
+                file = openRaf(state.path)
+                available = readyAvail
+                knownAvailableUntil = pos + available
+            }
+            if (available <= 0L) return -1
+            val toRead = min(want.toLong(), available).toInt()
+            file.seek(pos)
+            return file.read(b, off, toRead)
+        }
+
         private fun maybeAdvanceWindow() {
-            if (remaining <= 0L || pos >= totalSize) return
-            val threshold = if (requestedFrom == 0L) PRIME_BYTES / 2L else advanceBytes
-            if (pos >= requestedFrom + threshold) {
+            if (continuousDownload || remaining <= 0L || pos >= totalSize) return
+            if (isSuperseded() || requestedEnd >= totalSize) return
+            val inPrimePhase = (requestedEnd - requestedFrom) <= PRIME_BYTES
+            val shouldRamp = inPrimePhase && pos >= requestedFrom + RAMP_TRIGGER_BYTES
+            val aheadLeft = requestedEnd - pos
+            val lowWater = (windowBytes - advanceBytes).coerceAtLeast(PRIME_BYTES)
+            if (shouldRamp || aheadLeft <= lowWater) {
                 val window = computeWindow(pos)
                 Td.request(fileId, pos, window)
                 requestedFrom = pos
+                requestedEnd = min(totalSize, pos + window)
+                lastAskMs = System.currentTimeMillis()
             }
         }
 
         @Suppress("ReturnCount", "CyclomaticComplexMethod")
         private fun waitForBytes(offset: Long): Pair<Td.FileState, Long> {
-            val budget = if (offset == 0L) START_BUDGET_MS else GRACE_MS
+            val budget = if (offset == 0L || continuousDownload) START_BUDGET_MS else GRACE_MS
             val deadline = System.currentTimeMillis() + budget
             var asked = false
             while (true) {
+                if (isSuperseded()) {
+                    throw IOException("Telegram stream superseded by newer seek")
+                }
                 val revBefore = Td.revision.value
                 val state = Td.fileState(fileId) ?: runBlocking { Td.stateOf(fileId) }
                 if (state != null && state.path.isNotBlank() && !Td.isImageFilePath(state.path)) {
@@ -324,15 +407,16 @@ object TdHttpServer {
                 }
                 val err = Td.downloadError(fileId)
                 val staleOrErr = err != null || state?.canBeDownloaded == false
-                if (staleOrErr && !repaired && chatId != 0L && messageId != 0L) {
+                val hasMsgRef = chatId != 0L && messageId != 0L
+                val canRepair = staleOrErr && !repaired && hasMsgRef
+                if (canRepair) {
                     repaired = true
                     Td.clearDownloadError(fileId)
                     val freshId = runBlocking { Td.touchMessage(chatId, messageId) }
                     if (freshId != 0) {
                         fileId = freshId
-                        val window = computeInitialWindow(offset)
-                        Td.request(fileId, offset, window)
-                        requestedFrom = offset
+                        if (!continuousDownload) generation = nextGeneration(fileId)
+                        issueRequest(offset)
                         asked = true
                         continue
                     }
@@ -340,13 +424,17 @@ object TdHttpServer {
                 if (err != null && repaired) {
                     throw IOException("Telegram download failed: $err")
                 }
-                if (!asked) {
-                    val window = computeInitialWindow(offset)
-                    Td.request(fileId, offset, window)
-                    requestedFrom = offset
+                val now = System.currentTimeMillis()
+                val covering = state != null &&
+                    state.active &&
+                    offset >= state.downloadOffset &&
+                    offset < requestedEnd
+                val needsAsk = !asked || (!covering && now - lastAskMs >= REASK_INTERVAL_MS)
+                if (needsAsk) {
+                    issueRequest(offset)
                     asked = true
                 }
-                if (System.currentTimeMillis() >= deadline) {
+                if (now >= deadline) {
                     logcat(LogPriority.ERROR) {
                         "Timed out waiting for Telegram bytes at offset=$offset fileId=$fileId"
                     }
@@ -354,6 +442,20 @@ object TdHttpServer {
                 }
                 runBlocking { Td.awaitUpdate(revBefore, POLL_MS) }
             }
+        }
+
+        private fun issueRequest(offset: Long) {
+            if (continuousDownload) {
+                Td.request(fileId, offset, 0L)
+                requestedFrom = offset
+                requestedEnd = totalSize
+            } else {
+                val window = computeWindow(offset)
+                Td.request(fileId, offset, window)
+                requestedFrom = offset
+                requestedEnd = min(totalSize, offset + window)
+            }
+            lastAskMs = System.currentTimeMillis()
         }
 
         private fun availableAt(state: Td.FileState?, offset: Long): Long {

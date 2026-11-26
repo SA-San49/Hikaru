@@ -45,6 +45,8 @@ object TelegramAnimeParser {
         val earliestMessageId: Long = 0L,
         val aliasKeys: Set<String> = emptySet(),
         val hasRealPoster: Boolean = false,
+        val posterChatId: Long = 0L,
+        val posterMessageId: Long = 0L,
     )
 
     data class ParsedVideo(
@@ -886,7 +888,9 @@ object TelegramAnimeParser {
             val matchedWorkImg = exactGroupPosters[cg.canonicalKey]
                 ?: baseKindPosters["${sample.baseKey}|${sample.kind.name}"]
                 ?: (if (sample.kind == SeriesKind.MAIN) baseMainPosters[sample.baseKey] else null)
-                ?: findBestTitledPoster(sample, cg.tokens, titledImages)
+                ?: findBestTitledPoster(sample, cg.tokens, titledImages, allowBaseFallback = false)
+                ?: baseMainPosters[sample.baseKey]
+                ?: findBestTitledPoster(sample, cg.tokens, titledImages, allowBaseFallback = true)
 
             val matchedPoster = matchedWorkImg?.image ?: adjacentUncaptioned[cg.canonicalKey]
             val upgradedTitle = chooseBestSeriesTitle(sample.seriesTitle, matchedWorkImg?.parsed?.seriesTitle)
@@ -921,6 +925,8 @@ object TelegramAnimeParser {
                 earliestMessageId = earliestMsg,
                 aliasKeys = cg.aliasKeys,
                 hasRealPoster = matchedPoster != null,
+                posterChatId = matchedPoster?.chatId ?: fallbackVideo?.chatId ?: 0L,
+                posterMessageId = matchedPoster?.messageId ?: fallbackVideo?.messageId ?: 0L,
             )
         }
 
@@ -1022,6 +1028,7 @@ object TelegramAnimeParser {
         target: ParsedMedia,
         targetTokens: Set<String>,
         images: List<WorkImage>,
+        allowBaseFallback: Boolean = false,
     ): WorkImage? {
         if (target.baseKey.length < 4) return null
         var bestPrefix: WorkImage? = null
@@ -1031,8 +1038,13 @@ object TelegramAnimeParser {
         for (wi in images) {
             val imgParsed = wi.parsed ?: continue
             if (imgParsed.baseKey.length < 4) continue
-            if (imgParsed.kind != target.kind) continue
-            if (imgParsed.rawSeason != 0 && imgParsed.effectiveSeason != target.effectiveSeason) continue
+            val isBaseMain = imgParsed.kind == SeriesKind.MAIN && imgParsed.effectiveSeason <= 1
+            val kindOk = imgParsed.kind == target.kind || (allowBaseFallback && isBaseMain)
+            if (!kindOk) continue
+            val seasonOk = imgParsed.rawSeason == 0 ||
+                imgParsed.effectiveSeason == target.effectiveSeason ||
+                (allowBaseFallback && isBaseMain)
+            if (!seasonOk) continue
 
             val candidateKeys = listOf(imgParsed.baseKey) + imgParsed.altKeys
             var prefixHit = false
@@ -1181,8 +1193,9 @@ object TelegramAnimeParser {
     ): ParsedMedia? {
         val imgParsed = parseImage(image) ?: return null
         if (imgParsed.baseKey.length < 3) return null
-        if (imgParsed.kind != targetKind) return null
-        if (imgParsed.rawSeason != 0 && imgParsed.effectiveSeason != targetSeason) return null
+        val isBaseMain = imgParsed.kind == SeriesKind.MAIN && imgParsed.effectiveSeason <= 1
+        if (imgParsed.kind != targetKind && !isBaseMain) return null
+        if (imgParsed.rawSeason != 0 && imgParsed.effectiveSeason != targetSeason && !isBaseMain) return null
 
         val targetParsed = parse(targetSeriesTitle, fallback = targetSeriesTitle).copy(
             effectiveSeason = targetSeason,
@@ -1191,11 +1204,9 @@ object TelegramAnimeParser {
         )
         val wi = WorkImage(image, imgParsed, significantTokens(imgParsed.seriesTitle))
         val targetTokens = significantTokens(targetSeriesTitle)
-        return if (findBestTitledPoster(targetParsed, targetTokens, listOf(wi)) != null) {
-            imgParsed
-        } else {
-            null
-        }
+        val matched = findBestTitledPoster(targetParsed, targetTokens, listOf(wi), allowBaseFallback = false)
+            ?: findBestTitledPoster(targetParsed, targetTokens, listOf(wi), allowBaseFallback = true)
+        return if (matched != null) imgParsed else null
     }
 
     @Suppress("LongParameterList", "ReturnCount")
