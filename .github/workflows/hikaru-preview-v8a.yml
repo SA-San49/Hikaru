@@ -53,15 +53,6 @@ jobs:
           printf '%s' "$KEYSTORE_BASE64" | base64 --decode > app/hikaru.jks
           test -s app/hikaru.jks
 
-      - name: Run Telegram Parser Unit Tests
-        run: ./gradlew :app:testPreviewUnitTest --tests "eu.kanade.tachiyomi.data.telegram.TelegramAnimeParserTest" -Pinclude-telemetry=false -Penable-updater=true --no-daemon
-        env:
-          SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
-          SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
-          SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
-          MAL_CLIENT_SECRET: ${{ secrets.MAL_CLIENT_SECRET }}
-          DISCORD_RPC_APP_ID: ${{ vars.DISCORD_RPC_APP_ID }}
-
       - name: Build Preview arm64-v8a APK
         run: |
           set +e

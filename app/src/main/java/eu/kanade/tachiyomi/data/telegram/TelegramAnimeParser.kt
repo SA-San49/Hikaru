@@ -1345,16 +1345,8 @@ object TelegramAnimeParser {
         kind: SeriesKind = SeriesKind.MAIN,
         isFinalSeason: Boolean = false,
     ): String {
-        val needsParse = seriesTitle.contains('[') || seriesTitle.contains('(') ||
-            QUALITY_REGEX.containsMatchIn(seriesTitle)
-        val cleanSource = if (needsParse) {
-            parse(seriesTitle, fallback = seriesTitle).seriesTitle
-        } else {
-            seriesTitle
-        }
-        val base = normalizeSeriesName(cleanSource).ifBlank {
-            normalizeSeriesName(parse(seriesTitle, fallback = seriesTitle).seriesTitle)
-        }
+        val cleanSource = parse(seriesTitle, fallback = seriesTitle).seriesTitle
+        val base = normalizeSeriesName(cleanSource).ifBlank { normalizeSeriesName(seriesTitle) }
         if (base.isBlank()) return ""
         val modifier = when {
             rawSeason > 0 -> String.format(Locale.US, "S%02d", rawSeason)
