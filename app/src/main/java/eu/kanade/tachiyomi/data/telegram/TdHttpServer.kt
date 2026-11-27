@@ -18,26 +18,37 @@ import kotlin.math.min
 object TdHttpServer {
 
     private const val PORT = 49731
-    private const val PRIME_BYTES = 1L * 1024 * 1024
-    private const val RAMP_TRIGGER_BYTES = 256L * 1024
-    private const val WINDOW_BYTES = 12L * 1024 * 1024
-    private const val ADVANCE_BYTES = 4L * 1024 * 1024
-    private const val EXT_WINDOW_BYTES = 16L * 1024 * 1024
-    private const val EXT_ADVANCE_BYTES = 6L * 1024 * 1024
-    private const val TAIL_THRESHOLD_BYTES = 8L * 1024 * 1024
+    private const val CONTINUOUS_STREAM_MAX_BYTES = 256L * 1024 * 1024
+    private const val LARGE_INIT_WINDOW_BYTES = 32L * 1024 * 1024
+    private const val WINDOW_BYTES = 32L * 1024 * 1024
+    private const val ADVANCE_BYTES = 16L * 1024 * 1024
+    private const val EXT_WINDOW_BYTES = 64L * 1024 * 1024
+    private const val EXT_ADVANCE_BYTES = 32L * 1024 * 1024
+    private const val PROBE_MAX_BYTES = 4L * 1024 * 1024
+    private const val TAIL_THRESHOLD_BYTES = 12L * 1024 * 1024
     private const val START_BUDGET_MS = 60_000L
     private const val GRACE_MS = 35_000L
-    private const val POLL_MS = 25L
-    private const val REASK_INTERVAL_MS = 600L
+    private const val POLL_MS = 12L
+    private const val REASK_INTERVAL_MS = 200L
+    private const val IDLE_REASK_MS = 60L
+    private const val AVAIL_QUERY_INTERVAL_MS = 80L
     private const val SINGLE_BYTE_MASK = 0xFF
     private const val HEADER_SNIFF_BYTES = 12
     private const val MIN_HEADER_SNIFF_BYTES = 3
+    private const val PNG_HEADER_BYTES = 4
     private const val THUMB_CACHE_MAX_AGE_SECS = 604_800
+
+    private data class MainAnchor(
+        val offset: Long,
+        val limit: Long,
+        val generation: Long,
+    )
 
     @Volatile
     private var server: LocalTdServer? = null
 
     private val latestStreamGen = ConcurrentHashMap<Int, AtomicLong>()
+    private val mainAnchors = ConcurrentHashMap<Int, MainAnchor>()
 
     @Synchronized
     fun ensureStarted(): Int {
@@ -77,6 +88,27 @@ object TdHttpServer {
     private fun currentGeneration(fileId: Int): Long =
         latestStreamGen[fileId]?.get() ?: 0L
 
+    private fun updateMainAnchor(fileId: Int, offset: Long, limit: Long, generation: Long) {
+        if (generation == 0L) return
+        if (currentGeneration(fileId) == generation) {
+            mainAnchors[fileId] = MainAnchor(offset = offset, limit = limit, generation = generation)
+        }
+    }
+
+    private fun clearMainAnchor(fileId: Int, generation: Long) {
+        if (generation == 0L) return
+        val existing = mainAnchors[fileId]
+        if (existing != null && existing.generation == generation) {
+            mainAnchors.remove(fileId, existing)
+        }
+    }
+
+    private fun resumeMainAnchor(fileId: Int) {
+        val anchor = mainAnchors[fileId] ?: return
+        if (currentGeneration(fileId) != anchor.generation) return
+        Td.request(fileId, anchor.offset, anchor.limit)
+    }
+
     @Suppress("MagicNumber", "ReturnCount")
     private fun isImageMagicHeader(buf: ByteArray, off: Int, count: Int): Boolean {
         if (count < MIN_HEADER_SNIFF_BYTES) return false
@@ -84,12 +116,12 @@ object TdHttpServer {
         val b1 = buf[off + 1].toInt() and SINGLE_BYTE_MASK
         val b2 = buf[off + 2].toInt() and SINGLE_BYTE_MASK
         val isJpeg = b0 == 0xFF && b1 == 0xD8 && b2 == 0xFF
-        if (isJpeg || count < 4) return isJpeg
+        if (isJpeg || count < PNG_HEADER_BYTES) return isJpeg
         val b3 = buf[off + 3].toInt() and SINGLE_BYTE_MASK
         val isPng = b0 == 0x89 && b1 == 0x50 && b2 == 0x4E && b3 == 0x47
         val isGif = b0 == 0x47 && b1 == 0x49 && b2 == 0x46 && b3 == 0x38
         val isRiff = b0 == 0x52 && b1 == 0x49 && b2 == 0x46 && b3 == 0x46
-        val hasWebpTag = count >= 12 &&
+        val hasWebpTag = count >= HEADER_SNIFF_BYTES &&
             (buf[off + 8].toInt() and SINGLE_BYTE_MASK) == 0x57 &&
             (buf[off + 9].toInt() and SINGLE_BYTE_MASK) == 0x45 &&
             (buf[off + 10].toInt() and SINGLE_BYTE_MASK) == 0x42
@@ -135,7 +167,11 @@ object TdHttpServer {
                 Td.clearDownloadError(activeId)
                 val refreshed = runBlocking { Td.touchMessage(chatId, messageId) }
                 if (refreshed == 0) {
-                    return newFixedLengthResponse(Response.Status.NOT_FOUND, "text/plain", "Telegram video unavailable")
+                    return newFixedLengthResponse(
+                        Response.Status.NOT_FOUND,
+                        "text/plain",
+                        "Telegram video unavailable",
+                    )
                 }
                 activeId = refreshed
                 Td.clearDownloadError(activeId)
@@ -173,6 +209,9 @@ object TdHttpServer {
                     return rangeNotSatisfiable(totalSize)
                 }
                 val len = end - start + 1L
+                val isProbe = !isDownload &&
+                    start > 0L &&
+                    (len <= PROBE_MAX_BYTES || start >= totalSize - TAIL_THRESHOLD_BYTES)
                 val stream: InputStream = if (session.method == Method.HEAD) {
                     ByteArrayInputStream(ByteArray(0))
                 } else {
@@ -185,7 +224,8 @@ object TdHttpServer {
                         totalSize = totalSize,
                         windowBytes = windowBytes,
                         advanceBytes = advanceBytes,
-                        continuousDownload = isDownload,
+                        isDownload = isDownload,
+                        isProbe = isProbe,
                     )
                 }
                 val resp = newFixedLengthResponse(Response.Status.PARTIAL_CONTENT, mime, stream, len)
@@ -206,7 +246,8 @@ object TdHttpServer {
                     totalSize = totalSize,
                     windowBytes = windowBytes,
                     advanceBytes = advanceBytes,
-                    continuousDownload = isDownload,
+                    isDownload = isDownload,
+                    isProbe = false,
                 )
             }
             val resp = newFixedLengthResponse(Response.Status.OK, mime, stream, totalSize)
@@ -267,14 +308,18 @@ object TdHttpServer {
         private val totalSize: Long,
         private val windowBytes: Long,
         private val advanceBytes: Long,
-        private val continuousDownload: Boolean,
+        private val isDownload: Boolean,
+        private val isProbe: Boolean,
     ) : InputStream() {
 
+        private val continuousStream: Boolean =
+            isDownload || (!isProbe && totalSize <= CONTINUOUS_STREAM_MAX_BYTES)
         private var pos: Long = startOffset
         private var remaining: Long = length
         private var requestedFrom: Long = -1L
         private var requestedEnd: Long = 0L
         private var lastAskMs: Long = 0L
+        private var lastAvailQueryMs: Long = 0L
         private var knownAvailableUntil: Long = 0L
         private var headerChecked: Boolean = startOffset != 0L
         private var raf: RandomAccessFile? = null
@@ -282,43 +327,25 @@ object TdHttpServer {
         private var repaired: Boolean = false
         private val closed = AtomicBoolean(false)
         private val singleByte = ByteArray(1)
-        private var generation: Long = if (continuousDownload) 0L else nextGeneration(fileId)
+        private var generation: Long = if (isDownload || isProbe) 0L else nextGeneration(fileId)
 
         init {
             Td.onStreamOpened(fileId)
-            if (continuousDownload) {
-                Td.request(fileId, startOffset, 0L)
-                requestedFrom = startOffset
-                requestedEnd = totalSize
-                lastAskMs = System.currentTimeMillis()
-            } else {
-                val initWindow = computeInitialWindow(startOffset)
-                Td.request(fileId, startOffset, initWindow)
-                requestedFrom = startOffset
-                requestedEnd = min(totalSize, startOffset + initWindow)
-                lastAskMs = System.currentTimeMillis()
-            }
+            issueRequest(startOffset, initial = true)
         }
 
         private fun isSuperseded(): Boolean =
-            !continuousDownload && generation != 0L && currentGeneration(fileId) != generation
+            generation != 0L && currentGeneration(fileId) != generation
 
-        private fun computeInitialWindow(offset: Long): Long {
-            val left = (totalSize - offset).coerceAtLeast(1L)
-            return when {
-                left <= TAIL_THRESHOLD_BYTES -> left
-                offset == 0L -> min(PRIME_BYTES, left)
-                else -> min(windowBytes, left)
+        private fun computeWindow(offset: Long, initial: Boolean): Long {
+            if (isProbe) {
+                return min(remaining.coerceAtLeast(1L), (totalSize - offset).coerceAtLeast(1L))
             }
-        }
-
-        private fun computeWindow(offset: Long): Long {
+            if (continuousStream) return 0L
             val left = (totalSize - offset).coerceAtLeast(1L)
-            return if (left <= TAIL_THRESHOLD_BYTES) {
-                left
-            } else {
-                min(windowBytes, left.coerceAtLeast(PRIME_BYTES))
-            }
+            if (left <= TAIL_THRESHOLD_BYTES) return left
+            val target = if (initial) maxOf(LARGE_INIT_WINDOW_BYTES, windowBytes) else windowBytes
+            return min(target, left)
         }
 
         override fun read(): Int {
@@ -334,7 +361,6 @@ object TdHttpServer {
             val want = min(len.toLong(), remaining).toInt()
             var readCount = readOnce(b, off, want)
             if (readCount <= 0 && pos < totalSize && remaining > 0L) {
-                // Retry once after reopening in case TDLib was still flushing sparse bytes
                 knownAvailableUntil = 0L
                 runCatching { raf?.close() }
                 raf = null
@@ -373,24 +399,18 @@ object TdHttpServer {
         }
 
         private fun maybeAdvanceWindow() {
-            if (continuousDownload || remaining <= 0L || pos >= totalSize) return
+            if (continuousStream || isProbe || remaining <= 0L || pos >= totalSize) return
             if (isSuperseded() || requestedEnd >= totalSize) return
-            val inPrimePhase = (requestedEnd - requestedFrom) <= PRIME_BYTES
-            val shouldRamp = inPrimePhase && pos >= requestedFrom + RAMP_TRIGGER_BYTES
             val aheadLeft = requestedEnd - pos
-            val lowWater = (windowBytes - advanceBytes).coerceAtLeast(PRIME_BYTES)
-            if (shouldRamp || aheadLeft <= lowWater) {
-                val window = computeWindow(pos)
-                Td.request(fileId, pos, window)
-                requestedFrom = pos
-                requestedEnd = min(totalSize, pos + window)
-                lastAskMs = System.currentTimeMillis()
+            val lowWater = (windowBytes - advanceBytes).coerceAtLeast(advanceBytes)
+            if (aheadLeft <= lowWater) {
+                issueRequest(pos, initial = false)
             }
         }
 
         @Suppress("ReturnCount", "CyclomaticComplexMethod")
         private fun waitForBytes(offset: Long): Pair<Td.FileState, Long> {
-            val budget = if (offset == 0L || continuousDownload) START_BUDGET_MS else GRACE_MS
+            val budget = if (offset == 0L || isDownload) START_BUDGET_MS else GRACE_MS
             val deadline = System.currentTimeMillis() + budget
             var asked = false
             while (true) {
@@ -414,9 +434,10 @@ object TdHttpServer {
                     Td.clearDownloadError(fileId)
                     val freshId = runBlocking { Td.touchMessage(chatId, messageId) }
                     if (freshId != 0) {
+                        clearMainAnchor(fileId, generation)
                         fileId = freshId
-                        if (!continuousDownload) generation = nextGeneration(fileId)
-                        issueRequest(offset)
+                        if (!isDownload && !isProbe) generation = nextGeneration(fileId)
+                        issueRequest(offset, initial = false)
                         asked = true
                         continue
                     }
@@ -429,9 +450,14 @@ object TdHttpServer {
                     state.active &&
                     offset >= state.downloadOffset &&
                     offset < requestedEnd
-                val needsAsk = !asked || (!covering && now - lastAskMs >= REASK_INTERVAL_MS)
+                val reaskWindow = if (!isProbe && (state == null || !state.active || state.downloadOffset > offset)) {
+                    IDLE_REASK_MS
+                } else {
+                    REASK_INTERVAL_MS
+                }
+                val needsAsk = !asked || (!covering && now - lastAskMs >= reaskWindow)
                 if (needsAsk) {
-                    issueRequest(offset)
+                    issueRequest(offset, initial = false)
                     asked = true
                 }
                 if (now >= deadline) {
@@ -444,26 +470,31 @@ object TdHttpServer {
             }
         }
 
-        private fun issueRequest(offset: Long) {
-            if (continuousDownload) {
-                Td.request(fileId, offset, 0L)
-                requestedFrom = offset
-                requestedEnd = totalSize
-            } else {
-                val window = computeWindow(offset)
-                Td.request(fileId, offset, window)
-                requestedFrom = offset
-                requestedEnd = min(totalSize, offset + window)
-            }
+        private fun issueRequest(offset: Long, initial: Boolean) {
+            val limit = computeWindow(offset, initial)
+            Td.request(fileId, offset, limit)
+            requestedFrom = offset
+            requestedEnd = if (limit == 0L) totalSize else min(totalSize, offset + limit)
             lastAskMs = System.currentTimeMillis()
+            if (!isDownload && !isProbe) {
+                updateMainAnchor(fileId, offset, limit, generation)
+            }
         }
 
+        @Suppress("ReturnCount")
         private fun availableAt(state: Td.FileState?, offset: Long): Long {
             if (state == null || state.path.isBlank()) return 0L
             if (state.complete) return (totalSize - offset).coerceAtLeast(0L)
             if (offset >= state.downloadOffset && offset < state.downloadOffset + state.readyFromOffset) {
                 return (state.downloadOffset + state.readyFromOffset) - offset
             }
+            val now = System.currentTimeMillis()
+            if (state.downloadOffset == offset && state.readyFromOffset == 0L &&
+                now - lastAvailQueryMs < AVAIL_QUERY_INTERVAL_MS
+            ) {
+                return 0L
+            }
+            lastAvailQueryMs = now
             val prefix = runBlocking { Td.availableFrom(fileId, offset) }
             return if (prefix > 0L) prefix else 0L
         }
@@ -480,7 +511,11 @@ object TdHttpServer {
 
         override fun close() {
             if (closed.compareAndSet(false, true)) {
+                clearMainAnchor(fileId, generation)
                 Td.onStreamClosed(fileId)
+                if (isProbe) {
+                    resumeMainAnchor(fileId)
+                }
             }
             runCatching { raf?.close() }
             raf = null

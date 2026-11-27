@@ -9,6 +9,9 @@ import eu.kanade.tachiyomi.animesource.model.Video
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -145,7 +148,7 @@ object Td {
     private const val TAIL_PAGE = 100
     private const val TAIL_MAX_PAGES = 60
     private const val THUMB_WAIT_MS = 20_000L
-    private const val THUMB_POLL_MS = 120L
+    private const val THUMB_POLL_MS = 35L
     private const val THUMB_MIN_WIDTH = 320
     private const val THUMB_DOWNLOAD_PRIORITY = 24
     private const val DOWNLOAD_PRIORITY = 32
@@ -153,7 +156,8 @@ object Td {
     private const val POSTER_SEARCH_LIMIT = 20
     private const val POSTER_CHUNKS_MAX = 4
     private const val MIN_ANIMATION_BYTES = 256L * 1024
-    const val AHEAD_BYTES: Long = 1024L * 1024
+    private const val CONTINUOUS_PREWARM_MAX_BYTES = 256L * 1024 * 1024
+    const val AHEAD_BYTES: Long = 16L * 1024 * 1024
     private val IMAGE_EXTENSIONS = setOf(
         ".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".avif", ".heic", ".tiff",
     )
@@ -203,6 +207,7 @@ object Td {
     private val _me = MutableStateFlow("")
     val me: StateFlow<String> = _me.asStateFlow()
 
+    private val revisionCounter = AtomicInteger(0)
     private val _revision = MutableStateFlow(0)
     val revision: StateFlow<Int> = _revision.asStateFlow()
 
@@ -619,7 +624,7 @@ object Td {
             }
             is TdApi.UpdateFile -> {
                 fileValues[update.file.id] = update.file
-                _revision.value = _revision.value + 1
+                _revision.value = revisionCounter.incrementAndGet()
             }
             is TdApi.UpdateConnectionState ->
                 _online.value = update.state is TdApi.ConnectionStateReady
@@ -962,45 +967,49 @@ object Td {
         )
     }
 
-    @Suppress("CyclomaticComplexMethod")
+    @Suppress("CyclomaticComplexMethod", "LongMethod")
     suspend fun chatCatalogueBatch(
         chatId: Long,
         before: Long = 0L,
-        targetMessages: Int = 250,
-    ): ChatCatalogueBatch {
+        targetMessages: Int = 200,
+    ): ChatCatalogueBatch = coroutineScope {
         ensureChatLoaded(chatId)
+        val photoDeferred = async {
+            val foundImages = LinkedHashMap<Long, ChatImage>()
+            val photoPages = if (before == 0L) 2 else 1
+            var photoCursor = before
+            for (pageIdx in 0 until photoPages) {
+                val photoHits = query(
+                    TdApi.SearchChatMessages(
+                        chatId,
+                        null,
+                        "",
+                        null,
+                        photoCursor,
+                        0,
+                        SEARCH_HITS_PER_CALL,
+                        TdApi.SearchMessagesFilterPhoto(),
+                    ),
+                ) as? TdApi.FoundChatMessages ?: break
+                val batchMsgs = photoHits.messages
+                if (batchMsgs.isEmpty()) break
+                var oldestId = Long.MAX_VALUE
+                for (m in batchMsgs) {
+                    if (m.id < oldestId) oldestId = m.id
+                    imageOf(chatId, m)?.let { foundImages.putIfAbsent(it.messageId, it) }
+                }
+                if (oldestId == Long.MAX_VALUE || (photoCursor != 0L && oldestId >= photoCursor)) break
+                photoCursor = oldestId
+            }
+            foundImages
+        }
+
         val videos = LinkedHashMap<Long, ChatVideo>()
-        val images = LinkedHashMap<Long, ChatImage>()
+        val historyImages = LinkedHashMap<Long, ChatImage>()
         var cursor = before
         var sawMessages = false
         var scanned = 0
         var note: String? = null
-
-        val photoPages = if (before == 0L) 2 else 1
-        var photoCursor = before
-        for (pageIdx in 0 until photoPages) {
-            val photoHits = query(
-                TdApi.SearchChatMessages(
-                    chatId,
-                    null,
-                    "",
-                    null,
-                    photoCursor,
-                    0,
-                    SEARCH_HITS_PER_CALL,
-                    TdApi.SearchMessagesFilterPhoto(),
-                ),
-            ) as? TdApi.FoundChatMessages ?: break
-            val batchMsgs = photoHits.messages
-            if (batchMsgs.isEmpty()) break
-            var oldestId = Long.MAX_VALUE
-            for (m in batchMsgs) {
-                if (m.id < oldestId) oldestId = m.id
-                imageOf(chatId, m)?.let { images.putIfAbsent(it.messageId, it) }
-            }
-            if (oldestId == Long.MAX_VALUE || (photoCursor != 0L && oldestId >= photoCursor)) break
-            photoCursor = oldestId
-        }
 
         while (scanned < targetMessages) {
             var historyError: String? = null
@@ -1018,7 +1027,7 @@ object Td {
                 sawMessages = true
                 if (m.id < next) next = m.id
                 videoOf(chatId, m)?.let { videos.putIfAbsent(it.messageId, it) }
-                imageOf(chatId, m)?.let { images.putIfAbsent(it.messageId, it) }
+                imageOf(chatId, m)?.let { historyImages.putIfAbsent(it.messageId, it) }
             }
             if (next == Long.MAX_VALUE || (cursor != 0L && next >= cursor)) {
                 cursor = 0L
@@ -1027,9 +1036,12 @@ object Td {
             cursor = next
         }
 
-        return ChatCatalogueBatch(
+        val mergedImages = photoDeferred.await()
+        historyImages.forEach { (id, img) -> mergedImages.putIfAbsent(id, img) }
+
+        ChatCatalogueBatch(
             videos = videos.values.sortedByDescending { it.messageId },
-            images = images.values.sortedByDescending { it.messageId },
+            images = mergedImages.values.sortedByDescending { it.messageId },
             nextCursor = if (cursor == Long.MAX_VALUE) 0L else cursor,
             more = sawMessages && cursor != 0L,
             note = if (videos.isEmpty()) note else null,
@@ -1233,6 +1245,7 @@ object Td {
         }
     }
 
+    @Suppress("ReturnCount")
     suspend fun searchPosterByChunks(
         chatId: Long,
         chunks: List<String>,
@@ -1240,24 +1253,40 @@ object Td {
         matcher: (ChatImage) -> Boolean,
     ): ChatImage? {
         if (chatId == 0L || chunks.isEmpty() || !isSignedIn()) return null
-        for (chunk in chunks.take(POSTER_CHUNKS_MAX)) {
-            val found = query(
-                TdApi.SearchChatMessages(
-                    chatId,
-                    null,
-                    chunk,
-                    null,
-                    0L,
-                    0,
-                    POSTER_SEARCH_LIMIT,
-                    TdApi.SearchMessagesFilterPhoto(),
-                ),
-            ) as? TdApi.FoundChatMessages ?: continue
-            for (m in found.messages) {
-                val img = imageOf(chatId, m) ?: continue
-                imageSink?.put(img.messageId, img)
-                if (matcher(img)) return img
-            }
+        val capped = chunks.take(POSTER_CHUNKS_MAX)
+        val firstHit = searchSinglePosterChunk(chatId, capped.first(), imageSink, matcher)
+        if (firstHit != null || capped.size == 1) return firstHit
+
+        return coroutineScope {
+            capped.drop(1).map { chunk ->
+                async { searchSinglePosterChunk(chatId, chunk, imageSink, matcher) }
+            }.awaitAll().firstOrNull { it != null }
+        }
+    }
+
+    @Suppress("ReturnCount")
+    private suspend fun searchSinglePosterChunk(
+        chatId: Long,
+        chunk: String,
+        imageSink: MutableMap<Long, ChatImage>?,
+        matcher: (ChatImage) -> Boolean,
+    ): ChatImage? {
+        val found = query(
+            TdApi.SearchChatMessages(
+                chatId,
+                null,
+                chunk,
+                null,
+                0L,
+                0,
+                POSTER_SEARCH_LIMIT,
+                TdApi.SearchMessagesFilterPhoto(),
+            ),
+        ) as? TdApi.FoundChatMessages ?: return null
+        for (m in found.messages) {
+            val img = imageOf(chatId, m) ?: continue
+            imageSink?.put(img.messageId, img)
+            if (matcher(img)) return img
         }
         return null
     }
@@ -1540,7 +1569,7 @@ object Td {
                     } else {
                         downloadErrors.remove(fileId)
                     }
-                    _revision.value = _revision.value + 1
+                    _revision.value = revisionCounter.incrementAndGet()
                 },
                 null,
             )
@@ -1554,9 +1583,10 @@ object Td {
         }
     }
 
-    fun prewarm(fileId: Int) {
+    fun prewarm(fileId: Int, totalSize: Long = 0L) {
         downloadErrors.remove(fileId)
-        request(fileId, 0L, AHEAD_BYTES)
+        val limit = if (totalSize in 1L..CONTINUOUS_PREWARM_MAX_BYTES) 0L else AHEAD_BYTES
+        request(fileId, 0L, limit)
     }
 
     fun onStreamOpened(fileId: Int) {

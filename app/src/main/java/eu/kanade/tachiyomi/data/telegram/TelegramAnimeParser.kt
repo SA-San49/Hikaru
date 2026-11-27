@@ -1,6 +1,7 @@
 package eu.kanade.tachiyomi.data.telegram
 
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.min
 
 @Suppress("MagicNumber", "TooManyFunctions", "LargeClass")
@@ -80,7 +81,20 @@ object TelegramAnimeParser {
         val image: Td.ChatImage,
         val parsed: ParsedMedia?,
         val tokens: Set<String>,
+        val index: Int = 0,
     )
+
+    private class TitledPosterIndex(
+        val byPrefix: Map<String, List<WorkImage>>,
+        val byToken: Map<String, List<WorkImage>>,
+    )
+
+    private data class CachedOptionalParsed(val parsed: ParsedMedia?)
+
+    private const val PARSE_CACHE_LIMIT = 4096
+    private const val PREFIX_INDEX_LEN = 10
+    private val parseVideoCache = ConcurrentHashMap<String, ParsedMedia>()
+    private val parseImageCache = ConcurrentHashMap<String, CachedOptionalParsed>()
 
     private val EXT_REGEX = Regex(
         """\.(mkv|mp4|avi|webm|mov|m4v|ts|flv|wmv|jpe?g|png|webp)$""",
@@ -386,6 +400,16 @@ object TelegramAnimeParser {
     }
 
     fun parseVideo(video: Td.ChatVideo): ParsedMedia {
+        val cacheKey = "${video.chatId}:${video.messageId}:${video.fileId}:" +
+            "${video.title.hashCode()}:${video.fileName.hashCode()}:${video.caption.hashCode()}"
+        parseVideoCache[cacheKey]?.let { return it }
+        val result = parseVideoUncached(video)
+        if (parseVideoCache.size >= PARSE_CACHE_LIMIT) parseVideoCache.clear()
+        parseVideoCache[cacheKey] = result
+        return result
+    }
+
+    private fun parseVideoUncached(video: Td.ChatVideo): ParsedMedia {
         val cleanFile = video.fileName.trim()
         val usableFile = cleanFile.isNotBlank() && !PLACEHOLDER_FILE_REGEX.matches(cleanFile)
         val cap = extractCaption(video.caption)
@@ -447,6 +471,16 @@ object TelegramAnimeParser {
     }
 
     fun parseImage(image: Td.ChatImage): ParsedMedia? {
+        val cacheKey = "${image.chatId}:${image.messageId}:${image.fileId}:" +
+            "${image.fileName.hashCode()}:${image.caption.hashCode()}"
+        parseImageCache[cacheKey]?.let { return it.parsed }
+        val result = parseImageUncached(image)
+        if (parseImageCache.size >= PARSE_CACHE_LIMIT) parseImageCache.clear()
+        parseImageCache[cacheKey] = CachedOptionalParsed(result)
+        return result
+    }
+
+    private fun parseImageUncached(image: Td.ChatImage): ParsedMedia? {
         val cap = extractCaption(image.caption)
         val raw = when {
             cap.titleText.isNotBlank() -> cap.titleText
@@ -792,19 +826,34 @@ object TelegramAnimeParser {
         val parsedImages = images.map { img ->
             val p = parseImage(img)
             val tok = if (p != null) significantTokens(p.seriesTitle) else emptySet()
-            WorkImage(img, p, tok)
+            WorkImage(img, p, tok, 0)
         }
         val exactGroupPosters = HashMap<String, WorkImage>()
         val baseKindPosters = HashMap<String, WorkImage>()
         val baseMainPosters = HashMap<String, WorkImage>()
         val posterBaseKeys = HashSet<String>()
         val titledImages = ArrayList<WorkImage>()
+        val byPrefix = HashMap<String, MutableList<WorkImage>>()
+        val byToken = HashMap<String, MutableList<WorkImage>>()
         val uncaptionedImages = ArrayList<Td.ChatImage>()
 
-        for (wi in parsedImages) {
-            val p = wi.parsed
+        for (rawWi in parsedImages) {
+            val p = rawWi.parsed
             if (p != null && p.baseKey.isNotBlank()) {
+                val wi = rawWi.copy(index = titledImages.size)
                 titledImages += wi
+                if (p.baseKey.length >= PREFIX_INDEX_LEN) {
+                    byPrefix.getOrPut(p.baseKey.take(PREFIX_INDEX_LEN)) { ArrayList(2) }.add(wi)
+                }
+                for (alt in p.altKeys) {
+                    if (alt.length >= PREFIX_INDEX_LEN) {
+                        val list = byPrefix.getOrPut(alt.take(PREFIX_INDEX_LEN)) { ArrayList(2) }
+                        if (list.lastOrNull() !== wi) list.add(wi)
+                    }
+                }
+                for (tok in wi.tokens) {
+                    byToken.getOrPut(tok) { ArrayList(2) }.add(wi)
+                }
                 posterBaseKeys += p.baseKey
                 posterBaseKeys.addAll(p.altKeys)
                 exactGroupPosters.putIfAbsent(p.groupKey, wi)
@@ -882,6 +931,7 @@ object TelegramAnimeParser {
         }
         chronoEntries.sortBy { it.first }
         val adjacentUncaptioned = mapUncaptionedPosters(uncaptionedImages, chronoEntries)
+        val posterIndex = TitledPosterIndex(byPrefix = byPrefix, byToken = byToken)
 
         // Pass 3: Match posters across all tiers and produce final GroupedSeries
         val result = ArrayList<GroupedSeries>(consolidated.size)
@@ -890,9 +940,9 @@ object TelegramAnimeParser {
             val matchedWorkImg = exactGroupPosters[cg.canonicalKey]
                 ?: baseKindPosters["${sample.baseKey}|${sample.kind.name}"]
                 ?: (if (sample.kind == SeriesKind.MAIN) baseMainPosters[sample.baseKey] else null)
-                ?: findBestTitledPoster(sample, cg.tokens, titledImages, allowBaseFallback = false)
+                ?: findBestTitledPoster(sample, cg.tokens, posterIndex, allowBaseFallback = false)
                 ?: baseMainPosters[sample.baseKey]
-                ?: findBestTitledPoster(sample, cg.tokens, titledImages, allowBaseFallback = true)
+                ?: findBestTitledPoster(sample, cg.tokens, posterIndex, allowBaseFallback = true)
 
             val matchedPoster = matchedWorkImg?.image ?: adjacentUncaptioned[cg.canonicalKey]
             val upgradedTitle = chooseBestSeriesTitle(sample.seriesTitle, matchedWorkImg?.parsed?.seriesTitle)
@@ -1029,15 +1079,44 @@ object TelegramAnimeParser {
     private fun findBestTitledPoster(
         target: ParsedMedia,
         targetTokens: Set<String>,
-        images: List<WorkImage>,
+        posterIndex: TitledPosterIndex,
         allowBaseFallback: Boolean = false,
     ): WorkImage? {
         if (target.baseKey.length < 4) return null
+
+        val prefixCandidates = if (target.baseKey.length >= PREFIX_INDEX_LEN) {
+            posterIndex.byPrefix[target.baseKey.take(PREFIX_INDEX_LEN)].orEmpty()
+        } else {
+            emptyList()
+        }
+        val tokenCounts = if (targetTokens.size >= 2) {
+            HashMap<WorkImage, Int>().also { counts ->
+                for (tok in targetTokens) {
+                    for (wi in posterIndex.byToken[tok].orEmpty()) {
+                        counts[wi] = (counts[wi] ?: 0) + 1
+                    }
+                }
+            }
+        } else {
+            emptyMap()
+        }
+        if (prefixCandidates.isEmpty() && tokenCounts.isEmpty()) return null
+
+        val candidates = ArrayList<WorkImage>(prefixCandidates.size + tokenCounts.size)
+        val seenIndices = HashSet<Int>()
+        for (wi in prefixCandidates) {
+            if (seenIndices.add(wi.index)) candidates += wi
+        }
+        for ((wi, sharedCount) in tokenCounts) {
+            if (sharedCount >= 2 && seenIndices.add(wi.index)) candidates += wi
+        }
+        if (candidates.size > 1) candidates.sortBy { it.index }
+
         var bestPrefix: WorkImage? = null
         var bestOverlap: WorkImage? = null
         var bestScore = 0.0
 
-        for (wi in images) {
+        for (wi in candidates) {
             val imgParsed = wi.parsed ?: continue
             if (imgParsed.baseKey.length < 4) continue
             val isBaseMain = imgParsed.kind == SeriesKind.MAIN && imgParsed.effectiveSeason <= 1
@@ -1053,7 +1132,7 @@ object TelegramAnimeParser {
             for (imgKey in candidateKeys) {
                 val minLen = min(target.baseKey.length, imgKey.length)
                 val isPrefix = target.baseKey.startsWith(imgKey) || imgKey.startsWith(target.baseKey)
-                if (minLen >= 10 && isPrefix) {
+                if (minLen >= PREFIX_INDEX_LEN && isPrefix) {
                     val longer = if (target.baseKey.length >= imgKey.length) target.baseKey else imgKey
                     val shorter = if (target.baseKey.length < imgKey.length) target.baseKey else imgKey
                     val suffix = longer.removePrefix(shorter)

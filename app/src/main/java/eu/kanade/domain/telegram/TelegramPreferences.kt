@@ -21,6 +21,8 @@ class TelegramPreferences(
 
     fun browseSources() = preferenceStore.getString("pref_telegram_browse_sources", "")
 
+    fun mergedSeries() = preferenceStore.getString("pref_telegram_merged_series", "")
+
     companion object {
         const val DEFAULT_API_ID = 2040
         const val DEFAULT_API_HASH = "b18441a1ff607e10a989891a5462e627"

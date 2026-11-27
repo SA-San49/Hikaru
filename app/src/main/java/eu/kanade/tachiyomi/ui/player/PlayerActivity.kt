@@ -200,10 +200,10 @@ class PlayerActivity : BaseActivity() {
         private const val EXTRA_DIRECT_HEADERS = "directHeaders"
         private const val EXTRA_DIRECT_WIDTH = "directWidth"
         private const val EXTRA_DIRECT_HEIGHT = "directHeight"
-        private const val TG_DEMUXER_MAX_BYTES = 12 * 1024 * 1024
-        private const val TG_DEMUXER_BACK_BYTES = 4 * 1024 * 1024
-        private const val TG_EXT_DEMUXER_MAX_BYTES = 15 * 1024 * 1024
-        private const val TG_EXT_DEMUXER_BACK_BYTES = 5 * 1024 * 1024
+        private const val TG_DEMUXER_MAX_BYTES = 24 * 1024 * 1024
+        private const val TG_DEMUXER_BACK_BYTES = 8 * 1024 * 1024
+        private const val TG_EXT_DEMUXER_MAX_BYTES = 32 * 1024 * 1024
+        private const val TG_EXT_DEMUXER_BACK_BYTES = 12 * 1024 * 1024
         private const val TG_PROBE_ATTEMPTS = 15
         private const val TG_PROBE_DELAY_MS = 200L
         private val IMAGE_TRACK_CODECS = setOf("mjpeg", "png", "webp", "gif", "bmp", "tiff")
@@ -1595,7 +1595,8 @@ class PlayerActivity : BaseActivity() {
         MPVLib.setPropertyString("cache", "yes")
         MPVLib.setPropertyString("cache-pause", "yes")
         MPVLib.setPropertyString("cache-pause-initial", "no")
-        MPVLib.setPropertyString("cache-pause-wait", "1")
+        MPVLib.setPropertyString("cache-pause-wait", "0.5")
+        MPVLib.setPropertyString("network-timeout", "60")
         MPVLib.setPropertyString("demuxer-max-bytes", "$maxBytes")
         MPVLib.setPropertyString("demuxer-max-back-bytes", "$backBytes")
         MPVLib.setPropertyString("demuxer-readahead-secs", readaheadSecs)

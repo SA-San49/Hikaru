@@ -18,6 +18,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.CallMerge
 import androidx.compose.material.icons.outlined.Favorite
 import androidx.compose.material.icons.outlined.FilterList
 import androidx.compose.material.icons.outlined.NewReleases
@@ -392,6 +393,22 @@ data class BrowseSourceScreen(
                                         style = MaterialTheme.typography.labelSmall,
                                         color = if (allFavorite) MaterialTheme.colorScheme.error else LocalContentColor.current
                                     )
+                                }
+                            }
+                            if (state.selection.size >= 2) {
+                                TextButton(
+                                    onClick = { screenModel.mergeSelection() },
+                                ) {
+                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                        Icon(
+                                            imageVector = Icons.Outlined.CallMerge,
+                                            contentDescription = null,
+                                        )
+                                        Text(
+                                            text = "Marge",
+                                            style = MaterialTheme.typography.labelSmall,
+                                        )
+                                    }
                                 }
                             }
                         }
