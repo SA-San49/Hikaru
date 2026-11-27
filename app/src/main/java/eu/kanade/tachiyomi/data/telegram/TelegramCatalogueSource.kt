@@ -285,6 +285,8 @@ class TelegramCatalogueSource(
             val groupKey = uri.getQueryParameter("key").orEmpty()
             val seriesTitle = uri.getQueryParameter("title").orEmpty().ifBlank { anime.title }
             val targetSeason = uri.getQueryParameter("season")?.toIntOrNull() ?: 1
+            val targetRawSeason = uri.getQueryParameter("rawSeason")?.toIntOrNull() ?: 0
+            val targetIsFinal = uri.getQueryParameter("final")?.toBooleanStrictOrNull() ?: false
             val targetKind = uri.getQueryParameter("kind")?.let { k ->
                 TelegramAnimeParser.SeriesKind.entries.firstOrNull { it.name == k }
             } ?: TelegramAnimeParser.SeriesKind.MAIN
@@ -293,7 +295,12 @@ class TelegramCatalogueSource(
             val cachedPoster = posterCache[groupKey]
             val needsRealPoster = cachedPoster == null && cachedSeries?.hasRealPoster != true
             if (needsRealPoster && chatId != 0L && Td.isSignedIn() && groupKey !in posterMissKeys) {
-                val chunks = TelegramAnimeParser.buildPosterSearchChunks(seriesTitle)
+                val chunks = TelegramAnimeParser.buildPosterSearchChunks(
+                    seriesTitle = seriesTitle,
+                    rawSeason = targetRawSeason,
+                    kind = targetKind,
+                    isFinalSeason = targetIsFinal,
+                )
                 if (chunks.isNotEmpty()) {
                     var completed = false
                     val matched = withTimeoutOrNull(POSTER_SEARCH_TIMEOUT_MS) {
@@ -520,12 +527,7 @@ class TelegramCatalogueSource(
                 }
             }
 
-            val parsedList = merged.values.sortedWith(
-                compareBy<TelegramAnimeParser.ParsedVideo>(
-                    { it.parsed.episodeNumber ?: Float.MAX_VALUE },
-                    { it.video.messageId },
-                ),
-            )
+            val parsedList = merged.values.sortedWith(TelegramAnimeParser.EPISODE_SORT_COMPARATOR)
 
             return parsedList.mapIndexed { idx, pv ->
                 val v = pv.video
@@ -737,7 +739,12 @@ class TelegramCatalogueSource(
                         }
                         var completed = localHit != null
                         val matched = localHit ?: run {
-                            val chunks = TelegramAnimeParser.buildPosterSearchChunks(g.seriesTitle)
+                            val chunks = TelegramAnimeParser.buildPosterSearchChunks(
+                                seriesTitle = g.seriesTitle,
+                                rawSeason = g.rawSeason,
+                                kind = g.kind,
+                                isFinalSeason = g.isFinalSeason,
+                            )
                             if (chunks.isEmpty()) {
                                 completed = true
                                 null
@@ -833,6 +840,8 @@ class TelegramCatalogueSource(
                     "&title=${Uri.encode(series.seriesTitle)}" +
                     "&disp=${Uri.encode(series.displayTitle)}" +
                     "&season=${series.effectiveSeason}" +
+                    "&rawSeason=${series.rawSeason}" +
+                    "&final=${series.isFinalSeason}" +
                     "&kind=${series.kind.name}"
                 )
             title = series.displayTitle
@@ -1004,12 +1013,7 @@ class TelegramCatalogueSource(
             val combinedVideos = members.asSequence()
                 .flatMap { it.videos.asSequence() }
                 .distinctBy { it.video.messageId }
-                .sortedWith(
-                    compareBy<TelegramAnimeParser.ParsedVideo>(
-                        { it.parsed.episodeNumber ?: Float.MAX_VALUE },
-                        { it.video.messageId },
-                    ),
-                )
+                .sortedWith(TelegramAnimeParser.EPISODE_SORT_COMPARATOR)
                 .toList()
             val combinedAliases = linkedSetOf<String>().apply {
                 add(rule.targetKey)
