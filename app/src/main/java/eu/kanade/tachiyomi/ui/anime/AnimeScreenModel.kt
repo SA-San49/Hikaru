@@ -781,7 +781,7 @@ class AnimeScreenModel(
             updateSuccessState { it.copySuccess(isRefreshingData = true) }
             val current = successState?.anime
             val isLocal = current?.isLocal() == true
-            if (manualFetch) {
+            if (manualFetch && current != null) {
                 val src = successState?.source
                 if (src is LocalAnimeSource) {
                     src.invalidateCache(current.url)
