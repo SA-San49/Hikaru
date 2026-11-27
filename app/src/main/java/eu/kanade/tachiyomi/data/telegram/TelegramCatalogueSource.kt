@@ -58,6 +58,7 @@ class TelegramCatalogueSource(
     private val seriesCache = ConcurrentHashMap<String, TelegramAnimeParser.GroupedSeries>()
     private val posterCache = ConcurrentHashMap<String, CachedPoster>()
     private val posterMissKeys = ConcurrentHashMap.newKeySet<String>()
+    private val forcePosterRefreshKeys = ConcurrentHashMap.newKeySet<String>()
     private val seenSeriesKeys = ConcurrentHashMap.newKeySet<String>()
     private val telegramPrefs: TelegramPreferences by lazy { Injekt.get() }
     private val mergedUrlOverrides = ConcurrentHashMap<String, String>()
@@ -71,6 +72,25 @@ class TelegramCatalogueSource(
 
     fun markKeepCacheOnRefresh() {
         keepCacheOnNextRefresh.set(true)
+    }
+
+    fun invalidateSeriesPosterCache(animeUrl: String) {
+        if (!animeUrl.startsWith("/tg/series")) return
+        val groupKey = Uri.parse("https://t.me$animeUrl").getQueryParameter("key").orEmpty()
+        if (groupKey.isBlank()) return
+        forcePosterRefreshKeys += groupKey
+        posterMissKeys.remove(groupKey)
+        posterCache.remove(groupKey)
+        seriesCache[groupKey]?.let { existing ->
+            existing.aliasKeys.forEach { ak ->
+                posterMissKeys.remove(ak)
+                posterCache.remove(ak)
+                forcePosterRefreshKeys += ak
+            }
+            val reset = existing.copy(hasRealPoster = false)
+            seriesCache[groupKey] = reset
+            existing.aliasKeys.forEach { ak -> seriesCache[ak] = reset }
+        }
     }
 
     fun cachedAliasesFor(key: String): Set<String> =
@@ -278,6 +298,7 @@ class TelegramCatalogueSource(
         return AnimesPage(emptyList(), false)
     }
 
+    @Suppress("CyclomaticComplexMethod", "LongMethod")
     override suspend fun getAnimeDetails(anime: SAnime): SAnime {
         if (anime.url.startsWith("/tg/series")) {
             val uri = Uri.parse("https://t.me" + anime.url)
@@ -291,54 +312,47 @@ class TelegramCatalogueSource(
                 TelegramAnimeParser.SeriesKind.entries.firstOrNull { it.name == k }
             } ?: TelegramAnimeParser.SeriesKind.MAIN
 
+            val forceRefresh = forcePosterRefreshKeys.remove(groupKey)
+            val missingThumb = anime.thumbnail_url.isNullOrBlank()
+            if (forceRefresh || missingThumb) {
+                posterMissKeys.remove(groupKey)
+                posterCache.remove(groupKey)
+            }
             val cachedSeries = seriesCache[groupKey]
             val cachedPoster = posterCache[groupKey]
-            val needsRealPoster = cachedPoster == null && cachedSeries?.hasRealPoster != true
-            if (needsRealPoster && chatId != 0L && Td.isSignedIn() && groupKey !in posterMissKeys) {
-                val chunks = TelegramAnimeParser.buildPosterSearchChunks(
+            val needsRealPoster = forceRefresh ||
+                missingThumb ||
+                (cachedPoster == null && cachedSeries?.hasRealPoster != true)
+            if (needsRealPoster && chatId != 0L && groupKey !in posterMissKeys && Td.ensureReady(appContext)) {
+                Td.ensureChatLoaded(chatId)
+                val (matched, completed) = searchPosterWithFallback(
+                    chatId = chatId,
                     seriesTitle = seriesTitle,
+                    groupKey = groupKey,
                     rawSeason = targetRawSeason,
+                    effectiveSeason = targetSeason,
                     kind = targetKind,
                     isFinalSeason = targetIsFinal,
+                    timeoutMs = MANUAL_POSTER_SEARCH_TIMEOUT_MS,
+                    extraCandidates = collectedImages,
+                    allowRecentFetch = forceRefresh || collectedImages.isEmpty(),
                 )
-                if (chunks.isNotEmpty()) {
-                    var completed = false
-                    val matched = withTimeoutOrNull(POSTER_SEARCH_TIMEOUT_MS) {
-                        Td.searchPosterByChunks(chatId, chunks, collectedImages) { img ->
-                            TelegramAnimeParser.matchesSeriesPoster(
-                                targetSeriesTitle = seriesTitle,
-                                targetGroupKey = groupKey,
-                                targetKind = targetKind,
-                                targetSeason = targetSeason,
-                                image = img,
-                            ) != null
-                        }.also { completed = true }
-                    }
-                    if (matched != null && matched.fileId != 0) {
-                        val imgParsed = TelegramAnimeParser.parseImage(matched)
-                        val bestTitle = TelegramAnimeParser.chooseBestSeriesTitle(seriesTitle, imgParsed?.seriesTitle)
-                        val bestDisplay = TelegramAnimeParser.formatSeriesDisplayTitle(bestTitle, targetSeason, targetKind)
-                        val entryPoster = CachedPoster(
-                            fileId = matched.fileId,
-                            chatId = matched.chatId,
-                            messageId = matched.messageId,
-                            fallbackThumb = matched.minithumb,
-                            upgradedTitle = bestTitle,
-                            upgradedDisplayTitle = bestDisplay,
-                        )
-                        posterCache[groupKey] = entryPoster
-                        cachedSeries?.let { s ->
-                            val upgraded = applyCachedPoster(s, entryPoster)
-                            seriesCache[groupKey] = upgraded
-                            upgraded.aliasKeys.forEach { ak ->
-                                posterCache[ak] = entryPoster
-                                seriesCache[ak] = upgraded
-                            }
-                        }
-                        anime.thumbnail_url = TdHttpServer.thumbUrlFor(matched.fileId, matched.chatId, matched.messageId)
-                    } else if (completed) {
-                        posterMissKeys += groupKey
-                    }
+                if (matched != null && matched.fileId != 0) {
+                    val entryPoster = cacheFoundPoster(
+                        groupKey = groupKey,
+                        seriesTitle = seriesTitle,
+                        targetSeason = targetSeason,
+                        targetKind = targetKind,
+                        matched = matched,
+                        cachedSeries = cachedSeries,
+                    )
+                    anime.thumbnail_url = TdHttpServer.thumbUrlFor(
+                        entryPoster.fileId,
+                        entryPoster.chatId,
+                        entryPoster.messageId,
+                    )
+                } else if (completed) {
+                    posterMissKeys += groupKey
                 }
             } else if (cachedPoster != null && cachedPoster.fileId != 0) {
                 anime.thumbnail_url = TdHttpServer.thumbUrlFor(
@@ -727,65 +741,27 @@ class TelegramCatalogueSource(
                 async {
                     sem.withPermit {
                         if (posterCache.containsKey(g.groupKey)) return@withPermit
-                        // Re-check only newly discovered images from sibling poster searches in this pass
-                        val localHit = batchDiscoveredImages.values.firstOrNull { img ->
-                            TelegramAnimeParser.matchesSeriesPoster(
-                                targetSeriesTitle = g.seriesTitle,
-                                targetGroupKey = g.groupKey,
-                                targetKind = g.kind,
-                                targetSeason = g.effectiveSeason,
-                                image = img,
-                            ) != null
-                        }
-                        var completed = localHit != null
-                        val matched = localHit ?: run {
-                            val chunks = TelegramAnimeParser.buildPosterSearchChunks(
-                                seriesTitle = g.seriesTitle,
-                                rawSeason = g.rawSeason,
-                                kind = g.kind,
-                                isFinalSeason = g.isFinalSeason,
-                            )
-                            if (chunks.isEmpty()) {
-                                completed = true
-                                null
-                            } else {
-                                withTimeoutOrNull(POSTER_SEARCH_TIMEOUT_MS) {
-                                    Td.searchPosterByChunks(chatId, chunks, batchDiscoveredImages) { img ->
-                                        collectedImages.putIfAbsent(img.messageId, img)
-                                        TelegramAnimeParser.matchesSeriesPoster(
-                                            targetSeriesTitle = g.seriesTitle,
-                                            targetGroupKey = g.groupKey,
-                                            targetKind = g.kind,
-                                            targetSeason = g.effectiveSeason,
-                                            image = img,
-                                        ) != null
-                                    }.also { hit ->
-                                        if (hit != null) {
-                                            collectedImages.putIfAbsent(hit.messageId, hit)
-                                        }
-                                        completed = true
-                                    }
-                                }
-                            }
-                        }
+                        val (matched, completed) = searchPosterWithFallback(
+                            chatId = chatId,
+                            seriesTitle = g.seriesTitle,
+                            groupKey = g.groupKey,
+                            rawSeason = g.rawSeason,
+                            effectiveSeason = g.effectiveSeason,
+                            kind = g.kind,
+                            isFinalSeason = g.isFinalSeason,
+                            timeoutMs = POSTER_SEARCH_TIMEOUT_MS,
+                            extraCandidates = batchDiscoveredImages,
+                            allowRecentFetch = false,
+                        )
                         if (matched != null && matched.fileId != 0) {
-                            val imgParsed = TelegramAnimeParser.parseImage(matched)
-                            val bestTitle = TelegramAnimeParser.chooseBestSeriesTitle(g.seriesTitle, imgParsed?.seriesTitle)
-                            val bestDisplay = TelegramAnimeParser.formatSeriesDisplayTitle(
-                                bestTitle,
-                                g.effectiveSeason,
-                                g.kind,
+                            cacheFoundPoster(
+                                groupKey = g.groupKey,
+                                seriesTitle = g.seriesTitle,
+                                targetSeason = g.effectiveSeason,
+                                targetKind = g.kind,
+                                matched = matched,
+                                cachedSeries = g,
                             )
-                            val cached = CachedPoster(
-                                fileId = matched.fileId,
-                                chatId = matched.chatId,
-                                messageId = matched.messageId,
-                                fallbackThumb = matched.minithumb,
-                                upgradedTitle = bestTitle,
-                                upgradedDisplayTitle = bestDisplay,
-                            )
-                            posterCache[g.groupKey] = cached
-                            g.aliasKeys.forEach { ak -> posterCache[ak] = cached }
                         } else if (completed) {
                             posterMissKeys += g.groupKey
                         }
@@ -805,6 +781,130 @@ class TelegramCatalogueSource(
             updated.aliasKeys.forEach { ak -> seriesCache[ak] = updated }
             updated
         }
+    }
+
+    @Suppress("LongParameterList", "ReturnCount")
+    private suspend fun searchPosterWithFallback(
+        chatId: Long,
+        seriesTitle: String,
+        groupKey: String,
+        rawSeason: Int,
+        effectiveSeason: Int,
+        kind: TelegramAnimeParser.SeriesKind,
+        isFinalSeason: Boolean,
+        timeoutMs: Long,
+        extraCandidates: ConcurrentHashMap<Long, Td.ChatImage>,
+        allowRecentFetch: Boolean,
+    ): Pair<Td.ChatImage?, Boolean> {
+        val exactLocal = (extraCandidates.values + collectedImages.values).firstOrNull { img ->
+            TelegramAnimeParser.matchesSeriesPoster(
+                targetSeriesTitle = seriesTitle,
+                targetGroupKey = groupKey,
+                targetKind = kind,
+                targetSeason = effectiveSeason,
+                image = img,
+            ) != null
+        }
+        if (exactLocal != null) return exactLocal to true
+
+        val chunks = TelegramAnimeParser.buildPosterSearchChunks(
+            seriesTitle = seriesTitle,
+            rawSeason = rawSeason,
+            kind = kind,
+            isFinalSeason = isFinalSeason,
+        )
+        if (chunks.isEmpty()) return null to true
+
+        val searchCandidates = ConcurrentHashMap<Long, Td.ChatImage>()
+        var completed = false
+        val exactSearch = withTimeoutOrNull(timeoutMs) {
+            Td.searchPosterByChunks(chatId, chunks, searchCandidates) { img ->
+                collectedImages.putIfAbsent(img.messageId, img)
+                extraCandidates.putIfAbsent(img.messageId, img)
+                TelegramAnimeParser.matchesSeriesPoster(
+                    targetSeriesTitle = seriesTitle,
+                    targetGroupKey = groupKey,
+                    targetKind = kind,
+                    targetSeason = effectiveSeason,
+                    image = img,
+                ) != null
+            }.also { hit ->
+                if (hit != null) {
+                    collectedImages.putIfAbsent(hit.messageId, hit)
+                    extraCandidates.putIfAbsent(hit.messageId, hit)
+                }
+                completed = true
+            }
+        }
+        if (exactSearch != null) return exactSearch to true
+
+        searchCandidates.forEach { (id, img) ->
+            collectedImages.putIfAbsent(id, img)
+            extraCandidates.putIfAbsent(id, img)
+        }
+        if (allowRecentFetch) {
+            Td.chatRecentImages(chatId).forEach { img ->
+                searchCandidates.putIfAbsent(img.messageId, img)
+                collectedImages.putIfAbsent(img.messageId, img)
+                extraCandidates.putIfAbsent(img.messageId, img)
+            }
+            val exactRecent = searchCandidates.values.firstOrNull { img ->
+                TelegramAnimeParser.matchesSeriesPoster(
+                    targetSeriesTitle = seriesTitle,
+                    targetGroupKey = groupKey,
+                    targetKind = kind,
+                    targetSeason = effectiveSeason,
+                    image = img,
+                ) != null
+            }
+            if (exactRecent != null) return exactRecent to true
+        }
+
+        // Last resort: use the closest matching image from Telegram search / channel pool
+        val pool = (searchCandidates.values + extraCandidates.values + collectedImages.values)
+            .distinctBy { it.messageId }
+        val closest = TelegramAnimeParser.findClosestPosterMatch(
+            targetSeriesTitle = seriesTitle,
+            targetGroupKey = groupKey,
+            targetKind = kind,
+            targetSeason = effectiveSeason,
+            candidates = pool,
+        )
+        return closest to completed
+    }
+
+    @Suppress("LongParameterList")
+    private fun cacheFoundPoster(
+        groupKey: String,
+        seriesTitle: String,
+        targetSeason: Int,
+        targetKind: TelegramAnimeParser.SeriesKind,
+        matched: Td.ChatImage,
+        cachedSeries: TelegramAnimeParser.GroupedSeries?,
+    ): CachedPoster {
+        val imgParsed = TelegramAnimeParser.parseImage(matched)
+        val bestTitle = TelegramAnimeParser.chooseBestSeriesTitle(seriesTitle, imgParsed?.seriesTitle)
+        val bestDisplay = TelegramAnimeParser.formatSeriesDisplayTitle(bestTitle, targetSeason, targetKind)
+        val cached = CachedPoster(
+            fileId = matched.fileId,
+            chatId = matched.chatId,
+            messageId = matched.messageId,
+            fallbackThumb = matched.minithumb,
+            upgradedTitle = bestTitle,
+            upgradedDisplayTitle = bestDisplay,
+        )
+        posterCache[groupKey] = cached
+        posterMissKeys.remove(groupKey)
+        cachedSeries?.let { s ->
+            val upgraded = applyCachedPoster(s, cached)
+            seriesCache[groupKey] = upgraded
+            upgraded.aliasKeys.forEach { ak ->
+                posterCache[ak] = cached
+                posterMissKeys.remove(ak)
+                seriesCache[ak] = upgraded
+            }
+        }
+        return cached
     }
 
     private fun applyCachedPoster(
@@ -1087,7 +1187,8 @@ class TelegramCatalogueSource(
         private const val EPISODE_SEARCH_LIMIT = 100
         private const val MAX_EPISODE_SEARCH_CHUNKS = 5
         private const val POSTER_SEARCH_CONCURRENCY = 12
-        private const val POSTER_SEARCH_TIMEOUT_MS = 1800L
+        private const val POSTER_SEARCH_TIMEOUT_MS = 4500L
+        private const val MANUAL_POSTER_SEARCH_TIMEOUT_MS = 8000L
         private const val MIN_ANIMATION_SECS = 3
         private const val MIN_ANIMATION_BYTES = 2L * 1024L * 1024L
         private const val PREF_PREFERRED_QUALITY = "preferred_quality"

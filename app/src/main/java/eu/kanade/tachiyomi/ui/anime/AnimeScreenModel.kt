@@ -36,6 +36,7 @@ import eu.kanade.tachiyomi.animesource.model.Credit
 import eu.kanade.tachiyomi.data.download.DownloadCache
 import eu.kanade.tachiyomi.data.download.DownloadManager
 import eu.kanade.tachiyomi.data.download.model.Download
+import eu.kanade.tachiyomi.data.telegram.TelegramCatalogueSource
 import eu.kanade.tachiyomi.data.torrentServer.service.TorrentServerService
 import eu.kanade.tachiyomi.data.track.EnhancedTracker
 import eu.kanade.tachiyomi.data.track.TrackerManager
@@ -780,8 +781,13 @@ class AnimeScreenModel(
             updateSuccessState { it.copySuccess(isRefreshingData = true) }
             val current = successState?.anime
             val isLocal = current?.isLocal() == true
-            if (manualFetch && isLocal) {
-                (successState?.source as? LocalAnimeSource)?.invalidateCache(current.url)
+            if (manualFetch) {
+                val src = successState?.source
+                if (src is LocalAnimeSource) {
+                    src.invalidateCache(current.url)
+                } else if (src is TelegramCatalogueSource) {
+                    src.invalidateSeriesPosterCache(current.url)
+                }
             }
             val canFetchConcurrently = current != null && current.fetchType != FetchType.Seasons
             if (canFetchConcurrently && (current.initialized || isLocal)) {

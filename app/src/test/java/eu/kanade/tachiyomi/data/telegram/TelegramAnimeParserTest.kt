@@ -323,6 +323,109 @@ class TelegramAnimeParserTest {
     }
 
     @Test
+    fun treatsHyphensAndUnderscoresAsSpacesInPosterSearch() {
+        assertEquals(
+            "show name test",
+            TelegramAnimeParser.buildPosterSearchQuery("Show-Name_Test"),
+        )
+        val chunks = TelegramAnimeParser.buildPosterSearchChunks("Spy-x_Family", rawSeason = 2)
+        assertTrue(chunks.first() == "spy x family S02")
+        assertTrue("spy x family II" in chunks)
+        assertTrue("spy x family" in chunks)
+        assertFalse(chunks.any { it.contains("-") || it.contains("_") })
+    }
+
+    @Test
+    fun parsesLeadingBareEpisodeNumbersWithoutBreakingNumericTitles() {
+        val cheat1 = TelegramAnimeParser.parse("1 I Got a Cheat Skill in Another World and Became Unrivaled in The.mkv")
+        assertEquals(1f, cheat1.episodeNumber)
+        assertEquals("igotacheatskillinanotherworldandbecameunrivaledinthe", cheat1.baseKey)
+
+        val dating12 = TelegramAnimeParser.parse("12 Trapped in a Dating Sim The World of Otome Games is Tough for.mkv")
+        assertEquals(12f, dating12.episodeNumber)
+        assertEquals("trappedinadatingsimtheworldofotomegamesistoughfor", dating12.baseKey)
+
+        val underscored = TelegramAnimeParser.parse("03_I_Got_a_Cheat_Skill_in_Another_World.mp4")
+        assertEquals(3f, underscored.episodeNumber)
+
+        val eightySix = TelegramAnimeParser.parse("86 Eighty Six E05.mkv")
+        assertEquals(5f, eightySix.episodeNumber)
+        assertEquals("86eightysix", eightySix.baseKey)
+
+        val posterEightySix = TelegramAnimeParser.parse("86 Eighty Six", allowLeadingBareEpisode = false)
+        assertNull(posterEightySix.episodeNumber)
+        assertEquals("86eightysix", posterEightySix.baseKey)
+    }
+
+    @Test
+    fun handlesRomanNumeralsInSeasonsEpisodesAndPosters() {
+        val overlord2 = TelegramAnimeParser.parse("Overlord II E01.mkv")
+        assertEquals("overlord", overlord2.baseKey)
+        assertEquals(2, overlord2.effectiveSeason)
+        assertEquals(1f, overlord2.episodeNumber)
+
+        val overlord4 = TelegramAnimeParser.parse("Overlord IV - 05.mkv")
+        assertEquals("overlord", overlord4.baseKey)
+        assertEquals(4, overlord4.effectiveSeason)
+        assertEquals(5f, overlord4.episodeNumber)
+
+        val unicode2 = TelegramAnimeParser.parse("Mob Psycho 100 \u2161 E03.mkv")
+        assertEquals("mobpsycho100", unicode2.baseKey)
+        assertEquals(2, unicode2.effectiveSeason)
+        assertEquals(3f, unicode2.episodeNumber)
+
+        val season3 = TelegramAnimeParser.parse("Show Name Season III Ep IV.mkv")
+        assertEquals("showname", season3.baseKey)
+        assertEquals(3, season3.effectiveSeason)
+        assertEquals(4f, season3.episodeNumber)
+
+        val ova2 = TelegramAnimeParser.parse("Show Name OVA II.mkv")
+        assertEquals(TelegramAnimeParser.SeriesKind.OVA, ova2.kind)
+        assertEquals(2f, ova2.episodeNumber)
+
+        val spy = TelegramAnimeParser.parse("Spy x Family E01.mkv")
+        assertEquals("spyxfamily", spy.baseKey)
+        assertEquals(1, spy.effectiveSeason)
+    }
+
+    @Test
+    fun fallsBackToClosestMatchedPosterWhenExactSearchMisses() {
+        val typoTitle = "Rascal Does Not Dream of aA Dreaming Girl"
+        val typoKey = TelegramAnimeParser.normalizeBaseKey(typoTitle)
+        val bunnyImg = img(1, caption = "Rascal Does Not Dream of Bunny Girl Senpai")
+        val dreamingImg = img(2, caption = "Rascal Does Not Dream of a Dreaming Girl")
+        val unrelatedImg = img(3, caption = "Attack on Titan")
+
+        assertNull(
+            TelegramAnimeParser.matchesSeriesPoster(
+                targetSeriesTitle = typoTitle,
+                targetGroupKey = typoKey,
+                targetKind = TelegramAnimeParser.SeriesKind.MAIN,
+                targetSeason = 1,
+                image = dreamingImg,
+            ),
+        )
+
+        val closest = TelegramAnimeParser.findClosestPosterMatch(
+            targetSeriesTitle = typoTitle,
+            targetGroupKey = typoKey,
+            targetKind = TelegramAnimeParser.SeriesKind.MAIN,
+            targetSeason = 1,
+            candidates = listOf(unrelatedImg, bunnyImg, dreamingImg),
+        )
+        assertEquals(2L, closest?.messageId)
+
+        val noMatch = TelegramAnimeParser.findClosestPosterMatch(
+            targetSeriesTitle = typoTitle,
+            targetGroupKey = typoKey,
+            targetKind = TelegramAnimeParser.SeriesKind.MAIN,
+            targetSeason = 1,
+            candidates = listOf(unrelatedImg),
+        )
+        assertNull(noMatch)
+    }
+
+    @Test
     fun groupsHundredsOfItemsQuickly() {
         val videos = (1..500).map { i ->
             val showNum = (i % 25) + 1

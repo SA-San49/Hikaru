@@ -153,10 +153,10 @@ object Td {
     private const val THUMB_DOWNLOAD_PRIORITY = 24
     private const val DOWNLOAD_PRIORITY = 32
     private const val STREAM_EVICT_DELAY_MS = 10_000L
-    private const val POSTER_SEARCH_LIMIT = 20
+    private const val POSTER_SEARCH_LIMIT = 30
     private const val POSTER_CHUNKS_MAX = 4
     private const val MIN_ANIMATION_BYTES = 256L * 1024
-    private const val CONTINUOUS_PREWARM_MAX_BYTES = 256L * 1024 * 1024
+    private const val PREWARM_BYTES = 2L * 1024 * 1024
     const val AHEAD_BYTES: Long = 16L * 1024 * 1024
     private val IMAGE_EXTENSIONS = setOf(
         ".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".avif", ".heic", ".tiff",
@@ -1584,8 +1584,14 @@ object Td {
     }
 
     fun prewarm(fileId: Int, totalSize: Long = 0L) {
+        if (fileId == 0) return
         downloadErrors.remove(fileId)
-        val limit = if (totalSize in 1L..CONTINUOUS_PREWARM_MAX_BYTES) 0L else AHEAD_BYTES
+        streamedVideoFiles.forEach { otherId ->
+            if (otherId != fileId && (activeStreams[otherId]?.get() ?: 0) <= 0) {
+                cancelDownload(otherId)
+            }
+        }
+        val limit = if (totalSize in 1L until PREWARM_BYTES) totalSize else PREWARM_BYTES
         request(fileId, 0L, limit)
     }
 
@@ -1593,10 +1599,12 @@ object Td {
         if (fileId == 0) return
         streamedVideoFiles.add(fileId)
         activeStreams.computeIfAbsent(fileId) { AtomicInteger(0) }.incrementAndGet()
-        if (!isCacheMediaEnabled()) {
-            streamedVideoFiles.forEach { otherId ->
-                if (otherId != fileId && (activeStreams[otherId]?.get() ?: 0) <= 0) {
+        streamedVideoFiles.forEach { otherId ->
+            if (otherId != fileId && (activeStreams[otherId]?.get() ?: 0) <= 0) {
+                if (!isCacheMediaEnabled()) {
                     evictFile(otherId)
+                } else {
+                    cancelDownload(otherId)
                 }
             }
         }

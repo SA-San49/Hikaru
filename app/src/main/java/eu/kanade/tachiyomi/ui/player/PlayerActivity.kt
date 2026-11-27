@@ -200,10 +200,12 @@ class PlayerActivity : BaseActivity() {
         private const val EXTRA_DIRECT_HEADERS = "directHeaders"
         private const val EXTRA_DIRECT_WIDTH = "directWidth"
         private const val EXTRA_DIRECT_HEIGHT = "directHeight"
-        private const val TG_DEMUXER_MAX_BYTES = 24 * 1024 * 1024
-        private const val TG_DEMUXER_BACK_BYTES = 8 * 1024 * 1024
-        private const val TG_EXT_DEMUXER_MAX_BYTES = 32 * 1024 * 1024
-        private const val TG_EXT_DEMUXER_BACK_BYTES = 12 * 1024 * 1024
+        private const val TG_DEMUXER_MAX_BYTES = 16 * 1024 * 1024
+        private const val TG_DEMUXER_BACK_BYTES = 4 * 1024 * 1024
+        private const val TG_EXT_DEMUXER_MAX_BYTES = 24 * 1024 * 1024
+        private const val TG_EXT_DEMUXER_BACK_BYTES = 8 * 1024 * 1024
+        private const val TG_LAVF_PROBESIZE = "1048576"
+        private const val TG_LAVF_ANALYZE_SECS = "1.5"
         private const val TG_PROBE_ATTEMPTS = 15
         private const val TG_PROBE_DELAY_MS = 200L
         private val IMAGE_TRACK_CODECS = setOf("mjpeg", "png", "webp", "gif", "bmp", "tiff")
@@ -1590,13 +1592,20 @@ class PlayerActivity : BaseActivity() {
             viewModel.currentSource.value is TelegramCatalogueSource
         val maxBytes = if (isExtensionStream) TG_EXT_DEMUXER_MAX_BYTES else TG_DEMUXER_MAX_BYTES
         val backBytes = if (isExtensionStream) TG_EXT_DEMUXER_BACK_BYTES else TG_DEMUXER_BACK_BYTES
-        val readaheadSecs = "300"
-        val cacheSecs = "300"
+        val readaheadSecs = "60"
+        val cacheSecs = "60"
+        MPVLib.setOptionString("demuxer-lavf-probesize", TG_LAVF_PROBESIZE)
+        MPVLib.setOptionString("demuxer-lavf-analyzeduration", TG_LAVF_ANALYZE_SECS)
+        MPVLib.setOptionString("demuxer-lavf-o", "fflags=+fastseek")
+        MPVLib.setOptionString(
+            "stream-lavf-o",
+            "reconnect=1,reconnect_streamed=1,reconnect_on_network_error=1,reconnect_delay_max=2",
+        )
         MPVLib.setPropertyString("cache", "yes")
         MPVLib.setPropertyString("cache-pause", "yes")
         MPVLib.setPropertyString("cache-pause-initial", "no")
-        MPVLib.setPropertyString("cache-pause-wait", "0.5")
-        MPVLib.setPropertyString("network-timeout", "60")
+        MPVLib.setPropertyString("cache-pause-wait", "1")
+        MPVLib.setPropertyString("network-timeout", "90")
         MPVLib.setPropertyString("demuxer-max-bytes", "$maxBytes")
         MPVLib.setPropertyString("demuxer-max-back-bytes", "$backBytes")
         MPVLib.setPropertyString("demuxer-readahead-secs", readaheadSecs)
@@ -1606,7 +1615,6 @@ class PlayerActivity : BaseActivity() {
 
     @Suppress("MagicNumber")
     private fun applyTelegramVideoFilter(url: String, actualWidth: Int = 0, actualHeight: Int = 0) {
-        val displayShort = Td.displayShortSide(this)
         val actualShort = if (actualWidth > 0 && actualHeight > 0) {
             minOf(actualWidth, actualHeight)
         } else {
@@ -1614,15 +1622,8 @@ class PlayerActivity : BaseActivity() {
         }
         val qParam = Uri.parse(url).getQueryParameter("q").orEmpty()
         when {
-            qParam == "original" -> {
+            qParam == "original" || qParam == "hls" || qParam == "auto" -> {
                 MPVLib.setPropertyString("vf", "")
-            }
-            qParam == "hls" || qParam == "auto" -> {
-                if (actualShort > displayShort && displayShort > 0) {
-                    MPVLib.setPropertyString("vf", "scale=-2:$displayShort")
-                } else {
-                    MPVLib.setPropertyString("vf", "")
-                }
             }
             else -> {
                 val targetQ = qParam.toIntOrNull()
