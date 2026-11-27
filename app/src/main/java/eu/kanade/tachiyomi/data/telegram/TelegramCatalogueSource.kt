@@ -345,7 +345,6 @@ class TelegramCatalogueSource(
     }
 
     @Suppress("CyclomaticComplexMethod", "LongMethod", "ReturnCount")
-    @Suppress("CyclomaticComplexMethod", "LongMethod", "ReturnCount")
     override suspend fun getEpisodeList(anime: SAnime): List<SEpisode> {
         val uri = Uri.parse("https://t.me" + anime.url)
         val mode = uri.getQueryParameter("mode").orEmpty()

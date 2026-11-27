@@ -873,7 +873,7 @@ object TelegramAnimeParser {
                     baseMainPosters.putIfAbsent(p.baseKey, wi)
                 }
             } else {
-                uncaptionedImages += wi.image
+                uncaptionedImages += rawWi.image
             }
         }
 
@@ -1112,6 +1112,17 @@ object TelegramAnimeParser {
         }
         if (candidates.size > 1) candidates.sortBy { it.index }
 
+        return evaluatePosterCandidates(target, targetTokens, candidates, allowBaseFallback)
+    }
+
+    @Suppress("CyclomaticComplexMethod", "ReturnCount")
+    private fun evaluatePosterCandidates(
+        target: ParsedMedia,
+        targetTokens: Set<String>,
+        candidates: List<WorkImage>,
+        allowBaseFallback: Boolean,
+    ): WorkImage? {
+        if (target.baseKey.length < 4) return null
         var bestPrefix: WorkImage? = null
         var bestOverlap: WorkImage? = null
         var bestScore = 0.0
@@ -1285,8 +1296,9 @@ object TelegramAnimeParser {
         )
         val wi = WorkImage(image, imgParsed, significantTokens(imgParsed.seriesTitle))
         val targetTokens = significantTokens(targetSeriesTitle)
-        val matched = findBestTitledPoster(targetParsed, targetTokens, listOf(wi), allowBaseFallback = false)
-            ?: findBestTitledPoster(targetParsed, targetTokens, listOf(wi), allowBaseFallback = true)
+        val single = listOf(wi)
+        val matched = evaluatePosterCandidates(targetParsed, targetTokens, single, allowBaseFallback = false)
+            ?: evaluatePosterCandidates(targetParsed, targetTokens, single, allowBaseFallback = true)
         return if (matched != null) imgParsed else null
     }
 
