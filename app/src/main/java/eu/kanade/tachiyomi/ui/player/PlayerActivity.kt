@@ -200,12 +200,12 @@ class PlayerActivity : BaseActivity() {
         private const val EXTRA_DIRECT_HEADERS = "directHeaders"
         private const val EXTRA_DIRECT_WIDTH = "directWidth"
         private const val EXTRA_DIRECT_HEIGHT = "directHeight"
-        private const val TG_DEMUXER_MAX_BYTES = 16 * 1024 * 1024
-        private const val TG_DEMUXER_BACK_BYTES = 4 * 1024 * 1024
+        private const val TG_DEMUXER_MAX_BYTES = 20 * 1024 * 1024
+        private const val TG_DEMUXER_BACK_BYTES = 6 * 1024 * 1024
         private const val TG_EXT_DEMUXER_MAX_BYTES = 24 * 1024 * 1024
         private const val TG_EXT_DEMUXER_BACK_BYTES = 8 * 1024 * 1024
-        private const val TG_LAVF_PROBESIZE = "1048576"
-        private const val TG_LAVF_ANALYZE_SECS = "1.5"
+        private const val TG_LAVF_PROBESIZE = "524288"
+        private const val TG_LAVF_ANALYZE_SECS = "1.0"
         private const val TG_PROBE_ATTEMPTS = 15
         private const val TG_PROBE_DELAY_MS = 200L
         private val IMAGE_TRACK_CODECS = setOf("mjpeg", "png", "webp", "gif", "bmp", "tiff")

@@ -36,7 +36,10 @@ import eu.kanade.tachiyomi.animesource.model.Credit
 import eu.kanade.tachiyomi.data.download.DownloadCache
 import eu.kanade.tachiyomi.data.download.DownloadManager
 import eu.kanade.tachiyomi.data.download.model.Download
+import android.net.Uri
+import eu.kanade.domain.telegram.TelegramPreferences
 import eu.kanade.tachiyomi.data.telegram.TelegramCatalogueSource
+import eu.kanade.tachiyomi.data.telegram.TelegramSeriesMergeStore
 import eu.kanade.tachiyomi.data.torrentServer.service.TorrentServerService
 import eu.kanade.tachiyomi.data.track.EnhancedTracker
 import eu.kanade.tachiyomi.data.track.TrackerManager
@@ -171,6 +174,7 @@ class AnimeScreenModel(
     private val downloadPreferences: DownloadPreferences = Injekt.get(),
     private val libraryPreferences: LibraryPreferences = Injekt.get(),
     private val trackPreferences: TrackPreferences = Injekt.get(),
+    private val telegramPreferences: TelegramPreferences = Injekt.get(),
     internal val playerPreferences: PlayerPreferences = Injekt.get(),
     internal val gesturePreferences: GesturePreferences = Injekt.get(),
     private val trackerManager: TrackerManager = Injekt.get(),
@@ -325,6 +329,9 @@ class AnimeScreenModel(
         showEpisodeSummary: Boolean = anime.showSummaries(),
         showEpisodeThumbnail: Boolean = anime.showPreviews(),
         hideMissingEpisodes: Boolean = libraryPreferences.hideMissingEpisodes().get(),
+        isTelegramMerged: Boolean = (source as? TelegramCatalogueSource)?.let {
+            TelegramSeriesMergeStore.hasMergeForUrl(telegramPreferences, it.id, anime.url)
+        } ?: false,
     ): State.Success {
         val episodesStatusHash = episodes.sumOf { 
             it.episode.lastModifiedAt + 
@@ -582,6 +589,7 @@ class AnimeScreenModel(
             showEpisodeSummary = showEpisodeSummary,
             showEpisodeThumbnail = showEpisodeThumbnail,
             hideMissingEpisodes = hideMissingEpisodes,
+            isTelegramMerged = isTelegramMerged,
         )
     }
 
@@ -636,6 +644,9 @@ class AnimeScreenModel(
                     dialog = null,
                     selectedSeason = savedSeason,
                     skipDupeEpisodes = libraryPreferences.skipDupeEpisodes().get(),
+                    isTelegramMerged = (animeSource as? TelegramCatalogueSource)?.let {
+                        TelegramSeriesMergeStore.hasMergeForUrl(telegramPreferences, it.id, anime.url)
+                    } ?: false,
                     hideMissingEpisodes = libraryPreferences.hideMissingEpisodes().get(),
                 )
             }
@@ -2266,6 +2277,54 @@ class AnimeScreenModel(
         }
     }
 
+    fun unmergeTelegramEpisodes(selectedEpisodes: List<Episode>) {
+        val state = successState ?: return
+        val src = state.source as? TelegramCatalogueSource ?: return
+        if (selectedEpisodes.isEmpty()) return
+        val selectedMsgIds = selectedEpisodes.mapNotNull { ep ->
+            Uri.parse("https://t.me" + ep.url).getQueryParameter("msg")?.toLongOrNull()
+        }.toSet()
+        if (selectedMsgIds.isEmpty()) return
+
+        val seriesKey = TelegramSeriesMergeStore.extractSeriesKey(state.anime.url)
+        val remainingKeys = state.episodes.asSequence()
+            .mapNotNull { item ->
+                val mid = Uri.parse("https://t.me" + item.episode.url).getQueryParameter("msg")?.toLongOrNull()
+                if (mid != null && mid !in selectedMsgIds) src.cachedGroupKeyForMessage(mid) else null
+            }
+            .toSet()
+        val droppedMemberKeys = selectedMsgIds.mapNotNull { mid ->
+            src.cachedGroupKeyForMessage(mid)
+        }.filterNot { it in remainingKeys }.toSet()
+
+        val changed = TelegramSeriesMergeStore.unmergeEpisodes(
+            prefs = telegramPreferences,
+            sourceId = src.id,
+            seriesKey = seriesKey,
+            messageIds = selectedMsgIds,
+            unmergedMemberKeys = droppedMemberKeys,
+        )
+        toggleAllSelection(false)
+        if (!changed) return
+
+        src.markKeepCacheOnRefresh()
+        screenModelScope.launch {
+            updateSuccessState { it.copySuccess(isRefreshingData = true) }
+            fetchEpisodesFromSource(manualFetch = true)
+            updateSuccessState {
+                it.copySuccess(
+                    isRefreshingData = false,
+                    isTelegramMerged = TelegramSeriesMergeStore.hasMergeForUrl(
+                        telegramPreferences,
+                        src.id,
+                        it.anime.url,
+                    ),
+                )
+            }
+            snackbarHostState.showSnackbar("Unmerged ${selectedMsgIds.size} episode(s)")
+        }
+    }
+
     fun showMigrateDialog(duplicate: Anime) = updateSuccessState { it.copySuccess(dialog = Dialog.Migrate(newAnime = it.anime, oldAnime = duplicate)) }
     fun showAnimeSkipIntroDialog() = updateSuccessState { it.copySuccess(dialog = Dialog.ChangeAnimeSkipIntro) }
     fun showClearAnimeDialog() = updateSuccessState { it.copySuccess(dialog = Dialog.ClearAnime) }
@@ -2364,6 +2423,7 @@ class AnimeScreenModel(
             val hideMissingEpisodes: Boolean = false,
             val availableScanlators: ImmutableList<String> = persistentListOf(),
             val excludedScanlators: ImmutableSet<String> = persistentSetOf(),
+            val isTelegramMerged: Boolean = false,
         ) : State {
             companion object {
                 fun create(
@@ -2382,6 +2442,7 @@ class AnimeScreenModel(
                     hideMissingEpisodes: Boolean = false,
                     availableScanlators: ImmutableList<String> = persistentListOf(),
                     excludedScanlators: ImmutableSet<String> = persistentSetOf(),
+                    isTelegramMerged: Boolean = false,
                 ): Success {
                     val processedEpisodes = episodes.applyFilters(anime, skipDupeEpisodes).toImmutableList()
                     val missingEpisodeCount = if (hideMissingEpisodes) 0 else processedEpisodes.map { it.episode.episodeNumber }.missingEpisodesCount()
@@ -2577,6 +2638,7 @@ class AnimeScreenModel(
                         // <-- AY
                         availableScanlators = availableScanlators,
                         excludedScanlators = excludedScanlators,
+                        isTelegramMerged = isTelegramMerged,
                     )
                 }
             }

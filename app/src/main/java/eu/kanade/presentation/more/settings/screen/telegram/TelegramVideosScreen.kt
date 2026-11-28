@@ -3,9 +3,12 @@ package eu.kanade.presentation.more.settings.screen.telegram
 import android.content.Context
 import android.graphics.BitmapFactory
 import android.util.Base64
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -25,24 +28,32 @@ import androidx.compose.foundation.lazy.grid.LazyGridScope
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.ViewList
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.GridView
 import androidx.compose.material.icons.outlined.Search
+import androidx.compose.material.icons.outlined.SelectAll
 import androidx.compose.material.icons.outlined.ViewModule
+import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -53,6 +64,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -64,6 +76,7 @@ import eu.kanade.domain.telegram.TelegramPreferences
 import eu.kanade.tachiyomi.data.telegram.Td
 import eu.kanade.tachiyomi.data.telegram.TdHttpServer
 import eu.kanade.tachiyomi.data.telegram.TelegramVideo
+import eu.kanade.tachiyomi.data.telegram.TelegramVideoDownloader
 import eu.kanade.tachiyomi.data.telegram.TelegramWeb
 import eu.kanade.tachiyomi.network.NetworkHelper
 import eu.kanade.tachiyomi.ui.player.PlayerActivity
@@ -92,6 +105,9 @@ private const val BYTES_PER_MB = 1048576.0
 private const val MB_PER_GB = 1024.0
 private const val TILE_ASPECT_RATIO = 16f / 9f
 private const val POSTER_ASPECT_RATIO = 2f / 3f
+private const val ROW_ALPHA = 0.35f
+private const val SELECTED_ALPHA = 0.55f
+private const val OVERLAY_SCRIM_ALPHA = 0.62f
 
 private enum class TgView(val key: String, val label: String) {
     LIST("list", "List"),
@@ -120,18 +136,24 @@ internal fun TelegramChatVideos(
     val context = LocalContext.current
     val telegramPrefs = remember { Injekt.get<TelegramPreferences>() }
     val scope = rememberCoroutineScope()
+    val downloadStates by TelegramVideoDownloader.states.collectAsState()
     var videos by remember(chatId) { mutableStateOf<List<Td.ChatVideo>?>(null) }
+    var searchVideos by remember(chatId) { mutableStateOf<List<Td.ChatVideo>>(emptyList()) }
     var note by remember(chatId) { mutableStateOf<String?>(null) }
     var cursor by remember(chatId) { mutableStateOf(0L) }
     var reachedEnd by remember(chatId) { mutableStateOf(false) }
     var loadingMore by remember(chatId) { mutableStateOf(false) }
     var searchOpen by rememberSaveable(chatId) { mutableStateOf(false) }
     var query by rememberSaveable(chatId) { mutableStateOf("") }
-
+    var selectedIds by remember(chatId) { mutableStateOf<Set<Long>>(emptySet()) }
     val viewKey by telegramPrefs.viewMode().collectAsStatePref()
     val view = TgView.fromKey(viewKey)
     val searchInKey by telegramPrefs.searchIn().collectAsStatePref()
     val searchIn = Td.SearchIn.fromKey(searchInKey)
+
+    BackHandler(enabled = selectedIds.isNotEmpty()) {
+        selectedIds = emptySet()
+    }
 
     LaunchedEffect(chatId) {
         val walk = withContext(Dispatchers.IO) {
@@ -144,6 +166,14 @@ internal fun TelegramChatVideos(
             withContext(Dispatchers.IO) { Td.chatVideosPage(chatId, 0L, TD_PAGE).note }
         } else {
             null
+        }
+    }
+
+    fun toggleSelection(messageId: Long) {
+        selectedIds = if (messageId in selectedIds) {
+            selectedIds - messageId
+        } else {
+            selectedIds + messageId
         }
     }
 
@@ -166,54 +196,92 @@ internal fun TelegramChatVideos(
         }
     }
 
+    val activeSourceList = if (searchOpen && query.isNotBlank()) searchVideos else videos.orEmpty()
+
     Column(Modifier.fillMaxSize()) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 4.dp, vertical = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            IconButton(onClick = onBack) {
-                Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "Back")
-            }
-            Text(
-                text = title,
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f),
-            )
-            IconButton(
-                onClick = {
-                    val entries = TgView.entries
-                    val next = entries[(entries.indexOf(view) + 1) % entries.size]
-                    telegramPrefs.viewMode().set(next.key)
-                },
+        if (selectedIds.isNotEmpty()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 4.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                Icon(
-                    imageVector = when (view) {
-                        TgView.LIST -> Icons.AutoMirrored.Outlined.ViewList
-                        TgView.TILE -> Icons.Outlined.GridView
-                        TgView.POSTER -> Icons.Outlined.ViewModule
+                IconButton(onClick = { selectedIds = emptySet() }) {
+                    Icon(Icons.Outlined.Close, contentDescription = "Clear selection")
+                }
+                Text(
+                    text = "${selectedIds.size} selected",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                IconButton(
+                    onClick = {
+                        val allIds = activeSourceList.map { it.messageId }.toSet()
+                        selectedIds = if (allIds.isNotEmpty() && selectedIds.containsAll(allIds)) {
+                            emptySet()
+                        } else {
+                            allIds
+                        }
                     },
-                    contentDescription = "View: ${view.label}",
-                )
+                ) {
+                    Icon(Icons.Outlined.SelectAll, contentDescription = "Select all")
+                }
             }
-            IconButton(
-                onClick = {
-                    searchOpen = !searchOpen
-                    if (!searchOpen) query = ""
-                },
+        } else {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 4.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                Icon(
-                    imageVector = if (searchOpen) Icons.Outlined.Close else Icons.Outlined.Search,
-                    contentDescription = if (searchOpen) "Close search" else "Search videos",
+                IconButton(onClick = onBack) {
+                    Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "Back")
+                }
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
                 )
+                IconButton(
+                    onClick = {
+                        val entries = TgView.entries
+                        val next = entries[(entries.indexOf(view) + 1) % entries.size]
+                        telegramPrefs.viewMode().set(next.key)
+                    },
+                ) {
+                    Icon(
+                        imageVector = when (view) {
+                            TgView.LIST -> Icons.AutoMirrored.Outlined.ViewList
+                            TgView.TILE -> Icons.Outlined.GridView
+                            TgView.POSTER -> Icons.Outlined.ViewModule
+                        },
+                        contentDescription = "View: ${view.label}",
+                    )
+                }
+                IconButton(
+                    onClick = {
+                        searchOpen = !searchOpen
+                        if (!searchOpen) {
+                            query = ""
+                            searchVideos = emptyList()
+                        }
+                    },
+                ) {
+                    Icon(
+                        imageVector = if (searchOpen) Icons.Outlined.Close else Icons.Outlined.Search,
+                        contentDescription = if (searchOpen) "Close search" else "Search videos",
+                    )
+                }
             }
         }
 
-        if (searchOpen) {
+        if (searchOpen && selectedIds.isEmpty()) {
             OutlinedTextField(
                 value = query,
                 onValueChange = { query = it },
@@ -254,76 +322,109 @@ internal fun TelegramChatVideos(
             Spacer(Modifier.height(6.dp))
         }
 
-        val loaded = videos
-        if (searchOpen && query.isNotBlank()) {
-            ChatVideoSearchResults(
-                chatId = chatId,
-                query = query,
-                searchIn = searchIn,
-                view = view,
-                onPlay = { playTdVideo(context, scope, it) },
-            )
-            return@Column
-        }
-        if (loaded == null) {
-            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                CircularProgressIndicator()
-            }
-            return@Column
-        }
-        if (loaded.isEmpty()) {
-            Column(
-                modifier = Modifier.fillMaxSize(),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center,
-            ) {
-                EmptyScreen(
-                    message = note ?: "No videos found in this chat yet.",
-                    modifier = Modifier.weight(1f, fill = false),
+        Box(Modifier.weight(1f).fillMaxWidth()) {
+            val loaded = videos
+            if (searchOpen && query.isNotBlank()) {
+                ChatVideoSearchResults(
+                    chatId = chatId,
+                    query = query,
+                    searchIn = searchIn,
+                    view = view,
+                    selectedIds = selectedIds,
+                    downloadStates = downloadStates,
+                    onResultsChanged = { searchVideos = it },
+                    onClick = { video ->
+                        if (selectedIds.isNotEmpty()) {
+                            toggleSelection(video.messageId)
+                        } else {
+                            playTdVideo(context, scope, video)
+                        }
+                    },
+                    onLongClick = { video -> toggleSelection(video.messageId) },
+                    onDownload = { video ->
+                        TelegramVideoDownloader.enqueueTd(context, title, listOf(video))
+                    },
                 )
-                if (loadingMore) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
-                        Spacer(Modifier.width(8.dp))
-                        Text("Looking further back…", style = MaterialTheme.typography.labelSmall)
-                    }
-                } else if (!reachedEnd) {
-                    TextButton(onClick = { loadOlder() }) {
-                        Text("Search further back")
-                    }
-                } else {
-                    Text(
-                        text = "That is the oldest post in this chat.",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+            } else if (loaded == null) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator()
+                }
+            } else if (loaded.isEmpty()) {
+                Column(
+                    modifier = Modifier.fillMaxSize(),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center,
+                ) {
+                    EmptyScreen(
+                        message = note ?: "No videos found in this chat yet.",
+                        modifier = Modifier.weight(1f, fill = false),
                     )
+                    if (loadingMore) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                            Spacer(Modifier.width(8.dp))
+                            Text("Looking further back…", style = MaterialTheme.typography.labelSmall)
+                        }
+                    } else if (!reachedEnd) {
+                        TextButton(onClick = { loadOlder() }) {
+                            Text("Search further back")
+                        }
+                    } else {
+                        Text(
+                            text = "That is the oldest post in this chat.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            } else {
+                ChatVideoCollection(
+                    videos = loaded,
+                    view = view,
+                    selectedIds = selectedIds,
+                    downloadStates = downloadStates,
+                    onClick = { video ->
+                        if (selectedIds.isNotEmpty()) {
+                            toggleSelection(video.messageId)
+                        } else {
+                            playTdVideo(context, scope, video)
+                        }
+                    },
+                    onLongClick = { video -> toggleSelection(video.messageId) },
+                    onDownload = { video ->
+                        TelegramVideoDownloader.enqueueTd(context, title, listOf(video))
+                    },
+                ) {
+                    item(key = "telegram-td-more") {
+                        if (reachedEnd) {
+                            Text(
+                                text = "That is the oldest post in this chat.",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(12.dp),
+                            )
+                        } else {
+                            TextButton(
+                                enabled = !loadingMore,
+                                onClick = { loadOlder() },
+                            ) {
+                                Text(if (loadingMore) "Loading…" else "Load older")
+                            }
+                        }
+                    }
                 }
             }
-            return@Column
         }
 
-        ChatVideoCollection(
-            videos = loaded,
-            view = view,
-            onPlay = { playTdVideo(context, scope, it) },
-        ) {
-            item(key = "telegram-td-more") {
-                if (reachedEnd) {
-                    Text(
-                        text = "That is the oldest post in this chat.",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(12.dp),
-                    )
-                } else {
-                    TextButton(
-                        enabled = !loadingMore,
-                        onClick = { loadOlder() },
-                    ) {
-                        Text(if (loadingMore) "Loading…" else "Load older")
-                    }
-                }
-            }
+        if (selectedIds.isNotEmpty()) {
+            val selectedVideos = activeSourceList.filter { it.messageId in selectedIds }
+            SelectionDownloadBar(
+                selectedCount = selectedVideos.size,
+                onDownload = {
+                    TelegramVideoDownloader.enqueueTd(context, title, selectedVideos)
+                    selectedIds = emptySet()
+                },
+            )
         }
     }
 }
@@ -338,10 +439,16 @@ internal fun TelegramChannelVideos(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val downloadStates by TelegramVideoDownloader.states.collectAsState()
     var videos by remember(channel) { mutableStateOf<List<TelegramVideo>?>(null) }
     var reachedEnd by remember(channel) { mutableStateOf(false) }
     var loadingMore by remember(channel) { mutableStateOf(false) }
     var unpublished by remember(channel) { mutableIntStateOf(0) }
+    var selectedIds by remember(channel) { mutableStateOf<Set<Long>>(emptySet()) }
+
+    BackHandler(enabled = selectedIds.isNotEmpty()) {
+        selectedIds = emptySet()
+    }
 
     LaunchedEffect(channel) {
         val page = withContext(Dispatchers.IO) { TelegramWeb.loadPage(channel) }
@@ -351,116 +458,188 @@ internal fun TelegramChannelVideos(
         page?.title?.takeIf { it.isNotBlank() }?.let(onTitle)
     }
 
+    fun toggleSelection(messageId: Long) {
+        selectedIds = if (messageId in selectedIds) {
+            selectedIds - messageId
+        } else {
+            selectedIds + messageId
+        }
+    }
+
     Column(Modifier.fillMaxSize()) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 4.dp, vertical = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            IconButton(onClick = onBack) {
-                Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "Back")
-            }
-            Column(Modifier.weight(1f)) {
+        if (selectedIds.isNotEmpty()) {
+            val allList = videos.orEmpty()
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 4.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                IconButton(onClick = { selectedIds = emptySet() }) {
+                    Icon(Icons.Outlined.Close, contentDescription = "Clear selection")
+                }
                 Text(
-                    text = title,
+                    text = "${selectedIds.size} selected",
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
                 )
-                Text(
-                    text = channel,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                IconButton(
+                    onClick = {
+                        val allIds = allList.map { it.messageId }.toSet()
+                        selectedIds = if (allIds.isNotEmpty() && selectedIds.containsAll(allIds)) {
+                            emptySet()
+                        } else {
+                            allIds
+                        }
+                    },
+                ) {
+                    Icon(Icons.Outlined.SelectAll, contentDescription = "Select all")
+                }
             }
-        }
-
-        val list = videos
-        if (list == null) {
-            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                CircularProgressIndicator()
-            }
-            return@Column
-        }
-        if (list.isEmpty()) {
-            val msg = if (unpublished > 0) {
-                "Telegram withheld $unpublished video post(s) from public web preview. " +
-                    "Sign in to Telegram to stream them directly."
-            } else {
-                "No playable public videos found in $channel."
-            }
-            EmptyScreen(message = msg)
-            return@Column
-        }
-
-        LazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            if (unpublished > 0) {
-                item(key = "telegram-unpublished-note") {
+        } else {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 4.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                IconButton(onClick = onBack) {
+                    Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "Back")
+                }
+                Column(Modifier.weight(1f)) {
                     Text(
-                        text = "$unpublished video post(s) require signing in to your Telegram account.",
+                        text = title,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        text = channel,
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
                     )
                 }
             }
-            items(list, key = { it.channel + "/" + it.messageId }) { video ->
-                TelegramVideoRow(video = video) {
-                    playTelegramVideo(context, video)
+        }
+
+        Box(Modifier.weight(1f).fillMaxWidth()) {
+            val list = videos
+            if (list == null) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator()
                 }
-            }
-            item(key = "telegram-more") {
-                if (reachedEnd) {
-                    Text(
-                        text = "That is the end of this channel's public page.",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(12.dp),
-                    )
+            } else if (list.isEmpty()) {
+                val msg = if (unpublished > 0) {
+                    "Telegram withheld $unpublished video post(s) from public web preview. " +
+                        "Sign in to Telegram to stream them directly."
                 } else {
-                    TextButton(
-                        enabled = !loadingMore,
-                        onClick = {
-                            val last = list.lastOrNull() ?: return@TextButton
-                            loadingMore = true
-                            scope.launch {
-                                val page = withContext(Dispatchers.IO) {
-                                    TelegramWeb.load(channel, before = last.messageId)
-                                }
-                                loadingMore = false
-                                val older = page?.second.orEmpty().filterNot { v ->
-                                    list.any { it.messageId == v.messageId }
-                                }
-                                if (older.isEmpty()) {
-                                    reachedEnd = true
+                    "No playable public videos found in $channel."
+                }
+                EmptyScreen(message = msg)
+            } else {
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    if (unpublished > 0) {
+                        item(key = "telegram-unpublished-note") {
+                            Text(
+                                text = "$unpublished video post(s) require signing in to your Telegram account.",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
+                            )
+                        }
+                    }
+                    items(list, key = { it.channel + "/" + it.messageId }) { video ->
+                        val dlState = downloadStates[TelegramVideoDownloader.keyForWeb(video.channel, video.messageId)]
+                        val isSelected = video.messageId in selectedIds
+                        TelegramVideoRow(
+                            video = video,
+                            selected = isSelected,
+                            downloadState = dlState,
+                            onClick = {
+                                if (selectedIds.isNotEmpty()) {
+                                    toggleSelection(video.messageId)
                                 } else {
-                                    videos = list + older
+                                    playTelegramVideo(context, video)
                                 }
+                            },
+                            onLongClick = { toggleSelection(video.messageId) },
+                            onDownload = {
+                                TelegramVideoDownloader.enqueueWeb(context, title, listOf(video))
+                            },
+                        )
+                    }
+                    item(key = "telegram-more") {
+                        if (reachedEnd) {
+                            Text(
+                                text = "That is the end of this channel's public page.",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(12.dp),
+                            )
+                        } else {
+                            TextButton(
+                                enabled = !loadingMore,
+                                onClick = {
+                                    val last = list.lastOrNull() ?: return@TextButton
+                                    loadingMore = true
+                                    scope.launch {
+                                        val page = withContext(Dispatchers.IO) {
+                                            TelegramWeb.load(channel, before = last.messageId)
+                                        }
+                                        loadingMore = false
+                                        val older = page?.second.orEmpty().filterNot { v ->
+                                            list.any { it.messageId == v.messageId }
+                                        }
+                                        if (older.isEmpty()) {
+                                            reachedEnd = true
+                                        } else {
+                                            videos = list + older
+                                        }
+                                    }
+                                },
+                            ) {
+                                Text(if (loadingMore) "Loading…" else "Load older")
                             }
-                        },
-                    ) {
-                        Text(if (loadingMore) "Loading…" else "Load older")
+                        }
                     }
                 }
             }
+        }
+
+        if (selectedIds.isNotEmpty()) {
+            val selectedVideos = videos.orEmpty().filter { it.messageId in selectedIds }
+            SelectionDownloadBar(
+                selectedCount = selectedVideos.size,
+                onDownload = {
+                    TelegramVideoDownloader.enqueueWeb(context, title, selectedVideos)
+                    selectedIds = emptySet()
+                },
+            )
         }
     }
 }
 
 @Composable
-@Suppress("LongMethod", "CyclomaticComplexMethod")
+@Suppress("LongMethod", "CyclomaticComplexMethod", "UnstableCollections", "LongParameterList")
 private fun ChatVideoSearchResults(
     chatId: Long,
     query: String,
     searchIn: Td.SearchIn,
     view: TgView,
-    onPlay: (Td.ChatVideo) -> Unit,
+    selectedIds: Set<Long>,
+    downloadStates: Map<String, TelegramVideoDownloader.DownloadItemState>,
+    onResultsChanged: (List<Td.ChatVideo>) -> Unit,
+    onClick: (Td.ChatVideo) -> Unit,
+    onLongClick: (Td.ChatVideo) -> Unit,
+    onDownload: (Td.ChatVideo) -> Unit,
 ) {
     var results by remember(chatId, query, searchIn) { mutableStateOf<List<Td.ChatVideo>?>(null) }
     var cursor by remember(chatId, query, searchIn) { mutableStateOf(0L) }
@@ -471,6 +650,7 @@ private fun ChatVideoSearchResults(
 
     LaunchedEffect(chatId, query, searchIn) {
         results = null
+        onResultsChanged(emptyList())
         scanned = 0
         done = false
         cursor = 0L
@@ -487,14 +667,20 @@ private fun ChatVideoSearchResults(
             if (add.isNotEmpty()) acc.addAll(add)
             scanned += page.scanned
             cursor = page.nextCursor
-            if (acc.isNotEmpty()) results = acc.toList()
+            if (acc.isNotEmpty()) {
+                val snap = acc.toList()
+                results = snap
+                onResultsChanged(snap)
+            }
             if (page.exhausted || page.nextCursor == 0L || (page.videos.isEmpty() && page.scanned == 0)) {
                 done = true
                 break
             }
             cur = page.nextCursor
         }
-        results = acc.toList()
+        val finalList = acc.toList()
+        results = finalList
+        onResultsChanged(finalList)
         if (acc.isEmpty()) done = true
     }
 
@@ -522,8 +708,15 @@ private fun ChatVideoSearchResults(
         EmptyScreen(message = emptyMsg)
         return
     }
-
-    ChatVideoCollection(videos = found, view = view, onPlay = onPlay) {
+    ChatVideoCollection(
+        videos = found,
+        view = view,
+        selectedIds = selectedIds,
+        downloadStates = downloadStates,
+        onClick = onClick,
+        onLongClick = onLongClick,
+        onDownload = onDownload,
+    ) {
         item(key = "telegram-td-search-footer") {
             Column(Modifier.fillMaxWidth().padding(10.dp)) {
                 Text(
@@ -542,7 +735,9 @@ private fun ChatVideoSearchResults(
                                 }
                                 busy = false
                                 val have = results.orEmpty()
-                                results = have + page.videos.filterNot { v -> have.any { it.messageId == v.messageId } }
+                                val updated = have + page.videos.filterNot { v -> have.any { it.messageId == v.messageId } }
+                                results = updated
+                                onResultsChanged(updated)
                                 cursor = page.nextCursor
                                 scanned += page.scanned
                                 done = page.exhausted
@@ -564,11 +759,15 @@ private fun ChatVideoSearchResults(
 }
 
 @Composable
-@Suppress("UnstableCollections")
+@Suppress("UnstableCollections", "LongParameterList")
 private fun ChatVideoCollection(
     videos: List<Td.ChatVideo>,
     view: TgView,
-    onPlay: (Td.ChatVideo) -> Unit,
+    selectedIds: Set<Long>,
+    downloadStates: Map<String, TelegramVideoDownloader.DownloadItemState>,
+    onClick: (Td.ChatVideo) -> Unit,
+    onLongClick: (Td.ChatVideo) -> Unit,
+    onDownload: (Td.ChatVideo) -> Unit,
     footer: (LazyGridScope.() -> Unit)? = null,
 ) {
     LazyVerticalGrid(
@@ -583,10 +782,33 @@ private fun ChatVideoCollection(
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         items(videos, key = { it.chatId.toString() + "/" + it.messageId }) { video ->
+            val selected = video.messageId in selectedIds
+            val dlState = downloadStates[TelegramVideoDownloader.keyForTd(video.chatId, video.messageId)]
             when (view) {
-                TgView.LIST -> TdVideoRow(video) { onPlay(video) }
-                TgView.TILE -> TdVideoTile(video) { onPlay(video) }
-                TgView.POSTER -> TdVideoPoster(video) { onPlay(video) }
+                TgView.LIST -> TdVideoRow(
+                    video = video,
+                    selected = selected,
+                    downloadState = dlState,
+                    onClick = { onClick(video) },
+                    onLongClick = { onLongClick(video) },
+                    onDownload = { onDownload(video) },
+                )
+                TgView.TILE -> TdVideoTile(
+                    video = video,
+                    selected = selected,
+                    downloadState = dlState,
+                    onClick = { onClick(video) },
+                    onLongClick = { onLongClick(video) },
+                    onDownload = { onDownload(video) },
+                )
+                TgView.POSTER -> TdVideoPoster(
+                    video = video,
+                    selected = selected,
+                    downloadState = dlState,
+                    onClick = { onClick(video) },
+                    onLongClick = { onLongClick(video) },
+                    onDownload = { onDownload(video) },
+                )
             }
         }
         footer?.invoke(this)
@@ -639,24 +861,41 @@ private fun TdVideoThumb(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun TdVideoRow(video: Td.ChatVideo, onPlay: () -> Unit) {
+private fun TdVideoRow(
+    video: Td.ChatVideo,
+    selected: Boolean,
+    downloadState: TelegramVideoDownloader.DownloadItemState?,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit,
+    onDownload: () -> Unit,
+) {
+    val bg = if (selected) {
+        MaterialTheme.colorScheme.primaryContainer.copy(alpha = SELECTED_ALPHA)
+    } else {
+        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = ROW_ALPHA)
+    }
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(14.dp))
-            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f))
-            .clickable(onClick = onPlay)
+            .background(bg)
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
             .padding(10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        TdVideoThumb(
-            video = video,
+        Box(
             modifier = Modifier
                 .width(104.dp)
                 .height(60.dp)
                 .clip(RoundedCornerShape(10.dp)),
-        )
+        ) {
+            TdVideoThumb(video = video, modifier = Modifier.fillMaxSize())
+            if (selected) {
+                SelectionBadge(Modifier.align(Alignment.TopStart).padding(4.dp))
+            }
+        }
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
             Text(
@@ -667,31 +906,54 @@ private fun TdVideoRow(video: Td.ChatVideo, onPlay: () -> Unit) {
             )
             VideoMeta(video)
         }
+        VideoDownloadIconButton(downloadState = downloadState, onClick = onDownload)
         Icon(
-            imageVector = Icons.Filled.PlayArrow,
+            imageVector = if (selected) Icons.Filled.CheckCircle else Icons.Filled.PlayArrow,
             contentDescription = null,
             tint = MaterialTheme.colorScheme.primary,
         )
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun TdVideoTile(video: Td.ChatVideo, onPlay: () -> Unit) {
+private fun TdVideoTile(
+    video: Td.ChatVideo,
+    selected: Boolean,
+    downloadState: TelegramVideoDownloader.DownloadItemState?,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit,
+    onDownload: () -> Unit,
+) {
+    val bg = if (selected) {
+        MaterialTheme.colorScheme.primaryContainer.copy(alpha = SELECTED_ALPHA)
+    } else {
+        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = ROW_ALPHA)
+    }
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(14.dp))
-            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f))
-            .clickable(onClick = onPlay)
+            .background(bg)
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
             .padding(8.dp),
     ) {
-        TdVideoThumb(
-            video = video,
+        Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .aspectRatio(TILE_ASPECT_RATIO)
                 .clip(RoundedCornerShape(10.dp)),
-        )
+        ) {
+            TdVideoThumb(video = video, modifier = Modifier.fillMaxSize())
+            if (selected) {
+                SelectionBadge(Modifier.align(Alignment.TopStart).padding(6.dp))
+            }
+            VideoDownloadBadgeButton(
+                downloadState = downloadState,
+                onClick = onDownload,
+                modifier = Modifier.align(Alignment.BottomEnd).padding(6.dp),
+            )
+        }
         Spacer(Modifier.height(6.dp))
         Text(
             text = video.title,
@@ -703,23 +965,45 @@ private fun TdVideoTile(video: Td.ChatVideo, onPlay: () -> Unit) {
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun TdVideoPoster(video: Td.ChatVideo, onPlay: () -> Unit) {
+private fun TdVideoPoster(
+    video: Td.ChatVideo,
+    selected: Boolean,
+    downloadState: TelegramVideoDownloader.DownloadItemState?,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit,
+    onDownload: () -> Unit,
+) {
+    val bg = if (selected) {
+        MaterialTheme.colorScheme.primaryContainer.copy(alpha = SELECTED_ALPHA)
+    } else {
+        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = ROW_ALPHA)
+    }
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(12.dp))
-            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f))
-            .clickable(onClick = onPlay)
+            .background(bg)
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
             .padding(6.dp),
     ) {
-        TdVideoThumb(
-            video = video,
+        Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .aspectRatio(POSTER_ASPECT_RATIO)
                 .clip(RoundedCornerShape(8.dp)),
-        )
+        ) {
+            TdVideoThumb(video = video, modifier = Modifier.fillMaxSize())
+            if (selected) {
+                SelectionBadge(Modifier.align(Alignment.TopStart).padding(4.dp))
+            }
+            VideoDownloadBadgeButton(
+                downloadState = downloadState,
+                onClick = onDownload,
+                modifier = Modifier.align(Alignment.BottomEnd).padding(4.dp),
+            )
+        }
         Spacer(Modifier.height(4.dp))
         Text(
             text = video.title,
@@ -754,14 +1038,27 @@ private fun VideoMeta(video: Td.ChatVideo) {
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun TelegramVideoRow(video: TelegramVideo, onPlay: () -> Unit) {
+private fun TelegramVideoRow(
+    video: TelegramVideo,
+    selected: Boolean,
+    downloadState: TelegramVideoDownloader.DownloadItemState?,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit,
+    onDownload: () -> Unit,
+) {
+    val bg = if (selected) {
+        MaterialTheme.colorScheme.primaryContainer.copy(alpha = SELECTED_ALPHA)
+    } else {
+        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = ROW_ALPHA)
+    }
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(14.dp))
-            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f))
-            .clickable(onClick = onPlay)
+            .background(bg)
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
             .padding(10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -787,6 +1084,9 @@ private fun TelegramVideoRow(video: TelegramVideo, onPlay: () -> Unit) {
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
+            if (selected) {
+                SelectionBadge(Modifier.align(Alignment.TopStart).padding(4.dp))
+            }
         }
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
@@ -809,11 +1109,145 @@ private fun TelegramVideoRow(video: TelegramVideo, onPlay: () -> Unit) {
                 )
             }
         }
+        VideoDownloadIconButton(downloadState = downloadState, onClick = onDownload)
         Icon(
-            imageVector = Icons.Filled.PlayArrow,
+            imageVector = if (selected) Icons.Filled.CheckCircle else Icons.Filled.PlayArrow,
             contentDescription = null,
             tint = MaterialTheme.colorScheme.primary,
         )
+    }
+}
+
+@Composable
+private fun VideoDownloadIconButton(
+    downloadState: TelegramVideoDownloader.DownloadItemState?,
+    onClick: () -> Unit,
+) {
+    IconButton(
+        onClick = onClick,
+        modifier = Modifier.size(36.dp),
+    ) {
+        DownloadStatusGraphic(
+            downloadState = downloadState,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+@Composable
+private fun VideoDownloadBadgeButton(
+    downloadState: TelegramVideoDownloader.DownloadItemState?,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        modifier = modifier
+            .size(28.dp)
+            .clip(CircleShape)
+            .background(Color.Black.copy(alpha = OVERLAY_SCRIM_ALPHA))
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        DownloadStatusGraphic(
+            downloadState = downloadState,
+            tint = Color.White,
+        )
+    }
+}
+
+@Composable
+private fun DownloadStatusGraphic(
+    downloadState: TelegramVideoDownloader.DownloadItemState?,
+    tint: Color,
+) {
+    when (downloadState?.status) {
+        TelegramVideoDownloader.Status.QUEUED -> {
+            CircularProgressIndicator(
+                modifier = Modifier.size(16.dp),
+                strokeWidth = 2.dp,
+                color = tint,
+            )
+        }
+        TelegramVideoDownloader.Status.DOWNLOADING -> {
+            if (downloadState.progress > 0f) {
+                CircularProgressIndicator(
+                    progress = { downloadState.progress },
+                    modifier = Modifier.size(16.dp),
+                    strokeWidth = 2.dp,
+                    color = tint,
+                )
+            } else {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(16.dp),
+                    strokeWidth = 2.dp,
+                    color = tint,
+                )
+            }
+        }
+        TelegramVideoDownloader.Status.COMPLETED -> {
+            Icon(
+                imageVector = Icons.Outlined.CheckCircle,
+                contentDescription = "Downloaded",
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(18.dp),
+            )
+        }
+        else -> {
+            Icon(
+                imageVector = Icons.Outlined.Download,
+                contentDescription = "Download video",
+                tint = tint,
+                modifier = Modifier.size(18.dp),
+            )
+        }
+    }
+}
+
+@Composable
+private fun SelectionBadge(modifier: Modifier = Modifier) {
+    Icon(
+        imageVector = Icons.Filled.CheckCircle,
+        contentDescription = "Selected",
+        tint = MaterialTheme.colorScheme.primary,
+        modifier = modifier
+            .size(20.dp)
+            .clip(CircleShape)
+            .background(MaterialTheme.colorScheme.surface),
+    )
+}
+
+@Composable
+private fun SelectionDownloadBar(
+    selectedCount: Int,
+    onDownload: () -> Unit,
+) {
+    Surface(
+        tonalElevation = 4.dp,
+        shadowElevation = 6.dp,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Text(
+                text = "$selectedCount video(s) selected",
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Medium,
+            )
+            Button(onClick = onDownload) {
+                Icon(
+                    imageVector = Icons.Outlined.Download,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                )
+                Spacer(Modifier.width(6.dp))
+                Text("Download")
+            }
+        }
     }
 }
 
@@ -909,7 +1343,7 @@ private fun sizeLabel(bytes: Long): String? {
 
 internal fun playTdVideo(context: Context, scope: CoroutineScope, video: Td.ChatVideo) {
     scope.launch {
-        runCatching { Td.prewarm(video.fileId) }
+        runCatching { Td.prewarm(video.fileId, video.size) }
         val urlResult = withContext(Dispatchers.IO) {
             runCatching { TdHttpServer.urlFor(video.fileId, video.chatId, video.messageId) }
         }

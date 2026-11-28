@@ -184,6 +184,16 @@ class BrowseSourceScreenModel(
                 mutableState.update { it.copy(favoriteIds = favorites.map { fav -> fav.id }.toImmutableSet()) }
             }
             .launchIn(screenModelScope)
+
+        if (source is TelegramCatalogueSource) {
+            TelegramSeriesMergeStore.revision
+                .drop(1)
+                .onEach {
+                    source.markKeepCacheOnRefresh()
+                    mutableState.update { it.copy(mergeRevision = it.mergeRevision + 1L) }
+                }
+                .launchIn(screenModelScope)
+        }
     }
 
     /**

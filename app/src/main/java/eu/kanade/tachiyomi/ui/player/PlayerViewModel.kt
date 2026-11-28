@@ -483,7 +483,12 @@ class PlayerViewModel @JvmOverloads constructor(
         }
         if (baseUrl.isBlank()) return null
 
-        val prefQ = (currentSource.value as? TelegramCatalogueSource)?.preferredQuality() ?: "hls"
+        val isExtension = currentSource.value is TelegramCatalogueSource || baseUrl.contains("src=ext")
+        val prefQ = if (isExtension) {
+            "original"
+        } else {
+            (currentSource.value as? TelegramCatalogueSource)?.preferredQuality() ?: "hls"
+        }
         val headers = if (directVideoMode) directHeaders else activeVideo?.headers
         val updatedVideos = Td.buildQualityVideos(
             baseUrl = baseUrl,
@@ -492,6 +497,7 @@ class PlayerViewModel @JvmOverloads constructor(
             headers = headers,
             preferredQuality = prefQ,
             displayShortSide = displayShortSide,
+            originalOnly = isExtension,
         )
         val hosterName = if (directVideoMode) {
             "${animeTitle.value.ifBlank { "Telegram" }} HLS Stream"

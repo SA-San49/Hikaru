@@ -96,29 +96,22 @@ class TelegramCatalogueSource(
     fun cachedAliasesFor(key: String): Set<String> =
         seriesCache[key]?.aliasKeys ?: emptySet()
 
+    fun cachedGroupKeyForMessage(messageId: Long): String? =
+        collectedVideos[messageId]?.let { TelegramAnimeParser.parseVideo(it).groupKey }
+
     override fun setupPreferenceScreen(screen: PreferenceScreen) {
         ListPreference(screen.context).apply {
             key = PREF_PREFERRED_QUALITY
             title = "Preferred quality"
-            entries = arrayOf(
-                "HLS (Match display)",
-                "Original (Uploaded quality)",
-                "1080p",
-                "720p",
-                "480p",
-                "360p",
-            )
-            entryValues = arrayOf("hls", "original", "1080", "720", "480", "360")
+            entries = arrayOf("Original (Uploaded quality)")
+            entryValues = arrayOf(DEFAULT_QUALITY)
             setDefaultValue(DEFAULT_QUALITY)
+            value = DEFAULT_QUALITY
             summary = "%s"
         }.also(screen::addPreference)
     }
 
-    fun preferredQuality(): String =
-        getSourcePreferences()
-            .getString(PREF_PREFERRED_QUALITY, DEFAULT_QUALITY)
-            .orEmpty()
-            .ifBlank { DEFAULT_QUALITY }
+    fun preferredQuality(): String = DEFAULT_QUALITY
 
     private fun isValidEpisodeVideo(v: Td.ChatVideo): Boolean {
         if (Td.isImageFilePath(v.fileName)) return false
@@ -393,7 +386,27 @@ class TelegramCatalogueSource(
             val targetKind = uri.getQueryParameter("kind")?.let { k ->
                 TelegramAnimeParser.SeriesKind.entries.firstOrNull { it.name == k }
             } ?: TelegramAnimeParser.SeriesKind.MAIN
-            val mergeRule = TelegramSeriesMergeStore.ruleForKey(telegramPrefs, id, groupKey)
+            val isUnmerged = TelegramSeriesMergeStore.isUnmergedEntryUrl(anime.url)
+            val umsgIds = uri.getQueryParameter("umsg")
+                .orEmpty()
+                .split(",")
+                .mapNotNull { it.trim().toLongOrNull() }
+                .toSet()
+            if (isUnmerged && umsgIds.isNotEmpty()) {
+                val unmergedList = umsgIds.mapNotNull { mid ->
+                    val v = collectedVideos[mid]
+                        ?: if (chatId != 0L && Td.ensureReady(appContext)) Td.chatVideoById(chatId, mid) else null
+                    v?.takeIf(::isValidEpisodeVideo)?.let {
+                        TelegramAnimeParser.ParsedVideo(it, TelegramAnimeParser.parseVideo(it))
+                    }
+                }
+                if (unmergedList.isNotEmpty()) {
+                    return buildEpisodeListFromParsed(unmergedList, mergeRule = null)
+                }
+            }
+
+            val mergeRule = if (isUnmerged) null else TelegramSeriesMergeStore.ruleForKey(telegramPrefs, id, groupKey)
+            val excludedIds = mergeRule?.excludedMessageIds ?: emptySet()
             val allMatchKeys = linkedSetOf(groupKey).apply {
                 if (mergeRule != null) {
                     add(mergeRule.targetKey)
@@ -405,7 +418,7 @@ class TelegramCatalogueSource(
             var cachedSeries = seriesCache[groupKey]
             for (k in allMatchKeys) {
                 seriesCache[k]?.videos?.forEach { pv ->
-                    if (isValidEpisodeVideo(pv.video)) {
+                    if (isValidEpisodeVideo(pv.video) && pv.video.messageId !in excludedIds) {
                         merged[pv.video.messageId] = pv
                     }
                 }
@@ -438,7 +451,7 @@ class TelegramCatalogueSource(
                         ?: grouped.firstOrNull { groupKey in it.aliasKeys }
                     for (k in allMatchKeys) {
                         seriesCache[k]?.videos?.forEach { pv ->
-                            if (isValidEpisodeVideo(pv.video)) {
+                            if (isValidEpisodeVideo(pv.video) && pv.video.messageId !in excludedIds) {
                                 merged[pv.video.messageId] = pv
                             }
                         }
@@ -475,7 +488,7 @@ class TelegramCatalogueSource(
                         limit = EPISODE_SEARCH_LIMIT,
                     )
                     for (v in fastHits.videos) {
-                        if (!isValidEpisodeVideo(v) || merged.containsKey(v.messageId)) continue
+                        if (!isValidEpisodeVideo(v) || v.messageId in excludedIds || merged.containsKey(v.messageId)) continue
                         matchAnyMergedSeries(
                             video = v,
                             groupKey = groupKey,
@@ -503,7 +516,7 @@ class TelegramCatalogueSource(
                         .forEach { collectedVideos[it.messageId] = it }
                     extraBatch.images.forEach { collectedImages[it.messageId] = it }
                     for (v in extraBatch.videos) {
-                        if (!isValidEpisodeVideo(v) || merged.containsKey(v.messageId)) continue
+                        if (!isValidEpisodeVideo(v) || v.messageId in excludedIds || merged.containsKey(v.messageId)) continue
                         matchAnyMergedSeries(
                             video = v,
                             groupKey = groupKey,
@@ -526,7 +539,7 @@ class TelegramCatalogueSource(
                         limit = EPISODE_SEARCH_LIMIT,
                     )
                     for (v in fallbackHits.videos) {
-                        if (!isValidEpisodeVideo(v) || merged.containsKey(v.messageId)) continue
+                        if (!isValidEpisodeVideo(v) || v.messageId in excludedIds || merged.containsKey(v.messageId)) continue
                         matchAnyMergedSeries(
                             video = v,
                             groupKey = groupKey,
@@ -541,29 +554,16 @@ class TelegramCatalogueSource(
                 }
             }
 
-            val parsedList = merged.values.sortedWith(TelegramAnimeParser.EPISODE_SORT_COMPARATOR)
-
-            return parsedList.mapIndexed { idx, pv ->
-                val v = pv.video
-                val parsed = pv.parsed
-                val epNum = parsed.episodeNumber ?: (idx + 1).toFloat()
-                val resTag = when {
-                    v.width > 0 || v.height > 0 -> Td.resolutionTag(v.width, v.height)
-                    !parsed.qualityTag.isNullOrBlank() -> parsed.qualityTag
-                    else -> null
+            if (mergeRule != null) {
+                for (v in collectedVideos.values) {
+                    if (!isValidEpisodeVideo(v) || v.messageId in excludedIds || merged.containsKey(v.messageId)) continue
+                    val pv = TelegramAnimeParser.parseVideo(v)
+                    if (pv.groupKey in allMatchKeys || pv.altKeys.any { it in allMatchKeys }) {
+                        merged[v.messageId] = TelegramAnimeParser.ParsedVideo(v, pv)
+                    }
                 }
-                val metaParts = buildList {
-                    resTag?.let(::add)
-                    if (v.size > 0L) add(formatBytes(v.size))
-                }
-                SEpisode.create().apply {
-                    url = buildTdItemUrl(v, parsed)
-                    name = parsed.episodeLabel
-                    episode_number = epNum
-                    date_upload = v.date.toLong() * 1000L
-                    scanlator = metaParts.joinToString(" • ").ifBlank { entry.title }
-                }
-            }.reversed()
+            }
+            return buildEpisodeListFromParsed(merged.values.toList(), mergeRule)
         }
 
         val chatId = uri.getQueryParameter("chat")?.toLongOrNull() ?: resolveChatId()
@@ -618,7 +618,7 @@ class TelegramCatalogueSource(
         return listOf(
             Hoster(
                 hosterUrl = firstUrl,
-                hosterName = "Telegram HLS Stream",
+                hosterName = "Telegram",
                 videoList = videos,
             ),
         )
@@ -644,6 +644,7 @@ class TelegramCatalogueSource(
                 headers = reqHeaders,
                 preferredQuality = prefQ,
                 displayShortSide = displayShort,
+                originalOnly = true,
             )
         }
         val uriChatId = uri.getQueryParameter("chat")?.toLongOrNull() ?: 0L
@@ -703,6 +704,7 @@ class TelegramCatalogueSource(
             height = height,
             preferredQuality = prefQ,
             displayShortSide = displayShort,
+            originalOnly = true,
         )
     }
 
@@ -1006,8 +1008,10 @@ class TelegramCatalogueSource(
     private fun buildTdItemUrl(
         v: Td.ChatVideo,
         preParsed: TelegramAnimeParser.ParsedMedia? = null,
+        labelOverride: String? = null,
     ): String {
         val parsed = preParsed ?: TelegramAnimeParser.parseVideo(v)
+        val label = labelOverride?.takeIf { it.isNotBlank() } ?: parsed.episodeLabel
         return "/tg/item?mode=td" +
             "&chat=${v.chatId}" +
             "&msg=${v.messageId}" +
@@ -1017,7 +1021,7 @@ class TelegramCatalogueSource(
             "&dur=${v.duration}" +
             "&size=${v.size}" +
             "&date=${v.date}" +
-            "&title=${Uri.encode(parsed.episodeLabel)}"
+            "&title=${Uri.encode(label)}"
     }
 
     private fun formatBytes(bytes: Long): String {
@@ -1110,35 +1114,176 @@ class TelegramCatalogueSource(
                 (it.groupKey == rule.targetKey || rule.targetKey in it.aliasKeys) && it.hasRealPoster
             } ?: members.firstOrNull { it.hasRealPoster } ?: primary
 
-            val combinedVideos = members.asSequence()
+            val allVideos = members.asSequence()
                 .flatMap { it.videos.asSequence() }
                 .distinctBy { it.video.messageId }
-                .sortedWith(TelegramAnimeParser.EPISODE_SORT_COMPARATOR)
                 .toList()
-            val combinedAliases = linkedSetOf<String>().apply {
-                add(rule.targetKey)
-                addAll(rule.memberKeys)
-                members.forEach { m ->
-                    add(m.groupKey)
-                    addAll(m.aliasKeys)
+            val (excludedVideos, keptVideos) = allVideos.partition { it.video.messageId in rule.excludedMessageIds }
+            val combinedVideos = keptVideos.sortedWith(TelegramAnimeParser.EPISODE_SORT_COMPARATOR)
+            if (combinedVideos.isNotEmpty()) {
+                val combinedAliases = linkedSetOf<String>().apply {
+                    add(rule.targetKey)
+                    addAll(rule.memberKeys)
+                    members.forEach { m ->
+                        add(m.groupKey)
+                        addAll(m.aliasKeys)
+                    }
+                }
+                out += primary.copy(
+                    groupKey = rule.targetKey,
+                    displayTitle = rule.targetTitle,
+                    videos = combinedVideos,
+                    posterFileId = posterOwner.posterFileId,
+                    posterFallbackThumb = posterOwner.posterFallbackThumb,
+                    latestMessageId = combinedVideos.maxOf { it.video.messageId },
+                    latestDate = combinedVideos.maxOf { it.video.date },
+                    earliestMessageId = combinedVideos.minOf { it.video.messageId },
+                    aliasKeys = combinedAliases,
+                    hasRealPoster = posterOwner.hasRealPoster,
+                    posterChatId = posterOwner.posterChatId,
+                    posterMessageId = posterOwner.posterMessageId,
+                )
+            }
+            if (excludedVideos.isNotEmpty()) {
+                val splitByKey = excludedVideos.groupBy { it.parsed.groupKey }
+                for ((origKey, splitList) in splitByKey) {
+                    val sortedSplit = splitList.sortedWith(TelegramAnimeParser.EPISODE_SORT_COMPARATOR)
+                    val firstParsed = sortedSplit.first().parsed
+                    val splitKey = "unmerged:$origKey:${sortedSplit.first().video.messageId}"
+                    val umsgCsv = sortedSplit.joinToString(",") { it.video.messageId.toString() }
+                    val splitChatId = sortedSplit.first().video.chatId
+                    mergedUrlOverrides[splitKey] = "/tg/series?chat=$splitChatId" +
+                        "&key=${Uri.encode(origKey)}" +
+                        "&unmerged=1&umsg=${Uri.encode(umsgCsv)}" +
+                        "&title=${Uri.encode(firstParsed.seriesTitle)}" +
+                        "&disp=${Uri.encode(firstParsed.displayTitle)}" +
+                        "&season=${firstParsed.effectiveSeason}" +
+                        "&rawSeason=${firstParsed.rawSeason}" +
+                        "&final=${firstParsed.isFinalSeason}" +
+                        "&kind=${firstParsed.kind.name}"
+                    out += TelegramAnimeParser.GroupedSeries(
+                        groupKey = splitKey,
+                        displayTitle = firstParsed.displayTitle,
+                        seriesTitle = firstParsed.seriesTitle,
+                        baseKey = firstParsed.baseKey,
+                        rawSeason = firstParsed.rawSeason,
+                        effectiveSeason = firstParsed.effectiveSeason,
+                        kind = firstParsed.kind,
+                        videos = sortedSplit,
+                        posterFileId = posterOwner.posterFileId,
+                        posterFallbackThumb = sortedSplit.first().video.thumb ?: posterOwner.posterFallbackThumb,
+                        latestMessageId = sortedSplit.maxOf { it.video.messageId },
+                        latestDate = sortedSplit.maxOf { it.video.date },
+                        earliestMessageId = sortedSplit.minOf { it.video.messageId },
+                        aliasKeys = setOf(splitKey),
+                        hasRealPoster = false,
+                        posterChatId = posterOwner.posterChatId,
+                        posterMessageId = posterOwner.posterMessageId,
+                        isFinalSeason = firstParsed.isFinalSeason,
+                    )
                 }
             }
-            out += primary.copy(
-                groupKey = rule.targetKey,
-                displayTitle = rule.targetTitle,
-                videos = combinedVideos,
-                posterFileId = posterOwner.posterFileId,
-                posterFallbackThumb = posterOwner.posterFallbackThumb,
-                latestMessageId = members.maxOf { it.latestMessageId },
-                latestDate = members.maxOf { it.latestDate },
-                earliestMessageId = members.minOf { it.earliestMessageId },
-                aliasKeys = combinedAliases,
-                hasRealPoster = posterOwner.hasRealPoster,
-                posterChatId = posterOwner.posterChatId,
-                posterMessageId = posterOwner.posterMessageId,
-            )
         }
         return out.sortedByDescending { it.latestMessageId }
+    }
+
+    @Suppress("CyclomaticComplexMethod")
+    private fun buildEpisodeListFromParsed(
+        videos: List<TelegramAnimeParser.ParsedVideo>,
+        mergeRule: TelegramSeriesMergeStore.MergedSeriesRule?,
+    ): List<SEpisode> {
+        if (videos.isEmpty()) return emptyList()
+
+        data class NumberedEpisode(
+            val pv: TelegramAnimeParser.ParsedVideo,
+            val epNum: Float,
+            val epLabel: String,
+        )
+
+        val usedNumbers = HashSet<Float>()
+        val knownItems = ArrayList<NumberedEpisode>(videos.size)
+        val unknownItems = ArrayList<Pair<TelegramAnimeParser.ParsedVideo, Int>>()
+
+        for (pv in videos) {
+            val ep = pv.parsed.episodeNumber
+            if (ep != null) {
+                usedNumbers += ep
+                knownItems += NumberedEpisode(pv, ep, pv.parsed.episodeLabel)
+            } else {
+                val slot = mergeRule?.let {
+                    TelegramSeriesMergeStore.selectionSlotOf(it, pv.parsed.groupKey, pv.parsed.altKeys)
+                } ?: Int.MAX_VALUE
+                unknownItems += pv to slot
+            }
+        }
+
+        unknownItems.sortWith(
+            Comparator { (a, slotA), (b, slotB) ->
+                val slotCmp = slotA.compareTo(slotB)
+                if (slotCmp != 0) return@Comparator slotCmp
+                val dateCmp = a.video.date.compareTo(b.video.date)
+                if (dateCmp != 0) return@Comparator dateCmp
+                a.video.messageId.compareTo(b.video.messageId)
+            },
+        )
+
+        val assignedItems = ArrayList<NumberedEpisode>(videos.size).apply {
+            addAll(knownItems)
+        }
+        var nextSequential = 1
+        for ((pv, slot) in unknownItems) {
+            var candidate = if (mergeRule != null && slot < Int.MAX_VALUE) slot + 1 else nextSequential
+            while (candidate.toFloat() in usedNumbers) {
+                candidate++
+            }
+            val epFloat = candidate.toFloat()
+            usedNumbers += epFloat
+            if (candidate >= nextSequential) nextSequential = candidate + 1
+            val label = TelegramAnimeParser.formatEpisodeLabel(
+                epNum = epFloat,
+                epEnd = pv.parsed.episodeEnd,
+                rawSeason = pv.parsed.rawSeason,
+                kind = pv.parsed.kind,
+                isFinalSeason = pv.parsed.isFinalSeason,
+                variantLabel = null,
+            )
+            assignedItems += NumberedEpisode(pv, epFloat, label)
+        }
+
+        assignedItems.sortWith(
+            Comparator { a, b ->
+                val seasonA = if (a.pv.parsed.rawSeason > 0) a.pv.parsed.rawSeason else a.pv.parsed.effectiveSeason
+                val seasonB = if (b.pv.parsed.rawSeason > 0) b.pv.parsed.rawSeason else b.pv.parsed.effectiveSeason
+                val seasonCmp = seasonA.compareTo(seasonB)
+                if (seasonCmp != 0) return@Comparator seasonCmp
+                val epCmp = a.epNum.compareTo(b.epNum)
+                if (epCmp != 0) return@Comparator epCmp
+                val dateCmp = a.pv.video.date.compareTo(b.pv.video.date)
+                if (dateCmp != 0) return@Comparator dateCmp
+                a.pv.video.messageId.compareTo(b.pv.video.messageId)
+            },
+        )
+
+        return assignedItems.map { item ->
+            val v = item.pv.video
+            val parsed = item.pv.parsed
+            val resTag = when {
+                v.width > 0 || v.height > 0 -> Td.resolutionTag(v.width, v.height)
+                !parsed.qualityTag.isNullOrBlank() -> parsed.qualityTag
+                else -> null
+            }
+            val metaParts = buildList {
+                resTag?.let(::add)
+                if (v.size > 0L) add(formatBytes(v.size))
+            }
+            SEpisode.create().apply {
+                url = buildTdItemUrl(v, parsed, item.epLabel)
+                name = item.epLabel
+                episode_number = item.epNum
+                date_upload = v.date.toLong() * 1000L
+                scanlator = metaParts.joinToString(" • ").ifBlank { entry.title }
+            }
+        }.reversed()
     }
 
     @Suppress("LongParameterList", "ReturnCount")
@@ -1192,6 +1337,6 @@ class TelegramCatalogueSource(
         private const val MIN_ANIMATION_SECS = 3
         private const val MIN_ANIMATION_BYTES = 2L * 1024L * 1024L
         private const val PREF_PREFERRED_QUALITY = "preferred_quality"
-        private const val DEFAULT_QUALITY = "hls"
+        private const val DEFAULT_QUALITY = "original"
     }
 }

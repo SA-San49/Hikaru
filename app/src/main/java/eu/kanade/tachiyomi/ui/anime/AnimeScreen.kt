@@ -248,6 +248,7 @@ class AnimeScreen(
                 onClearAnimeClicked = screenModel::showClearAnimeDialog,
                 onOpenAnimeFolderClicked = { screenModel.openAnimeFolder(successState.source, successState.anime) },
                 onMergeClicked = screenModel::showEditMergedSettings.takeIf { successState.source.id == MERGED_SOURCE_ID },
+                onUnmergeClicked = screenModel::unmergeTelegramEpisodes.takeIf { successState.isTelegramMerged },
                 onMultiBookmarkClicked = screenModel::bookmarkEpisodes,
                 // AM (FILLERMARK) -->
                 onMultiFillermarkClicked = screenModel::fillermarkEpisodes,

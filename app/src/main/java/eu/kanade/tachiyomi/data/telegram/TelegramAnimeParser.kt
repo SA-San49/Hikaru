@@ -301,13 +301,13 @@ object TelegramAnimeParser {
         RegexOption.IGNORE_CASE,
     )
     private val LEADING_SEP_EP_REGEX = Regex(
-        """^\s*(\d{1,4}(?:\.\d+)?)(?:v\d)?\s*[-–:|]\s+(\S.{1,})$""",
+        """^\s*(\d{1,4}(?:\.\d+)?)(?:v\d)?(\s*[-–:|]\s*)(\S.{1,})$""",
     )
     private val LEADING_SPACE_EP_REGEX = Regex(
         """^\s*(\d{1,4}(?:\.\d+)?)(?:v\d)?\s+(\S.{1,})$""",
     )
     private val TRAILING_SEP_EP_REGEX = Regex(
-        """(?:\s+[-–|]\s+)(\d{1,4}(?:\.\d+)?)(?:v\d)?(?:\s+END)?\s*$""",
+        """(?:\s+[-–|]\s*|\s*[-–|]\s+)(\d{1,4}(?:\.\d+)?)(?:v\d)?(?:\s+END)?\s*$""",
         RegexOption.IGNORE_CASE,
     )
     private val TRAILING_PADDED_EP_REGEX = Regex(
@@ -577,6 +577,10 @@ object TelegramAnimeParser {
                 if (keyLower in IGNORE_LINE_KEYS) continue
             }
 
+            if (episodeHint == null) {
+                episodeHint = extractExplicitEpisodeFromCaptionLine(line)
+            }
+
             if (isTechnicalOnlyLine(line)) {
                 if (kindHint == null) kindHint = detectKind(line)
                 if (seasonHint == 0) seasonHint = detectSeasonOnly(line)
@@ -599,6 +603,36 @@ object TelegramAnimeParser {
             altTitles = altTitles,
             isFinalSeasonHint = finalHint,
         )
+    }
+
+    @Suppress("ReturnCount")
+    private fun extractExplicitEpisodeFromCaptionLine(line: String): Float? {
+        EP_TAG_RANGE_REGEX.find(line)?.let { m ->
+            val start = m.groupValues[1].toIntOrNull()
+            val end = m.groupValues[2].toIntOrNull()
+            if (isValidEpisodeRange(start, end)) return start?.toFloat()
+        }
+        val tagRegexes = listOf(
+            COMBINED_SE_REGEX,
+            EXPLICIT_EP_WORD_REGEX,
+            EXPLICIT_E_LETTER_REGEX,
+            EP_MULTILINGUAL_REGEX,
+            EP_CJK_KR_REGEX,
+            BRACKET_EP_REGEX,
+        )
+        for (regex in tagRegexes) {
+            regex.find(line)?.let { m ->
+                val rawVal = if (regex === COMBINED_SE_REGEX) m.groupValues[2] else m.groupValues.drop(1).firstOrNull { it.isNotBlank() }
+                val epVal = rawVal?.toFloatOrNull()
+                if (epVal != null && !isLikelyYear(epVal) && epVal <= MAX_EPISODE_NUM.toFloat()) {
+                    return epVal
+                }
+            }
+        }
+        EXPLICIT_EP_ROMAN_REGEX.find(line)?.let { m ->
+            return parseRomanToken(m.groupValues[1])?.toFloat()
+        }
+        return null
     }
 
     private fun parseSeasonHintValue(valText: String): Int {
@@ -691,13 +725,16 @@ object TelegramAnimeParser {
         val pFile = if (usableFile) parse(cleanFile, fallback = "", allowLeadingBareEpisode = true) else null
         val pCap = if (cap.titleText.isNotBlank()) parse(cap.titleText, fallback = "", allowLeadingBareEpisode = true) else null
 
+        val pTitle = video.title.trim()
+            .takeIf { it.isNotBlank() && it != cleanFile && it != cap.titleText }
+            ?.let { parse(it, fallback = "", allowLeadingBareEpisode = true) }
         val chosen = when {
             pFile != null && !isGenericTitle(pFile.seriesTitle) ->
-                mergeParsed(primary = pFile, secondary = pCap, cap = cap)
+                mergeParsed(primary = pFile, secondary = pCap ?: pTitle, tertiary = pTitle, cap = cap)
             pCap != null && !isGenericTitle(pCap.seriesTitle) ->
-                mergeParsed(primary = pCap, secondary = pFile, cap = cap)
+                mergeParsed(primary = pCap, secondary = pFile ?: pTitle, tertiary = pTitle, cap = cap)
             pFile != null ->
-                mergeParsed(primary = pFile, secondary = pCap, cap = cap)
+                mergeParsed(primary = pFile, secondary = pCap ?: pTitle, tertiary = pTitle, cap = cap)
             else -> parse(video.title, fallback = "Video #${video.messageId}")
         }
         return if (chosen.seriesTitle.isBlank()) {
@@ -710,10 +747,11 @@ object TelegramAnimeParser {
     private fun mergeParsed(
         primary: ParsedMedia,
         secondary: ParsedMedia?,
+        tertiary: ParsedMedia? = null,
         cap: CaptionExtraction,
     ): ParsedMedia {
-        val ep = primary.episodeNumber ?: secondary?.episodeNumber ?: cap.episodeHint
-        val epEnd = primary.episodeEnd ?: secondary?.episodeEnd
+        val ep = primary.episodeNumber ?: secondary?.episodeNumber ?: tertiary?.episodeNumber ?: cap.episodeHint
+        val epEnd = primary.episodeEnd ?: secondary?.episodeEnd ?: tertiary?.episodeEnd
         val rawSeason = maxOf(primary.rawSeason, secondary?.rawSeason ?: 0, cap.seasonHint)
         val isFinal = primary.isFinalSeason || secondary?.isFinalSeason == true || cap.isFinalSeasonHint
         val kind = when {
@@ -1150,8 +1188,12 @@ object TelegramAnimeParser {
 
         LEADING_SEP_EP_REGEX.matchEntire(st.text)?.let { m ->
             val epVal = m.groupValues[1].toFloatOrNull()
-            val rest = m.groupValues[2].trim()
+            val sep = m.groupValues[2]
+            val rest = m.groupValues[3].trim()
+            val hasTrailingSpace = sep.lastOrNull()?.isWhitespace() == true
+            val looksMultiWord = rest.firstOrNull()?.isLetter() == true && rest.contains(' ')
             val valid = epVal != null && !isLikelyYear(epVal) && epVal <= MAX_EPISODE_NUM.toFloat() &&
+                (hasTrailingSpace || looksMultiWord) &&
                 !UNIT_AFTER_NUM_REGEX.containsMatchIn(rest)
             if (valid) {
                 st.episodeNumber = epVal
@@ -1266,7 +1308,7 @@ object TelegramAnimeParser {
         }
     }
 
-    private fun formatEpisodeLabel(
+    fun formatEpisodeLabel(
         epNum: Float?,
         epEnd: Int?,
         rawSeason: Int,

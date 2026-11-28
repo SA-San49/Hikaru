@@ -8,6 +8,7 @@ import eu.kanade.tachiyomi.BuildConfig
 import eu.kanade.tachiyomi.animesource.model.Video
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -34,6 +35,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.coroutines.resume
+import kotlin.math.min
 
 @Suppress("TooManyFunctions", "LargeClass", "MagicNumber")
 object Td {
@@ -155,9 +157,26 @@ object Td {
     private const val STREAM_EVICT_DELAY_MS = 10_000L
     private const val POSTER_SEARCH_LIMIT = 30
     private const val POSTER_CHUNKS_MAX = 4
+    data class ChunkPlan(
+        val totalBytes: Long,
+        val sizeMb: Double,
+        val chunkMb: Int,
+        val chunkBytes: Long,
+        val totalChunks: Int,
+    )
+
     private const val MIN_ANIMATION_BYTES = 256L * 1024
-    private const val PREWARM_BYTES = 2L * 1024 * 1024
-    const val AHEAD_BYTES: Long = 16L * 1024 * 1024
+    private const val ONE_MB_BYTES = 1024L * 1024L
+    const val CHUNK_CACHE_TARGET_BYTES: Long = 15L * ONE_MB_BYTES
+    const val AHEAD_BYTES: Long = CHUNK_CACHE_TARGET_BYTES
+    private const val SMALL_VIDEO_MB = 60.0
+    private const val MEDIUM_VIDEO_MB = 360.0
+    private const val SMALL_CHUNK_MB = 1
+    private const val MEDIUM_CHUNK_MB = 3
+    private const val LARGE_CHUNK_MB = 5
+    private const val CHUNK_POLL_MS = 40L
+    private const val CHUNK_IDLE_POLL_MS = 100L
+    private const val PREWARM_MAX_IDLE_MS = 10_000L
     private val IMAGE_EXTENSIONS = setOf(
         ".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".avif", ".heic", ".tiff",
     )
@@ -232,6 +251,11 @@ object Td {
     private val verifiedVideoFiles = ConcurrentHashMap<Int, String>()
     private val activeStreams = ConcurrentHashMap<Int, AtomicInteger>()
     private val streamedVideoFiles = Collections.newSetFromMap(ConcurrentHashMap<Int, Boolean>())
+    private val playbackCursors = ConcurrentHashMap<Int, Long>()
+    private val streamFileSizes = ConcurrentHashMap<Int, Long>()
+    private val pausedByProbe = ConcurrentHashMap<Int, AtomicInteger>()
+    private val chunkBufferJobs = ConcurrentHashMap<Int, Job>()
+    private val activeFileDownloads = Collections.newSetFromMap(ConcurrentHashMap<Int, Boolean>())
 
     fun init(context: Context) {
         appContext = context.applicationContext
@@ -1172,6 +1196,20 @@ object Td {
         return isGenericMime && VIDEO_EXTENSIONS.any { lower.endsWith(it) }
     }
 
+    private fun inferVideoMime(fileName: String, mimeType: String): String {
+        val lower = fileName.trim().lowercase(Locale.US)
+        if (mimeType.startsWith("video/", ignoreCase = true)) return mimeType
+        return when {
+            lower.endsWith(".mkv") -> "video/x-matroska"
+            lower.endsWith(".webm") -> "video/webm"
+            lower.endsWith(".mov") -> "video/quicktime"
+            lower.endsWith(".avi") -> "video/x-msvideo"
+            lower.endsWith(".ts") -> "video/mp2t"
+            lower.endsWith(".flv") -> "video/x-flv"
+            else -> "video/mp4"
+        }
+    }
+
     @Suppress("ReturnCount", "CyclomaticComplexMethod")
     private fun videoOf(chatId: Long, message: TdApi.Message): ChatVideo? {
         return when (val c = message.content) {
@@ -1225,7 +1263,7 @@ object Td {
                 val doc = c.document
                 val id = doc.document.id
                 if (id == 0 || !isPlayableDocument(doc.fileName, doc.mimeType)) return null
-                verifiedVideoFiles[id] = doc.mimeType.ifBlank { "video/mp4" }
+                verifiedVideoFiles[id] = inferVideoMime(doc.fileName, doc.mimeType)
                 fileValues.putIfAbsent(id, doc.document)
                 ChatVideo(
                     chatId = chatId,
@@ -1576,8 +1614,35 @@ object Td {
         }
     }
 
+    /**
+     * Computes the adaptive chunk-count plan using Hikaru's N = S / C formula,
+     * aligned strictly to Telegram's 1 MB MTProto part boundary and dividing 15 MB evenly.
+     */
+    fun planChunks(totalBytes: Long): ChunkPlan {
+        val safeBytes = totalBytes.coerceAtLeast(1L)
+        val sizeMb = safeBytes.toDouble() / ONE_MB_BYTES.toDouble()
+        val chunkMb = when {
+            sizeMb <= SMALL_VIDEO_MB -> SMALL_CHUNK_MB
+            sizeMb <= MEDIUM_VIDEO_MB -> MEDIUM_CHUNK_MB
+            else -> LARGE_CHUNK_MB
+        }
+        val chunkBytes = chunkMb.toLong() * ONE_MB_BYTES
+        val totalChunks = ((safeBytes + chunkBytes - 1L) / chunkBytes).toInt().coerceAtLeast(1)
+        return ChunkPlan(
+            totalBytes = safeBytes,
+            sizeMb = sizeMb,
+            chunkMb = chunkMb,
+            chunkBytes = chunkBytes,
+            totalChunks = totalChunks,
+        )
+    }
+
+    fun alignTo1MbFloor(offset: Long): Long =
+        (offset.coerceAtLeast(0L) / ONE_MB_BYTES) * ONE_MB_BYTES
+
     fun cancelDownload(fileId: Int) {
         if (fileId == 0) return
+        chunkBufferJobs.remove(fileId)?.cancel()
         runCatching {
             client?.send(TdApi.CancelDownloadFile(fileId, false), null, null)
         }
@@ -1587,12 +1652,125 @@ object Td {
         if (fileId == 0) return
         downloadErrors.remove(fileId)
         streamedVideoFiles.forEach { otherId ->
-            if (otherId != fileId && (activeStreams[otherId]?.get() ?: 0) <= 0) {
+            if (otherId != fileId &&
+                (activeStreams[otherId]?.get() ?: 0) <= 0 &&
+                !activeFileDownloads.contains(otherId)
+            ) {
                 cancelDownload(otherId)
             }
         }
-        val limit = if (totalSize in 1L until PREWARM_BYTES) totalSize else PREWARM_BYTES
-        request(fileId, 0L, limit)
+        val knownSize = if (totalSize > 0L) totalSize else (fileState(fileId)?.size ?: 0L)
+        if (knownSize > 0L) {
+            startChunkBuffer(fileId = fileId, totalSize = knownSize, fromOffset = 0L)
+        } else {
+            request(fileId, 0L, CHUNK_CACHE_TARGET_BYTES)
+        }
+    }
+
+    fun startChunkBuffer(fileId: Int, totalSize: Long, fromOffset: Long = 0L) {
+        if (fileId == 0) return
+        if (totalSize > 0L) streamFileSizes[fileId] = totalSize
+        playbackCursors[fileId] = fromOffset.coerceAtLeast(0L)
+        val existing = chunkBufferJobs[fileId]
+        if (existing != null && existing.isActive) {
+            _revision.value = revisionCounter.incrementAndGet()
+            return
+        }
+        val job = scope.launch {
+            runChunkBufferLoop(fileId)
+        }
+        chunkBufferJobs[fileId] = job
+    }
+
+    fun updatePlaybackCursor(fileId: Int, offset: Long, totalSize: Long = 0L) {
+        if (fileId == 0) return
+        if (totalSize > 0L) streamFileSizes[fileId] = totalSize
+        val prev = playbackCursors.put(fileId, offset.coerceAtLeast(0L)) ?: 0L
+        if (chunkBufferJobs[fileId]?.isActive != true) {
+            startChunkBuffer(fileId, totalSize, offset)
+        } else if (offset < prev || offset - prev >= ONE_MB_BYTES) {
+            _revision.value = revisionCounter.incrementAndGet()
+        }
+    }
+
+    fun beginProbe(fileId: Int) {
+        if (fileId != 0) {
+            pausedByProbe.computeIfAbsent(fileId) { AtomicInteger(0) }.incrementAndGet()
+        }
+    }
+
+    fun endProbe(fileId: Int) {
+        if (fileId == 0) return
+        val left = pausedByProbe[fileId]?.decrementAndGet() ?: 0
+        if (left <= 0) {
+            pausedByProbe.remove(fileId)
+            _revision.value = revisionCounter.incrementAndGet()
+        }
+    }
+
+    @Suppress("CyclomaticComplexMethod", "ReturnCount", "LongMethod", "NestedBlockDepth")
+    private suspend fun runChunkBufferLoop(fileId: Int) {
+        val startedMs = System.currentTimeMillis()
+        var lastReqOffset = -1L
+        var lastReqLimit = -1L
+        var lastReqAtMs = 0L
+        while (true) {
+            val streamActive = (activeStreams[fileId]?.get() ?: 0) > 0
+            if (!streamActive && System.currentTimeMillis() - startedMs > PREWARM_MAX_IDLE_MS) {
+                break
+            }
+            if ((pausedByProbe[fileId]?.get() ?: 0) > 0) {
+                val rev = revision.value
+                awaitUpdate(rev, CHUNK_POLL_MS)
+                continue
+            }
+            val state = fileState(fileId) ?: stateOf(fileId)
+            if (state?.complete == true) break
+            val totalSize = (state?.size ?: 0L).takeIf { it > 0L } ?: (streamFileSizes[fileId] ?: 0L)
+            if (totalSize <= 0L) {
+                val rev = revision.value
+                awaitUpdate(rev, CHUNK_POLL_MS)
+                continue
+            }
+            val cursor = (playbackCursors[fileId] ?: 0L).coerceIn(0L, totalSize - 1L)
+            val plan = planChunks(totalSize)
+            val aheadEnd = min(totalSize, cursor + CHUNK_CACHE_TARGET_BYTES)
+            val startChunk = (cursor / plan.chunkBytes).toInt().coerceIn(0, plan.totalChunks - 1)
+            val endChunk = ((aheadEnd - 1L) / plan.chunkBytes).toInt().coerceIn(startChunk, plan.totalChunks - 1)
+
+            var requestedChunk = false
+            for (chunkIdx in startChunk..endChunk) {
+                if ((pausedByProbe[fileId]?.get() ?: 0) > 0) break
+                val chunkStart = chunkIdx.toLong() * plan.chunkBytes
+                val chunkEnd = min(totalSize, chunkStart + plan.chunkBytes)
+                val effectiveStart = if (cursor > chunkStart) alignTo1MbFloor(cursor) else chunkStart
+                val avail = availableFrom(fileId, effectiveStart)
+                val needed = chunkEnd - effectiveStart
+                if (avail >= needed) continue
+
+                val nextMiss = alignTo1MbFloor(effectiveStart + avail.coerceAtLeast(0L))
+                    .coerceIn(effectiveStart, chunkEnd - 1L)
+                val limit = (chunkEnd - nextMiss).coerceAtLeast(1L)
+                val now = System.currentTimeMillis()
+                val alreadyDownloading = state != null &&
+                    state.active &&
+                    state.downloadOffset in effectiveStart..nextMiss &&
+                    lastReqOffset == nextMiss &&
+                    lastReqLimit == limit &&
+                    now - lastReqAtMs < 500L
+                if (!alreadyDownloading) {
+                    request(fileId, nextMiss, limit, DOWNLOAD_PRIORITY)
+                    lastReqOffset = nextMiss
+                    lastReqLimit = limit
+                    lastReqAtMs = now
+                }
+                requestedChunk = true
+                break
+            }
+            val rev = revision.value
+            awaitUpdate(rev, if (requestedChunk) CHUNK_POLL_MS else CHUNK_IDLE_POLL_MS)
+        }
+        chunkBufferJobs.remove(fileId)
     }
 
     fun onStreamOpened(fileId: Int) {
@@ -1600,7 +1778,10 @@ object Td {
         streamedVideoFiles.add(fileId)
         activeStreams.computeIfAbsent(fileId) { AtomicInteger(0) }.incrementAndGet()
         streamedVideoFiles.forEach { otherId ->
-            if (otherId != fileId && (activeStreams[otherId]?.get() ?: 0) <= 0) {
+            if (otherId != fileId &&
+                (activeStreams[otherId]?.get() ?: 0) <= 0 &&
+                !activeFileDownloads.contains(otherId)
+            ) {
                 if (!isCacheMediaEnabled()) {
                     evictFile(otherId)
                 } else {
@@ -1613,11 +1794,14 @@ object Td {
     fun onStreamClosed(fileId: Int) {
         if (fileId == 0) return
         val remaining = activeStreams[fileId]?.decrementAndGet() ?: 0
-        if (remaining <= 0 && !isCacheMediaEnabled()) {
-            scope.launch {
-                delay(STREAM_EVICT_DELAY_MS)
-                if ((activeStreams[fileId]?.get() ?: 0) <= 0 && !isCacheMediaEnabled()) {
-                    evictFile(fileId)
+        if (remaining <= 0) {
+            chunkBufferJobs.remove(fileId)?.cancel()
+            if (!isCacheMediaEnabled()) {
+                scope.launch {
+                    delay(STREAM_EVICT_DELAY_MS)
+                    if ((activeStreams[fileId]?.get() ?: 0) <= 0 && !isCacheMediaEnabled()) {
+                        evictFile(fileId)
+                    }
                 }
             }
         }
@@ -1627,17 +1811,38 @@ object Td {
         if (isCacheMediaEnabled()) return
         val ids = streamedVideoFiles.toList()
         ids.forEach { id ->
-            activeStreams.remove(id)
-            evictFile(id)
+            if (!activeFileDownloads.contains(id)) {
+                activeStreams.remove(id)
+                chunkBufferJobs.remove(id)?.cancel()
+                playbackCursors.remove(id)
+                streamFileSizes.remove(id)
+                evictFile(id)
+            }
         }
         appContext?.let { ctx ->
             scope.launch { purgeMediaFiles(ctx) }
         }
     }
 
-    private fun evictFile(fileId: Int) {
+    fun holdFileDownload(fileId: Int) {
         if (fileId == 0) return
+        activeFileDownloads.add(fileId)
+        chunkBufferJobs.remove(fileId)?.cancel()
+    }
+
+    fun releaseFileDownload(fileId: Int) {
+        if (fileId == 0) return
+        activeFileDownloads.remove(fileId)
+        if (!isCacheMediaEnabled() && (activeStreams[fileId]?.get() ?: 0) <= 0) {
+            evictFile(fileId)
+        }
+    }
+
+    private fun evictFile(fileId: Int) {
+        if (fileId == 0 || activeFileDownloads.contains(fileId)) return
         streamedVideoFiles.remove(fileId)
+        playbackCursors.remove(fileId)
+        streamFileSizes.remove(fileId)
         val path = (fileValues[fileId] ?: fetchedFiles[fileId])?.local?.path.orEmpty()
         cancelDownload(fileId)
         runCatching {
@@ -1700,6 +1905,12 @@ object Td {
         return fileId
     }
 
+    suspend fun chatVideoById(chatId: Long, messageId: Long): ChatVideo? {
+        if (chatId == 0L || messageId == 0L) return null
+        val msg = query(TdApi.GetMessage(chatId, messageId)) as? TdApi.Message ?: return null
+        return videoOf(chatId, msg)
+    }
+
     suspend fun touchMessage(chatId: Long, messageId: Long): Int {
         if (chatId == 0L || messageId == 0L) return 0
         val msg = query(TdApi.GetMessage(chatId, messageId)) as? TdApi.Message ?: return 0
@@ -1745,7 +1956,7 @@ object Td {
         else -> "Auto"
     }
 
-    @Suppress("CyclomaticComplexMethod")
+    @Suppress("CyclomaticComplexMethod", "LongParameterList", "ReturnCount")
     fun buildQualityVideos(
         baseUrl: String,
         width: Int = 0,
@@ -1753,9 +1964,22 @@ object Td {
         headers: Headers? = null,
         preferredQuality: String = "hls",
         displayShortSide: Int = 0,
+        originalOnly: Boolean = false,
     ): List<Video> {
         val sep = if (baseUrl.contains("?")) "&" else "?"
         val sourceRes = effectiveResolution(width, height)
+        if (originalOnly) {
+            return listOf(
+                Video(
+                    videoUrl = "${baseUrl}${sep}q=original",
+                    videoTitle = "Original",
+                    resolution = sourceRes,
+                    headers = headers,
+                    preferred = true,
+                    initialized = true,
+                ).apply { status = Video.State.READY },
+            )
+        }
         val pref = preferredQuality.lowercase(Locale.US).ifBlank { "hls" }
         val presets = listOf(
             2160 to "2160p (4K)",

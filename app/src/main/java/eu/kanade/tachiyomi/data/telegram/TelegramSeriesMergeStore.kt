@@ -2,6 +2,9 @@ package eu.kanade.tachiyomi.data.telegram
 
 import android.net.Uri
 import eu.kanade.domain.telegram.TelegramPreferences
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import org.json.JSONArray
 import org.json.JSONObject
 import tachiyomi.domain.anime.model.Anime
@@ -14,6 +17,8 @@ object TelegramSeriesMergeStore {
         val targetUrl: String,
         val memberKeys: List<String>,
         val memberTitles: List<String>,
+        val orderedKeys: List<String> = listOf(targetKey) + memberKeys,
+        val excludedMessageIds: Set<Long> = emptySet(),
     )
 
     @Volatile
@@ -22,12 +27,26 @@ object TelegramSeriesMergeStore {
     @Volatile
     private var cachedBySource: Map<Long, List<MergedSeriesRule>> = emptyMap()
 
+    private val _revision = MutableStateFlow(0L)
+    val revision: StateFlow<Long> = _revision.asStateFlow()
+
     fun extractSeriesKey(url: String): String {
         if (url.startsWith("/tg/series")) {
             val parsed = Uri.parse("https://t.me$url").getQueryParameter("key").orEmpty()
             if (parsed.isNotBlank()) return parsed
         }
         return "url:$url"
+    }
+
+    fun isUnmergedEntryUrl(url: String): Boolean {
+        if (!url.startsWith("/tg/series")) return false
+        return Uri.parse("https://t.me$url").getQueryParameter("unmerged") == "1"
+    }
+
+    fun hasMergeForUrl(prefs: TelegramPreferences, sourceId: Long, url: String): Boolean {
+        if (!url.startsWith("/tg/series") || isUnmergedEntryUrl(url)) return false
+        val key = extractSeriesKey(url)
+        return ruleForKey(prefs, sourceId, key) != null
     }
 
     fun rulesForSource(prefs: TelegramPreferences, sourceId: Long): List<MergedSeriesRule> {
@@ -40,6 +59,21 @@ object TelegramSeriesMergeStore {
         return rulesForSource(prefs, sourceId).firstOrNull { rule ->
             rule.targetKey == key || key in rule.memberKeys
         }
+    }
+
+    fun selectionSlotOf(
+        rule: MergedSeriesRule,
+        groupKey: String,
+        altKeys: Collection<String> = emptyList(),
+    ): Int? {
+        val order = rule.orderedKeys.ifEmpty { listOf(rule.targetKey) + rule.memberKeys }
+        val directIdx = order.indexOf(groupKey)
+        if (directIdx >= 0) return directIdx
+        for (alt in altKeys) {
+            val altIdx = order.indexOf(alt)
+            if (altIdx >= 0) return altIdx
+        }
+        return null
     }
 
     @Synchronized
@@ -70,11 +104,61 @@ object TelegramSeriesMergeStore {
         )
 
         currentAll[sourceId] = currentForSource.filterNot { it in overlappingRules } + newRule
+        persistAll(prefs, currentAll)
+        return newRule
+    }
+
+    @Synchronized
+    @Suppress("LongParameterList", "ReturnCount")
+    fun unmergeEpisodes(
+        prefs: TelegramPreferences,
+        sourceId: Long,
+        seriesKey: String,
+        messageIds: Set<Long>,
+        unmergedMemberKeys: Set<String> = emptySet(),
+    ): Boolean {
+        if (seriesKey.isBlank() || messageIds.isEmpty()) return false
+        val currentAll = getOrParse(prefs.mergedSeries().get()).toMutableMap()
+        val currentForSource = currentAll[sourceId].orEmpty()
+        val rule = currentForSource.firstOrNull {
+            it.targetKey == seriesKey || seriesKey in it.memberKeys
+        } ?: return false
+
+        val dropKeys = unmergedMemberKeys.filterTo(HashSet()) { it != rule.targetKey }
+        val remainingMembers = rule.memberKeys.filterNot { it in dropKeys }
+        val remainingOrder = rule.orderedKeys.filterNot { it in dropKeys }
+        val updatedExcluded = (rule.excludedMessageIds + messageIds).toSet()
+
+        val dissolve = remainingMembers.isEmpty() && dropKeys.isNotEmpty()
+        val nextRules = if (dissolve) {
+            currentForSource.filterNot { it == rule }
+        } else {
+            val updatedRule = rule.copy(
+                memberKeys = remainingMembers,
+                orderedKeys = remainingOrder.ifEmpty { listOf(rule.targetKey) + remainingMembers },
+                excludedMessageIds = updatedExcluded,
+            )
+            currentForSource.map { if (it == rule) updatedRule else it }
+        }
+
+        if (nextRules.isEmpty()) {
+            currentAll.remove(sourceId)
+        } else {
+            currentAll[sourceId] = nextRules
+        }
+        persistAll(prefs, currentAll)
+        return true
+    }
+
+    private fun persistAll(
+        prefs: TelegramPreferences,
+        currentAll: Map<Long, List<MergedSeriesRule>>,
+    ) {
         val encoded = encode(currentAll)
         cachedRaw = encoded
         cachedBySource = currentAll
         prefs.mergedSeries().set(encoded)
-        return newRule
+        _revision.value = _revision.value + 1L
     }
 
     private fun collectSelectedKeys(
@@ -88,6 +172,7 @@ object TelegramSeriesMergeStore {
         }
     }
 
+    @Suppress("LongParameterList")
     private fun buildMergedRule(
         targetKey: String,
         targetTitle: String,
@@ -98,9 +183,15 @@ object TelegramSeriesMergeStore {
     ): MergedSeriesRule {
         val combinedKeys = linkedSetOf<String>()
         val combinedTitles = linkedSetOf<String>()
+        val ordered = linkedSetOf<String>()
 
         selectedAnimes.forEachIndexed { idx, anime ->
             val k = extractSeriesKey(anime.url)
+            val existingRule = overlappingRules.firstOrNull { it.targetKey == k || k in it.memberKeys }
+            if (existingRule != null) {
+                existingRule.orderedKeys.forEach { ordered += it }
+            }
+            ordered += k
             if (k != targetKey) combinedKeys += k
             extraAliasesByKey[k]?.filterTo(combinedKeys) { it != targetKey }
             if (idx > 0 && anime.title.isNotBlank() && anime.title != targetTitle) {
@@ -110,6 +201,7 @@ object TelegramSeriesMergeStore {
         overlappingRules.forEach { oldRule ->
             if (oldRule.targetKey != targetKey) combinedKeys += oldRule.targetKey
             oldRule.memberKeys.filterTo(combinedKeys) { it != targetKey }
+            oldRule.orderedKeys.forEach { ordered += it }
             if (oldRule.targetTitle.isNotBlank() && oldRule.targetTitle != targetTitle) {
                 combinedTitles += oldRule.targetTitle
             }
@@ -121,6 +213,8 @@ object TelegramSeriesMergeStore {
             targetUrl = targetUrl,
             memberKeys = combinedKeys.toList(),
             memberTitles = combinedTitles.toList(),
+            orderedKeys = ordered.toList(),
+            excludedMessageIds = emptySet(),
         )
     }
 
@@ -159,12 +253,18 @@ object TelegramSeriesMergeStore {
             val targetKey = obj.optString("tk")
             val targetTitle = obj.optString("tt")
             if (targetKey.isBlank() || targetTitle.isBlank()) continue
+            val memberKeys = readStringList(obj.optJSONArray("mk"))
+            val orderedKeys = readStringList(obj.optJSONArray("ok"))
+                .ifEmpty { listOf(targetKey) + memberKeys }
+            val excludedIds = readLongSet(obj.optJSONArray("ex"))
             rules += MergedSeriesRule(
                 targetKey = targetKey,
                 targetTitle = targetTitle,
                 targetUrl = obj.optString("tu"),
-                memberKeys = readStringList(obj.optJSONArray("mk")),
+                memberKeys = memberKeys,
                 memberTitles = readStringList(obj.optJSONArray("mt")),
+                orderedKeys = orderedKeys,
+                excludedMessageIds = excludedIds,
             )
         }
         return rules
@@ -176,6 +276,16 @@ object TelegramSeriesMergeStore {
             for (i in 0 until arr.length()) {
                 val v = arr.optString(i)
                 if (v.isNotBlank()) add(v)
+            }
+        }
+    }
+
+    private fun readLongSet(arr: JSONArray?): Set<Long> {
+        if (arr == null) return emptySet()
+        return buildSet(arr.length()) {
+            for (i in 0 until arr.length()) {
+                val v = arr.optLong(i, 0L)
+                if (v != 0L) add(v)
             }
         }
     }
@@ -192,6 +302,12 @@ object TelegramSeriesMergeStore {
                 obj.put("tu", rule.targetUrl)
                 obj.put("mk", JSONArray(rule.memberKeys))
                 obj.put("mt", JSONArray(rule.memberTitles))
+                if (rule.orderedKeys.isNotEmpty()) {
+                    obj.put("ok", JSONArray(rule.orderedKeys))
+                }
+                if (rule.excludedMessageIds.isNotEmpty()) {
+                    obj.put("ex", JSONArray(rule.excludedMessageIds.toList()))
+                }
                 arr.put(obj)
             }
             root.put(sourceId.toString(), arr)

@@ -442,4 +442,50 @@ class TelegramAnimeParserTest {
         assertEquals(25, groups.size)
         assertTrue(elapsedMs < 2000L, "Expected fast grouping under 2000ms, took ${elapsedMs}ms")
     }
+
+    @Test
+    fun parsesTightLeadingHyphenEpisodesWhilePreservingHyphenTitles() {
+        val arch3 = TelegramAnimeParser.parse("3-An Archdemon's Dilemma How to Love Your Elf Bride.mp4")
+        assertEquals(3f, arch3.episodeNumber)
+        assertEquals("anarchdemonsdilemmahowtoloveyourelfbride", arch3.baseKey)
+
+        val arch9 = TelegramAnimeParser.parse("9-An Archdemon's Dilemma How to Love Your Elf Bride.mp4")
+        assertEquals(9f, arch9.episodeNumber)
+        assertEquals(arch3.baseKey, arch9.baseKey)
+
+        val ghost = TelegramAnimeParser.parse("07-Ghost E02.mkv")
+        assertEquals("07ghost", ghost.baseKey)
+        assertEquals(2f, ghost.episodeNumber)
+
+        val ghostNoEp = TelegramAnimeParser.parse("07-Ghost.mkv")
+        assertEquals("07ghost", ghostNoEp.baseKey)
+        assertNull(ghostNoEp.episodeNumber)
+    }
+
+    @Test
+    fun extractsEpisodeFromCaptionMetadataLines() {
+        val parsed = TelegramAnimeParser.parseVideo(
+            vid(
+                msgId = 42L,
+                fileName = "An Archdemon's Dilemma.mp4",
+                caption = "An Archdemon's Dilemma\nEpisode 07\n720p",
+            ),
+        )
+        assertEquals(7f, parsed.episodeNumber)
+    }
+
+    @Test
+    fun computesAdaptiveChunkPlanFormula() {
+        val small = Td.planChunks(45L * 1024L * 1024L)
+        assertEquals(1, small.chunkMb)
+        assertEquals(45, small.totalChunks)
+
+        val medium = Td.planChunks(150L * 1024L * 1024L)
+        assertEquals(3, medium.chunkMb)
+        assertEquals(50, medium.totalChunks)
+
+        val large = Td.planChunks(1500L * 1024L * 1024L)
+        assertEquals(5, large.chunkMb)
+        assertEquals(300, large.totalChunks)
+    }
 }

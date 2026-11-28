@@ -187,6 +187,7 @@ fun AnimeScreen(
     onClearAnimeClicked: () -> Unit,
     onOpenAnimeFolderClicked: () -> Unit,
     onMergeClicked: (() -> Unit)?,
+    onUnmergeClicked: ((List<Episode>) -> Unit)? = null,
     onMultiBookmarkClicked: (List<Episode>, bookmarked: Boolean) -> Unit,
     onMultiFillermarkClicked: (List<Episode>, fillermarked: Boolean) -> Unit,
     onMultiMarkAsSeenClicked: (List<Episode>, markAsSeen: Boolean) -> Unit,
@@ -276,6 +277,7 @@ fun AnimeScreen(
             onInvertSelection = onInvertSelection,
             onSettingsClicked = onSettingsClicked,
             onMergeClicked = onMergeClicked,
+            onUnmergeClicked = onUnmergeClicked,
             onEditIntervalClicked = onEditIntervalClicked,
             onToggleDiscoveryExpansion = onToggleDiscoveryExpansion,
             combinedItems = combinedItems,
@@ -323,6 +325,7 @@ fun AnimeScreen(
             onClearAnimeClicked = onClearAnimeClicked,
             onOpenAnimeFolderClicked = onOpenAnimeFolderClicked,
             onMergeClicked = onMergeClicked,
+            onUnmergeClicked = onUnmergeClicked,
             onMultiBookmarkClicked = onMultiBookmarkClicked,
             onMultiFillermarkClicked = onMultiFillermarkClicked,
             onMultiMarkAsSeenClicked = onMultiMarkAsSeenClicked,
@@ -391,6 +394,7 @@ private fun AnimeScreenSmallImpl(
     onClearAnimeClicked: () -> Unit,
     onOpenAnimeFolderClicked: () -> Unit,
     onMergeClicked: (() -> Unit)?,
+    onUnmergeClicked: ((List<Episode>) -> Unit)? = null,
     onMultiBookmarkClicked: (List<Episode>, bookmarked: Boolean) -> Unit,
     onMultiFillermarkClicked: (List<Episode>, fillermarked: Boolean) -> Unit,
     onMultiMarkAsSeenClicked: (List<Episode>, markAsSeen: Boolean) -> Unit,
@@ -571,6 +575,7 @@ private fun AnimeScreenSmallImpl(
                         onDownloadEpisode = onDownloadEpisode,
                         onMultiDeleteClicked = onMultiDeleteClicked,
                         onContinueWatching = { onContinueWatching(null) },
+                        onUnmergeClicked = onUnmergeClicked,
                         fillFraction = 1f,
                         alwaysUseExternalPlayer = alwaysUseExternalPlayer,
                     )
@@ -904,6 +909,7 @@ fun AnimeScreenLargeImpl(
     onClearAnimeClicked: () -> Unit,
     onOpenAnimeFolderClicked: () -> Unit,
     onMergeClicked: (() -> Unit)?,
+    onUnmergeClicked: ((List<Episode>) -> Unit)? = null,
     onMultiBookmarkClicked: (List<Episode>, bookmarked: Boolean) -> Unit,
     onMultiFillermarkClicked: (List<Episode>, fillermarked: Boolean) -> Unit,
     onMultiMarkAsSeenClicked: (List<Episode>, markAsSeen: Boolean) -> Unit,
@@ -1078,6 +1084,7 @@ fun AnimeScreenLargeImpl(
                             onDownloadEpisode = onDownloadEpisode,
                             onMultiDeleteClicked = onMultiDeleteClicked,
                             onContinueWatching = { onContinueWatching(null) },
+                            onUnmergeClicked = onUnmergeClicked,
                             fillFraction = 0.5f,
                             alwaysUseExternalPlayer = alwaysUseExternalPlayer,
                         )
@@ -1482,6 +1489,7 @@ private fun SharedAnimeBottomActionMenu(
     onDownloadEpisode: ((List<EpisodeList.Item>, EpisodeDownloadAction) -> Unit)?,
     onMultiDeleteClicked: (List<Episode>) -> Unit,
     onContinueWatching: () -> Unit,
+    onUnmergeClicked: ((List<Episode>) -> Unit)? = null,
     fillFraction: Float,
     alwaysUseExternalPlayer: Boolean,
     modifier: Modifier = Modifier,
@@ -1525,7 +1533,10 @@ private fun SharedAnimeBottomActionMenu(
         }.takeIf { !alwaysUseExternalPlayer && selected.size == 1 },
         onInternalClicked = {
             onEpisodeClicked(selected.fastMap { it.episode }.first(), true)
-        }.takeIf { alwaysUseExternalPlayer && selected.size == 1 }
+        }.takeIf { alwaysUseExternalPlayer && selected.size == 1 },
+        onUnmergeClicked = {
+            onUnmergeClicked?.invoke(selected.fastMap { it.episode })
+        }.takeIf { onUnmergeClicked != null },
     )
 }
 
