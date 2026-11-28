@@ -4,6 +4,8 @@ import android.content.Context
 import android.graphics.drawable.Drawable
 import eu.kanade.domain.extension.interactor.TrustExtension
 import eu.kanade.domain.source.service.SourcePreferences
+import eu.kanade.domain.telegram.TelegramPreferences
+import eu.kanade.tachiyomi.data.telegram.TelegramBrowseSources
 import eu.kanade.tachiyomi.data.notification.Notifications
 import eu.kanade.tachiyomi.extension.api.ExtensionApi
 import eu.kanade.tachiyomi.extension.api.ExtensionUpdateNotifier
@@ -53,6 +55,7 @@ class ExtensionManager(
     private val preferences: SourcePreferences = Injekt.get(),
     private val trustExtension: TrustExtension = Injekt.get(),
     private val extensionRepoRepository: mihon.domain.extensionrepo.repository.ExtensionRepoRepository = Injekt.get(),
+    private val telegramPreferences: TelegramPreferences = Injekt.get(),
 ) {
 
     val scope = CoroutineScope(SupervisorJob())
@@ -75,14 +78,16 @@ class ExtensionManager(
     private val repoHostAuthorRegex = """^https://(?:raw\.githubusercontent\.com|codeberg\.org|gitlab\.com)/([^/]+)/.*""".toRegex()
 
     private val installedExtensionsMapFlow = MutableStateFlow(emptyMap<String, Extension.Installed>())
-    val installedExtensionsFlow = combine(
+    val installedExtensionsFlow: StateFlow<List<Extension.Installed>> = combine(
         installedExtensionsMapFlow,
         extensionRepoRepository.subscribeAll(),
-    ) { installedMap, repos ->
-        installedMap.values.map { extension ->
+        telegramPreferences.browseSources().changes(),
+    ) { installedMap, repos, tgSourcesRaw ->
+        val apkExtensions = installedMap.values.map { extension ->
             val matchingRepo = repos.find {
                 it.signingKeyFingerprint.equals(extension.signatureHash, ignoreCase = true) ||
-                it.signingKeyFingerprint.padStart(64, '0').equals(extension.signatureHash.padStart(64, '0'), ignoreCase = true)
+                    it.signingKeyFingerprint.padStart(64, '0')
+                        .equals(extension.signatureHash.padStart(64, '0'), ignoreCase = true)
             }
             val author = matchingRepo?.author
                 ?: matchingRepo?.let { repo ->
@@ -93,6 +98,8 @@ class ExtensionManager(
 
             extension.copy(author = author)
         }
+        val telegramExtensions = TelegramBrowseSources.toInstalledExtensions(context, tgSourcesRaw)
+        apkExtensions + telegramExtensions
     }.stateIn(scope, SharingStarted.Lazily, emptyList())
 
     private val availableExtensionsMapFlow = MutableStateFlow(emptyMap<String, Extension.Available>())
@@ -111,6 +118,13 @@ class ExtensionManager(
     private var subLanguagesEnabledOnFirstRun = preferences.enabledLanguages().isSet()
 
     fun getAppIconForSource(sourceId: Long): Drawable? {
+        if (TelegramBrowseSources.isTelegramSourceId(sourceId)) {
+            return TelegramBrowseSources.getDrawableForSource(
+                context,
+                sourceId,
+                telegramPreferences.browseSources().get(),
+            )
+        }
         val pkgName = installedExtensionsMapFlow.value.values
             .find { ext ->
                 ext.sources.any { it.id == sourceId }
@@ -125,6 +139,11 @@ class ExtensionManager(
     }
 
     fun getExtensionNameForSource(sourceId: Long): String? {
+        if (TelegramBrowseSources.isTelegramSourceId(sourceId)) {
+            return TelegramBrowseSources.parse(telegramPreferences.browseSources().get())
+                .firstOrNull { it.sourceId == sourceId }
+                ?.title
+        }
         return installedExtensionsMapFlow.value.values
             .find { ext -> ext.sources.any { it.id == sourceId } }
             ?.name
@@ -301,6 +320,10 @@ class ExtensionManager(
      * @param extension The extension to uninstall.
      */
     fun uninstallExtension(extension: Extension) {
+        if (TelegramBrowseSources.isTelegramPkg(extension.pkgName)) {
+            TelegramBrowseSources.removeByPkgName(telegramPreferences, extension.pkgName)
+            return
+        }
         installer.uninstallApk(extension.pkgName)
     }
 

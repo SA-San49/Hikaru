@@ -31,6 +31,7 @@ import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.outlined.BookmarkAdd
 import androidx.compose.material.icons.outlined.BookmarkRemove
+import androidx.compose.material.icons.outlined.CallSplit
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.DoneAll
 import androidx.compose.material.icons.outlined.Download
@@ -92,6 +93,7 @@ fun AnimeBottomActionMenu(
     onDeleteClicked: (() -> Unit)? = null,
     onExternalClicked: (() -> Unit)? = null,
     onInternalClicked: (() -> Unit)? = null,
+    onUnmergeClicked: (() -> Unit)? = null,
 ) {
     AnimatedVisibility(
         visible = visible,
@@ -110,8 +112,10 @@ fun AnimeBottomActionMenu(
         ) {
             val haptic = LocalHapticFeedback.current
             // AM (FILLERMARK) -->
-            val confirm = remember { mutableStateListOf(false, false, false, false, false, false, false, false, false, false, false) }
-            val confirmRange = 0..<11
+            val confirm = remember {
+                mutableStateListOf(false, false, false, false, false, false, false, false, false, false, false, false)
+            }
+            val confirmRange = 0..<12
             // <-- AM (FILLERMARK)
             var resetJob: Job? = remember { null }
             val onLongClickItem: (Int) -> Unit = { toConfirmIndex ->
@@ -230,6 +234,15 @@ fun AnimeBottomActionMenu(
                         toConfirm = confirm[10],
                         onLongClick = { onLongClickItem(10) },
                         onClick = onInternalClicked,
+                    )
+                }
+                if (onUnmergeClicked != null) {
+                    BottomMenuButton(
+                        title = "UN Marge",
+                        icon = Icons.Outlined.CallSplit,
+                        toConfirm = confirm[11],
+                        onLongClick = { onLongClickItem(11) },
+                        onClick = onUnmergeClicked,
                     )
                 }
             }

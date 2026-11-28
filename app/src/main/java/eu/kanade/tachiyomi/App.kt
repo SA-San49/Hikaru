@@ -53,7 +53,9 @@ import eu.kanade.tachiyomi.data.coil.LocalVideoThumbnailFetcher
 import eu.kanade.tachiyomi.data.coil.TachiyomiImageDecoder
 import eu.kanade.tachiyomi.data.connections.discord.DiscordRPCService
 import eu.kanade.tachiyomi.data.notification.Notifications
+import eu.kanade.domain.telegram.TelegramPreferences
 import eu.kanade.tachiyomi.data.sync.SyncDataJob
+import eu.kanade.tachiyomi.data.telegram.Td
 import eu.kanade.tachiyomi.di.AppModule
 import eu.kanade.tachiyomi.di.PreferenceModule
 import eu.kanade.tachiyomi.di.SYPreferenceModule
@@ -150,6 +152,12 @@ class App : Application(), DefaultLifecycleObserver, SingletonImageLoader.Factor
             Injekt.get<NetworkHelper>()
             Injekt.get<eu.kanade.tachiyomi.extension.ExtensionManager>()
             Injekt.get<SourceManager>()
+            runCatching {
+                val telegramPrefs = Injekt.get<TelegramPreferences>()
+                if (Td.hasSavedSession(this@App) || telegramPrefs.browseSources().get().isNotBlank()) {
+                    Td.init(this@App)
+                }
+            }
             Injekt.get<DownloadManager>()
             Injekt.get<eu.kanade.tachiyomi.data.download.DownloadCache>()
             Injekt.get<eu.kanade.tachiyomi.data.cache.ChapterCache>()

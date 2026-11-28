@@ -31,6 +31,7 @@ import coil3.compose.AsyncImage
 import eu.kanade.domain.source.model.icon
 import eu.kanade.presentation.util.rememberResourceBitmapPainter
 import eu.kanade.tachiyomi.R
+import eu.kanade.tachiyomi.data.telegram.TelegramBrowseSources
 import eu.kanade.tachiyomi.extension.model.Extension
 import eu.kanade.tachiyomi.extension.util.ExtensionLoader
 import tachiyomi.core.common.util.lang.withIOContext
@@ -49,11 +50,16 @@ fun SourceIcon(
     source: Source,
     modifier: Modifier = Modifier,
 ) {
-    val cachedIcon = remember(source.id) { sourceIconCache.get(source.id) }
+    val isTelegram = TelegramBrowseSources.isTelegramSourceId(source.id)
+    val cachedIcon = remember(source.id) {
+        if (isTelegram) null else sourceIconCache.get(source.id)
+    }
     val icon by produceState<ImageBitmap?>(initialValue = cachedIcon, source.id) {
         if (value == null && !source.isLocal()) {
             value = withIOContext {
-                source.icon?.also { sourceIconCache.put(source.id, it) }
+                source.icon?.also {
+                    if (!isTelegram) sourceIconCache.put(source.id, it)
+                }
             }
         }
     }
@@ -141,16 +147,23 @@ private fun Extension.getIcon(density: Int = DisplayMetrics.DENSITY_DEFAULT): St
         extensionIconCache.get(cacheKey)?.let { Result.Success(it) } ?: Result.Loading
     }
     return produceState<Result<ImageBitmap>>(initialValue = initialResult, cacheKey) {
-        if (value is Result.Success) return@produceState
+        if (value is Result.Success && !TelegramBrowseSources.isTelegramPkg(pkgName)) return@produceState
         withIOContext {
             value = try {
-                val appInfo = ExtensionLoader.getExtensionPackageInfoFromPkgName(context, pkgName)!!.applicationInfo!!
-                val appResources = context.packageManager.getResourcesForApplication(appInfo)
-                val bitmap = appResources.getDrawableForDensity(appInfo.icon, density, null)!!
-                    .toBitmap()
-                    .asImageBitmap()
-                extensionIconCache.put(cacheKey, bitmap)
-                Result.Success(bitmap)
+                if (TelegramBrowseSources.isTelegramPkg(pkgName)) {
+                    val drawable = (this@getIcon as? Extension.Installed)?.icon
+                    val bitmap = drawable!!.toBitmap().asImageBitmap()
+                    Result.Success(bitmap)
+                } else {
+                    val appInfo = ExtensionLoader.getExtensionPackageInfoFromPkgName(context, pkgName)!!
+                        .applicationInfo!!
+                    val appResources = context.packageManager.getResourcesForApplication(appInfo)
+                    val bitmap = appResources.getDrawableForDensity(appInfo.icon, density, null)!!
+                        .toBitmap()
+                        .asImageBitmap()
+                    extensionIconCache.put(cacheKey, bitmap)
+                    Result.Success(bitmap)
+                }
             } catch (e: Exception) {
                 Result.Error
             }

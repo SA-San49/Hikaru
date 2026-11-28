@@ -3,6 +3,11 @@ import mihon.buildlogic.getBuildTime
 import mihon.buildlogic.getCommitCount
 import mihon.buildlogic.getGitSha
 import java.util.Properties
+import java.util.zip.CRC32
+import java.util.zip.Deflater
+import java.util.zip.ZipEntry
+import java.util.zip.ZipFile
+import java.util.zip.ZipOutputStream
 
 plugins {
     id("mihon.android.application")
@@ -178,8 +183,9 @@ android {
 
     packaging {
         jniLibs {
-            // Keep native libraries uncompressed for the requested APK packaging.
-            useLegacyPackaging = false
+            // Compress native libraries in APK to minimize APK size.
+            useLegacyPackaging = true
+            pickFirsts += listOf("**/libc++_shared.so")
         }
         resources {
             excludes += setOf(
@@ -227,10 +233,160 @@ android {
     }
 
     applicationVariants.all {
-        if (buildType.name == "preview") {
+        val variantBuildType = buildType.name
+        if (variantBuildType == "preview") {
             outputs.all {
                 val output = this as? com.android.build.gradle.api.ApkVariantOutput
                 output?.versionNameOverride = "r-${getCommitCount()}"
+            }
+        }
+        if (variantBuildType == "preview" || variantBuildType == "release" || variantBuildType == "releaseTest") {
+            val sdkDir = android.sdkDirectory
+            val btVer = android.buildToolsVersion
+            val relSigning = android.signingConfigs.getByName("release")
+            val ksFile = relSigning.storeFile
+            val ksPass = relSigning.storePassword.orEmpty()
+            val kAlias = relSigning.keyAlias.orEmpty()
+            val kPass = relSigning.keyPassword.orEmpty()
+
+            packageApplicationProvider.configure {
+                val outDirProp = outputDirectory
+                doLast {
+                    if (ksFile == null || !ksFile.exists() || ksPass.isBlank() || kAlias.isBlank() || kPass.isBlank()) {
+                        return@doLast
+                    }
+                    val btRoot = File(sdkDir, "build-tools")
+                    val btDir = File(btRoot, btVer).takeIf { it.isDirectory }
+                        ?: btRoot.listFiles()?.filter { it.isDirectory }?.maxByOrNull { it.name }
+                        ?: return@doLast
+                    val zipalignExe = File(btDir, "zipalign").takeIf { it.exists() } ?: return@doLast
+                    val apksignerExe = File(btDir, "apksigner").takeIf { it.exists() } ?: return@doLast
+
+                    val targetBytes = 79_500_000L
+                    val maxAllowedBytes = 79_850_000L
+                    val outDir = outDirProp.get().asFile
+                    outDir.walkTopDown()
+                        .filter { it.isFile && it.extension == "apk" && !it.name.contains("universal") }
+                        .forEach { apkFile ->
+                            val initialSize = apkFile.length()
+                            if (initialSize <= 0L || initialSize >= 78_500_000L) return@forEach
+
+                            val entries = ZipFile(apkFile).use { zip ->
+                                zip.entries().asSequence().toList()
+                            }
+                            val candidates = entries.filter { e ->
+                                !e.isDirectory &&
+                                    e.name.startsWith("lib/") &&
+                                    e.name.endsWith(".so") &&
+                                    !e.name.endsWith("libtdjni.so") &&
+                                    e.method == ZipEntry.DEFLATED &&
+                                    e.compressedSize > 0L &&
+                                    e.size > e.compressedSize
+                            }.sortedByDescending { it.size - it.compressedSize }
+
+                            if (candidates.isEmpty()) return@forEach
+
+                            val storeSet = HashSet<String>()
+                            var estimated = initialSize
+                            for (c in candidates) {
+                                val delta = c.size - c.compressedSize
+                                if (estimated + delta <= maxAllowedBytes) {
+                                    storeSet += c.name
+                                    estimated += delta
+                                    if (estimated >= targetBytes) break
+                                }
+                            }
+                            if (storeSet.isEmpty()) return@forEach
+
+                            val tmpRaw = File(apkFile.parentFile, "${apkFile.name}.repack.tmp")
+                            val tmpAligned = File(apkFile.parentFile, "${apkFile.name}.aligned.tmp")
+                            try {
+                                ZipFile(apkFile).use { zip ->
+                                    ZipOutputStream(tmpRaw.outputStream().buffered()).use { zos ->
+                                        zos.setLevel(Deflater.DEFAULT_COMPRESSION)
+                                        for (e in entries) {
+                                            if (e.name == "META-INF/MANIFEST.MF" ||
+                                                (e.name.startsWith("META-INF/") &&
+                                                    (e.name.endsWith(".SF") || e.name.endsWith(".RSA") || e.name.endsWith(".EC")))
+                                            ) {
+                                                continue
+                                            }
+                                            if (e.isDirectory) {
+                                                zos.putNextEntry(ZipEntry(e.name))
+                                                zos.closeEntry()
+                                                continue
+                                            }
+                                            val bytes = zip.getInputStream(e).use { it.readBytes() }
+                                            if (e.name in storeSet || e.method == ZipEntry.STORED) {
+                                                val crc = CRC32().apply { update(bytes) }.value
+                                                val outEntry = ZipEntry(e.name).apply {
+                                                    method = ZipEntry.STORED
+                                                    size = bytes.size.toLong()
+                                                    compressedSize = bytes.size.toLong()
+                                                    setCrc(crc)
+                                                }
+                                                zos.putNextEntry(outEntry)
+                                                zos.write(bytes)
+                                                zos.closeEntry()
+                                            } else {
+                                                zos.putNextEntry(ZipEntry(e.name))
+                                                zos.write(bytes)
+                                                zos.closeEntry()
+                                            }
+                                        }
+                                    }
+                                }
+
+                                val alignProc = ProcessBuilder(
+                                    zipalignExe.absolutePath,
+                                    "-f",
+                                    "-p",
+                                    "4",
+                                    tmpRaw.absolutePath,
+                                    tmpAligned.absolutePath,
+                                ).redirectErrorStream(true).start()
+                                val alignExit = alignProc.waitFor()
+                                if (alignExit != 0) {
+                                    throw GradleException("zipalign failed ($alignExit): " + alignProc.inputStream.bufferedReader().readText())
+                                }
+
+                                val signProc = ProcessBuilder(
+                                    apksignerExe.absolutePath,
+                                    "sign",
+                                    "--ks",
+                                    ksFile.absolutePath,
+                                    "--ks-pass",
+                                    "env:HIKARU_KS_PASS",
+                                    "--ks-key-alias",
+                                    kAlias,
+                                    "--key-pass",
+                                    "env:HIKARU_KEY_PASS",
+                                    "--v1-signing-enabled",
+                                    "true",
+                                    "--v2-signing-enabled",
+                                    "true",
+                                    "--v3-signing-enabled",
+                                    "true",
+                                    "--out",
+                                    apkFile.absolutePath,
+                                    tmpAligned.absolutePath,
+                                ).apply {
+                                    environment()["HIKARU_KS_PASS"] = ksPass
+                                    environment()["HIKARU_KEY_PASS"] = kPass
+                                    redirectErrorStream(true)
+                                }.start()
+                                val signExit = signProc.waitFor()
+                                if (signExit != 0) {
+                                    throw GradleException("apksigner failed ($signExit): " + signProc.inputStream.bufferedReader().readText())
+                                }
+                                File("${apkFile.absolutePath}.idsig").delete()
+                                logger.lifecycle("Tuned ${apkFile.name}: $initialSize -> ${apkFile.length()} bytes (${storeSet.size} uncompressed .so)")
+                            } finally {
+                                tmpRaw.delete()
+                                tmpAligned.delete()
+                            }
+                        }
+                }
             }
         }
     }

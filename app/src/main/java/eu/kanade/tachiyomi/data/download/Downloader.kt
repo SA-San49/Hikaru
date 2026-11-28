@@ -153,6 +153,7 @@ class Downloader(
     }
 
     private fun calculateDynamicConcurrency(host: String): Int {
+        if (host == "127.0.0.1" || host == "localhost") return 1
         if (host.contains("animepahe") || host.contains("sibnet") || host.contains("video.sibnet")) return 1 // Adaptive: Hosters failing with multi-threading
         
         val userThreads = preferences.downloadThreads().get().coerceAtLeast(1)
@@ -874,7 +875,13 @@ class Downloader(
         }
 
         val client = networkHelper.downloadClient
-        val host = Uri.parse(video.videoUrl).host.orEmpty()
+        val downloadUrl = if (video.videoUrl.contains("127.0.0.1:49731/tg") && !video.videoUrl.contains("dl=1")) {
+            val sep = if (video.videoUrl.contains("?")) "&" else "?"
+            "${video.videoUrl}${sep}dl=1"
+        } else {
+            video.videoUrl
+        }
+        val host = Uri.parse(downloadUrl).host.orEmpty()
         val requestedThreads = calculateDynamicConcurrency(host)
         val headers = getHeaders(video)
         var size = download.totalSize
@@ -883,7 +890,7 @@ class Downloader(
             try {
                 executeCancellable(
                     client,
-                    Request.Builder().url(video.videoUrl).headers(headers).head().build(),
+                    Request.Builder().url(downloadUrl).headers(headers).head().build(),
                 ) { response ->
                     if (response.isSuccessful) size = response.header("Content-Length")?.toLongOrNull() ?: -1L
                 }
@@ -1024,7 +1031,7 @@ class Downloader(
         retry {
             val start = if (finalFile.exists()) finalFile.length() else 0L
             if (size > 0L) download.partProgress[0] = (start.toFloat() / size).coerceIn(0f, 1f)
-            val requestBuilder = Request.Builder().url(video.videoUrl).headers(headers)
+            val requestBuilder = Request.Builder().url(downloadUrl).headers(headers)
             if (start > 0L) requestBuilder.header("Range", "bytes=$start-")
             val coroutineContext = currentCoroutineContext()
 

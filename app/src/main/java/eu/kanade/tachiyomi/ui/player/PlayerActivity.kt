@@ -76,6 +76,8 @@ import eu.kanade.tachiyomi.data.connections.discord.DiscordRPCService
 import eu.kanade.tachiyomi.data.connections.discord.PlayerData
 import eu.kanade.tachiyomi.data.notification.NotificationReceiver
 import eu.kanade.tachiyomi.data.notification.Notifications
+import eu.kanade.tachiyomi.data.telegram.Td
+import eu.kanade.tachiyomi.data.telegram.TelegramCatalogueSource
 import eu.kanade.tachiyomi.data.torrentServer.service.TorrentServerService
 import eu.kanade.tachiyomi.databinding.PlayerLayoutBinding
 import eu.kanade.tachiyomi.network.NetworkHelper
@@ -96,6 +98,7 @@ import eu.kanade.tachiyomi.util.system.powerManager
 import eu.kanade.tachiyomi.util.system.toShareIntent
 import eu.kanade.tachiyomi.util.system.toast
 import `is`.xyz.mpv.MPVLib
+import okhttp3.Headers
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.launchIn
@@ -106,6 +109,7 @@ import kotlinx.coroutines.runBlocking
 import logcat.LogPriority
 import tachiyomi.domain.anime.model.asAnimeCover
 import tachiyomi.core.common.i18n.stringResource
+import kotlinx.coroutines.delay
 import tachiyomi.core.common.util.lang.launchIO
 import tachiyomi.core.common.util.lang.launchNonCancellable
 import tachiyomi.core.common.util.lang.launchUI
@@ -190,6 +194,22 @@ class PlayerActivity : BaseActivity() {
     }
 
     companion object {
+        private const val EXTRA_DIRECT_URL = "directUrl"
+        private const val EXTRA_DIRECT_TITLE = "directTitle"
+        private const val EXTRA_DIRECT_SOURCE = "directSource"
+        private const val EXTRA_DIRECT_HEADERS = "directHeaders"
+        private const val EXTRA_DIRECT_WIDTH = "directWidth"
+        private const val EXTRA_DIRECT_HEIGHT = "directHeight"
+        private const val TG_DEMUXER_MAX_BYTES = 20 * 1024 * 1024
+        private const val TG_DEMUXER_BACK_BYTES = 6 * 1024 * 1024
+        private const val TG_EXT_DEMUXER_MAX_BYTES = 24 * 1024 * 1024
+        private const val TG_EXT_DEMUXER_BACK_BYTES = 8 * 1024 * 1024
+        private const val TG_LAVF_PROBESIZE = "524288"
+        private const val TG_LAVF_ANALYZE_SECS = "1.0"
+        private const val TG_PROBE_ATTEMPTS = 15
+        private const val TG_PROBE_DELAY_MS = 200L
+        private val IMAGE_TRACK_CODECS = setOf("mjpeg", "png", "webp", "gif", "bmp", "tiff")
+
         fun newIntent(
             context: Context,
             animeId: Long?,
@@ -207,15 +227,71 @@ class PlayerActivity : BaseActivity() {
                 addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
             }
         }
+
+        fun newDirectIntent(
+            context: Context,
+            title: String,
+            videoUrl: String,
+            sourceLabel: String = "Telegram",
+            headers: Map<String, String> = emptyMap(),
+            width: Int = 0,
+            height: Int = 0,
+        ): Intent {
+            return Intent(context, PlayerActivity::class.java).apply {
+                putExtra(EXTRA_DIRECT_URL, videoUrl)
+                putExtra(EXTRA_DIRECT_TITLE, title)
+                putExtra(EXTRA_DIRECT_SOURCE, sourceLabel)
+                putExtra(EXTRA_DIRECT_WIDTH, width)
+                putExtra(EXTRA_DIRECT_HEIGHT, height)
+                if (headers.isNotEmpty()) {
+                    putStringArrayListExtra(
+                        EXTRA_DIRECT_HEADERS,
+                        ArrayList(headers.entries.map { (k, v) -> "$k\t$v" }),
+                    )
+                }
+                addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            }
+        }
     }
 
     // AM (CONNECTIONS) -->
     private val connectionsPreferences: ConnectionsPreferences = Injekt.get()
     // <-- AM (CONNECTIONS)
 
+
+    private fun handleDirectVideoIntent(intent: Intent): Boolean {
+        val directUrl = intent.getStringExtra(EXTRA_DIRECT_URL)
+        if (directUrl.isNullOrBlank()) return false
+        val directTitle = intent.getStringExtra(EXTRA_DIRECT_TITLE).orEmpty().ifBlank { "Video" }
+        val directSource = intent.getStringExtra(EXTRA_DIRECT_SOURCE).orEmpty().ifBlank { "Telegram" }
+        val directWidth = intent.getIntExtra(EXTRA_DIRECT_WIDTH, 0)
+        val directHeight = intent.getIntExtra(EXTRA_DIRECT_HEIGHT, 0)
+        val headerLines = intent.getStringArrayListExtra(EXTRA_DIRECT_HEADERS).orEmpty()
+        val headersBuilder = Headers.Builder()
+        headerLines.forEach { line ->
+            val tab = line.indexOf("\t")
+            if (tab > 0) {
+                headersBuilder.add(line.substring(0, tab), line.substring(tab + 1))
+            }
+        }
+        val builtHeaders = headersBuilder.build()
+        val qualityVideos = Td.buildQualityVideos(
+            baseUrl = directUrl,
+            width = directWidth,
+            height = directHeight,
+            headers = builtHeaders,
+            displayShortSide = Td.displayShortSide(this),
+        )
+        viewModel.initDirectVideo(directTitle, directSource, qualityVideos)
+        setVideo(qualityVideos.firstOrNull { it.preferred } ?: qualityVideos.first(), 0L)
+        setIntent(intent)
+        return true
+    }
+
     @SuppressLint("MissingSuperCall")
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        if (handleDirectVideoIntent(intent)) return
 
         val animeId = intent.extras?.getLong("animeId") ?: -1
         val episodeId = intent.extras?.getLong("episodeId") ?: -1
@@ -395,6 +471,7 @@ class PlayerActivity : BaseActivity() {
         player.destroy()
         castManager.cleanup()
 
+        eu.kanade.tachiyomi.data.telegram.Td.onPlaybackStopped()
         // AM (DISCORD) -->
         updateDiscordRPC(exitingPlayer = true)
         // <-- AM (DISCORD)
@@ -748,7 +825,12 @@ class PlayerActivity : BaseActivity() {
 
     override fun onResume() {
         if (player.initialized && player.paused == false) {
-            player.restoreCache()
+            val activeVideo = viewModel.currentVideo.value
+            if (activeVideo != null && isTelegramVideo(activeVideo)) {
+                applyTelegramStreamingOptions(activeVideo)
+            } else {
+                player.restoreCache()
+            }
         }
         // Reconectar Cast si estaba activo
         castManager.apply {
@@ -1000,7 +1082,12 @@ class PlayerActivity : BaseActivity() {
     @SuppressLint("UnspecifiedRegisterReceiverFlag")
     override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration) {
         if (!isInPictureInPictureMode) {
-            player.restoreCache()
+            val activeVideo = viewModel.currentVideo.value
+            if (activeVideo != null && isTelegramVideo(activeVideo)) {
+                applyTelegramStreamingOptions(activeVideo)
+            } else {
+                player.restoreCache()
+            }
             pipReceiver?.let {
                 unregisterReceiver(pipReceiver)
                 pipReceiver = null
@@ -1408,7 +1495,9 @@ class PlayerActivity : BaseActivity() {
         // Re-apply saved subtitle properties before every file load. Some mpv
         // runtime defaults can overwrite options set during initialization.
         player.applySubtitlePreferences()
+        MPVLib.setPropertyString("audio-display", "no")
         setHttpOptions(video)
+        applyTelegramStreamingOptions(video)
 
         // Set mime-type for TV or if provided
         val mime = video.mimeType ?: if (isTv) "video/mp4" else null
@@ -1489,6 +1578,62 @@ class PlayerActivity : BaseActivity() {
         }
         logcat(LogPriority.ERROR, error)
         finish()
+    }
+
+    private fun isTelegramVideo(video: Video): Boolean =
+        video.videoUrl.contains("127.0.0.1:49731") ||
+            viewModel.isDirectVideoMode() ||
+            viewModel.currentSource.value is TelegramCatalogueSource
+
+    private fun applyTelegramStreamingOptions(video: Video) {
+        val url = video.videoUrl
+        if (!isTelegramVideo(video)) return
+        val isExtensionStream = url.contains("src=ext") ||
+            viewModel.currentSource.value is TelegramCatalogueSource
+        val maxBytes = if (isExtensionStream) TG_EXT_DEMUXER_MAX_BYTES else TG_DEMUXER_MAX_BYTES
+        val backBytes = if (isExtensionStream) TG_EXT_DEMUXER_BACK_BYTES else TG_DEMUXER_BACK_BYTES
+        val readaheadSecs = "60"
+        val cacheSecs = "60"
+        MPVLib.setOptionString("demuxer-lavf-probesize", TG_LAVF_PROBESIZE)
+        MPVLib.setOptionString("demuxer-lavf-analyzeduration", TG_LAVF_ANALYZE_SECS)
+        MPVLib.setOptionString("demuxer-lavf-o", "fflags=+fastseek")
+        MPVLib.setOptionString(
+            "stream-lavf-o",
+            "reconnect=1,reconnect_streamed=1,reconnect_on_network_error=1,reconnect_delay_max=2",
+        )
+        MPVLib.setPropertyString("cache", "yes")
+        MPVLib.setPropertyString("cache-pause", "yes")
+        MPVLib.setPropertyString("cache-pause-initial", "no")
+        MPVLib.setPropertyString("cache-pause-wait", "1")
+        MPVLib.setPropertyString("network-timeout", "90")
+        MPVLib.setPropertyString("demuxer-max-bytes", "$maxBytes")
+        MPVLib.setPropertyString("demuxer-max-back-bytes", "$backBytes")
+        MPVLib.setPropertyString("demuxer-readahead-secs", readaheadSecs)
+        MPVLib.setPropertyString("cache-secs", cacheSecs)
+        applyTelegramVideoFilter(url)
+    }
+
+    @Suppress("MagicNumber")
+    private fun applyTelegramVideoFilter(url: String, actualWidth: Int = 0, actualHeight: Int = 0) {
+        val actualShort = if (actualWidth > 0 && actualHeight > 0) {
+            minOf(actualWidth, actualHeight)
+        } else {
+            0
+        }
+        val qParam = Uri.parse(url).getQueryParameter("q").orEmpty()
+        when {
+            qParam == "original" || qParam == "hls" || qParam == "auto" -> {
+                MPVLib.setPropertyString("vf", "")
+            }
+            else -> {
+                val targetQ = qParam.toIntOrNull()
+                if (targetQ != null && targetQ in 240..2160 && (actualShort == 0 || targetQ < actualShort)) {
+                    MPVLib.setPropertyString("vf", "scale=-2:$targetQ")
+                } else {
+                    MPVLib.setPropertyString("vf", "")
+                }
+            }
+        }
     }
 
     private fun parseVideoUrl(videoUrl: String): String {
@@ -1582,7 +1727,38 @@ class PlayerActivity : BaseActivity() {
         setMpvMediaTitle()
         setupPlayerOrientation()
         setupChapters()
+        ensureRealVideoTrackSelected()
         setupTracks()
+        viewModel.isLoading.update { viewModel.pausedForCache.value }
+        val activeVideoUrl = viewModel.currentVideo.value?.videoUrl.orEmpty()
+        val isTelegramStream = viewModel.isDirectVideoMode() ||
+            viewModel.currentSource.value is TelegramCatalogueSource ||
+            activeVideoUrl.contains("127.0.0.1:49731")
+        if (isTelegramStream) {
+            lifecycleScope.launchIO {
+                var w = MPVLib.getPropertyInt("width") ?: 0
+                var h = MPVLib.getPropertyInt("height") ?: 0
+                var tries = 0
+                while ((w <= 0 || h <= 0) && tries < TG_PROBE_ATTEMPTS && !player.isExiting) {
+                    delay(TG_PROBE_DELAY_MS)
+                    w = MPVLib.getPropertyInt("width") ?: 0
+                    h = MPVLib.getPropertyInt("height") ?: 0
+                    tries++
+                }
+                if (!player.isExiting && (w > 0 || h > 0)) {
+                    val displayShort = Td.displayShortSide(this@PlayerActivity)
+                    val chosen = viewModel.updateTelegramVideoResolution(w, h, displayShort)
+                    val targetUrl = chosen?.videoUrl ?: activeVideoUrl
+                    if (targetUrl.isNotBlank()) {
+                        withUIContext {
+                            if (!player.isExiting) {
+                                applyTelegramVideoFilter(targetUrl, w, h)
+                            }
+                        }
+                    }
+                }
+            }
+        }
         viewModel.restoreAspectRatio()
 
         // aniSkip stuff
@@ -1606,6 +1782,31 @@ class PlayerActivity : BaseActivity() {
             }
         }
         updateDiscordRPC(exitingPlayer = false)
+    }
+
+    @Suppress("CyclomaticComplexMethod")
+    private fun ensureRealVideoTrackSelected() {
+        val count = MPVLib.getPropertyInt("track-list/count") ?: 0
+        if (count <= 1) return
+        var selectedIsImage = false
+        var firstRealVidId: Int? = null
+        for (i in 0 until count) {
+            if (MPVLib.getPropertyString("track-list/$i/type") != "video") continue
+            val isAlbumArt = MPVLib.getPropertyBoolean("track-list/$i/albumart") == true
+            val codec = MPVLib.getPropertyString("track-list/$i/codec").orEmpty().lowercase()
+            val isImg = isAlbumArt || codec in IMAGE_TRACK_CODECS
+            val selected = MPVLib.getPropertyBoolean("track-list/$i/selected") == true
+            val id = MPVLib.getPropertyInt("track-list/$i/id") ?: continue
+            if (!isImg && firstRealVidId == null) {
+                firstRealVidId = id
+            }
+            if (selected && isImg) {
+                selectedIsImage = true
+            }
+        }
+        if (selectedIsImage && firstRealVidId != null) {
+            MPVLib.setPropertyInt("vid", firstRealVidId)
+        }
     }
 
     private fun setupTracks() {
@@ -1641,8 +1842,15 @@ class PlayerActivity : BaseActivity() {
 
     private fun setMpvMediaTitle() {
         if (player.isExiting) return
-        val anime = viewModel.currentAnime.value ?: return
-        val episode = viewModel.currentEpisode.value ?: return
+        val anime = viewModel.currentAnime.value
+        val episode = viewModel.currentEpisode.value
+        if (anime == null || episode == null) {
+            val fallbackTitle = viewModel.mediaTitle.value
+            if (fallbackTitle.isNotBlank()) {
+                MPVLib.setPropertyString("force-media-title", fallbackTitle)
+            }
+            return
+        }
 
         // Write to mpv table
         MPVLib.setPropertyString("user-data/current-anime/episode-title", episode.name)

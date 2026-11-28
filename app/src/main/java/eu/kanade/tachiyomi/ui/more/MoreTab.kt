@@ -23,6 +23,7 @@ import eu.kanade.domain.base.BasePreferences
 import eu.kanade.domain.ui.UiPreferences
 import eu.kanade.domain.ui.model.NavItem
 import eu.kanade.presentation.more.MoreScreen
+import eu.kanade.presentation.more.settings.screen.ExternalStorageAndServicesScreen
 import eu.kanade.presentation.util.LocalBackPress
 import eu.kanade.presentation.util.Tab
 import eu.kanade.tachiyomi.R
@@ -94,6 +95,7 @@ data object MoreTab : Tab {
                 onClickStats = { navigator.push(StatsScreen) },
                 onClickLibraryUpdateErrors = { navigator.push(LibraryUpdateErrorScreen()) },
                 onClickDataAndStorage = { navigator.push(SettingsScreen(SettingsScreen.Destination.DataAndStorage)) },
+                onClickExternalStorageAndServices = { navigator.push(ExternalStorageAndServicesScreen) },
                 onClickPlayerSettings = { navigator.push(PlayerSettingsScreen) },
                 onClickSettings = { navigator.push(SettingsScreen()) },
                 onClickAbout = { navigator.push(SettingsScreen(SettingsScreen.Destination.About)) },

@@ -55,6 +55,13 @@ import tachiyomi.core.common.util.lang.launchIO
 import tachiyomi.domain.anime.interactor.GetDuplicateLibraryAnime
 import tachiyomi.domain.anime.interactor.NetworkToLocalAnime
 import tachiyomi.domain.anime.model.Anime
+import eu.kanade.domain.telegram.TelegramPreferences
+import eu.kanade.tachiyomi.data.telegram.TelegramCatalogueSource
+import eu.kanade.tachiyomi.data.telegram.TelegramSeriesMergeStore
+import exh.source.MERGED_SOURCE_ID
+import tachiyomi.domain.anime.model.MergedAnimeReference
+import tachiyomi.domain.anime.repository.AnimeMergeRepository
+import tachiyomi.domain.anime.model.AnimeUpdate
 import tachiyomi.domain.anime.model.toAnimeUpdate
 import tachiyomi.domain.category.interactor.GetCategories
 import tachiyomi.domain.category.interactor.SetAnimeCategories
@@ -97,6 +104,8 @@ class BrowseSourceScreenModel(
     private val filterSerializer: FilterSerializer = Injekt.get(),
     private val getFavorites: tachiyomi.domain.anime.interactor.GetFavorites = Injekt.get(),
     private val trackPreferences: eu.kanade.domain.track.service.TrackPreferences = Injekt.get(),
+    private val telegramPreferences: TelegramPreferences = Injekt.get(),
+    private val animeMergeRepository: AnimeMergeRepository = Injekt.get(),
 ) : StateScreenModel<BrowseSourceScreenModel.State>(State(Listing.valueOf(listingQuery))) {
 
     var displayMode by sourcePreferences.sourceDisplayMode().asState(screenModelScope)
@@ -175,6 +184,16 @@ class BrowseSourceScreenModel(
                 mutableState.update { it.copy(favoriteIds = favorites.map { fav -> fav.id }.toImmutableSet()) }
             }
             .launchIn(screenModelScope)
+
+        if (source is TelegramCatalogueSource) {
+            TelegramSeriesMergeStore.revision
+                .drop(1)
+                .onEach {
+                    source.markKeepCacheOnRefresh()
+                    mutableState.update { it.copy(mergeRevision = it.mergeRevision + 1L) }
+                }
+                .launchIn(screenModelScope)
+        }
     }
 
     /**
@@ -182,9 +201,9 @@ class BrowseSourceScreenModel(
      */
     private val hideInLibraryItems = sourcePreferences.hideInAnimeLibraryItems().get()
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
-    val animePagerFlowFlow = state.map { it.listing }
+    val animePagerFlowFlow = state.map { it.listing to it.mergeRevision }
         .distinctUntilChanged()
-        .map { listing ->
+        .map { (listing, _) ->
             Pager(
                 PagingConfig(
                     pageSize = 30,
@@ -196,7 +215,26 @@ class BrowseSourceScreenModel(
                 getRemoteAnime.subscribe(sourceId, listing.query ?: "", listing.filters)
             }.flow.map { pagingData ->
                 val filtered = pagingData.map {
-                    val localAnime = networkToLocalAnime.getLocal(it.toDomainAnime(sourceId))
+                    val domainAnime = it.toDomainAnime(sourceId)
+                    var localAnime = networkToLocalAnime.getLocal(domainAnime)
+                    if (source is TelegramCatalogueSource) {
+                        val freshThumb = domainAnime.thumbnailUrl
+                        val thumbChanged = !freshThumb.isNullOrBlank() && freshThumb != localAnime.thumbnailUrl
+                        if (thumbChanged && (!localAnime.favorite || localAnime.thumbnailUrl.isNullOrBlank())) {
+                            val now = System.currentTimeMillis()
+                            updateAnime.await(
+                                AnimeUpdate(
+                                    id = localAnime.id,
+                                    thumbnailUrl = freshThumb,
+                                    coverLastModified = now,
+                                ),
+                            )
+                            localAnime = localAnime.copy(
+                                ogThumbnailUrl = freshThumb,
+                                coverLastModified = now,
+                            )
+                        }
+                    }
                     MutableStateFlow(localAnime).asStateFlow()
                 }
                 if (hideInLibraryItems) {
@@ -591,6 +629,98 @@ class BrowseSourceScreenModel(
         }
     }
 
+    @Suppress("LongMethod")
+    fun mergeSelection() {
+        val selection = state.value.selection
+        if (selection.size < 2) return
+        val primary = selection.first()
+        screenModelScope.launchIO {
+            if (source is TelegramCatalogueSource) {
+                val aliases = selection.associate { anime ->
+                    val key = TelegramSeriesMergeStore.extractSeriesKey(anime.url)
+                    key to source.cachedAliasesFor(key)
+                }
+                TelegramSeriesMergeStore.mergeSeries(
+                    prefs = telegramPreferences,
+                    sourceId = source.id,
+                    selectedAnimes = selection,
+                    extraAliasesByKey = aliases,
+                )
+                source.markKeepCacheOnRefresh()
+                if (primary.thumbnailUrl.isNullOrBlank()) {
+                    val fallbackCover = selection.firstNotNullOfOrNull { it.thumbnailUrl?.takeIf(String::isNotBlank) }
+                    if (fallbackCover != null) {
+                        updateAnime.await(
+                            AnimeUpdate(
+                                id = primary.id,
+                                thumbnailUrl = fallbackCover,
+                                coverLastModified = System.currentTimeMillis(),
+                            ),
+                        )
+                    }
+                }
+                clearSelection()
+                mutableState.update { it.copy(mergeRevision = it.mergeRevision + 1L) }
+                return@launchIO
+            }
+
+            val mergedUrl = "merged:${primary.source}:${primary.id}:${System.currentTimeMillis()}"
+            val cover = primary.thumbnailUrl
+                ?: selection.firstNotNullOfOrNull { it.thumbnailUrl?.takeIf(String::isNotBlank) }
+            val mergedDomain = Anime.create().copy(
+                source = MERGED_SOURCE_ID,
+                url = mergedUrl,
+                ogTitle = primary.title,
+                ogAuthor = primary.author,
+                ogArtist = primary.artist,
+                ogDescription = primary.description,
+                ogGenre = primary.genre,
+                ogStatus = primary.status,
+                ogThumbnailUrl = cover,
+                favorite = true,
+                dateAdded = System.currentTimeMillis(),
+                initialized = true,
+            )
+            val savedMerged = networkToLocalAnime.await(mergedDomain)
+            val refs = buildList {
+                add(
+                    MergedAnimeReference(
+                        id = -1L,
+                        isInfoAnime = false,
+                        getEpisodeUpdates = true,
+                        episodeSortMode = MergedAnimeReference.EPISODE_SORT_NO_DEDUPE,
+                        episodePriority = 0,
+                        downloadEpisodes = false,
+                        mergeId = savedMerged.id,
+                        mergeUrl = savedMerged.url,
+                        animeId = savedMerged.id,
+                        animeUrl = savedMerged.url,
+                        animeSourceId = MERGED_SOURCE_ID,
+                    ),
+                )
+                selection.forEachIndexed { idx, anime ->
+                    add(
+                        MergedAnimeReference(
+                            id = -1L,
+                            isInfoAnime = idx == 0,
+                            getEpisodeUpdates = true,
+                            episodeSortMode = MergedAnimeReference.EPISODE_SORT_NONE,
+                            episodePriority = idx,
+                            downloadEpisodes = false,
+                            mergeId = savedMerged.id,
+                            mergeUrl = savedMerged.url,
+                            animeId = anime.id,
+                            animeUrl = anime.url,
+                            animeSourceId = anime.source,
+                        ),
+                    )
+                }
+            }
+            animeMergeRepository.insertAll(refs)
+            clearSelection()
+        }
+    }
+
     /**
      * Get user categories.
      *
@@ -688,6 +818,7 @@ class BrowseSourceScreenModel(
         val favoriteIds: ImmutableSet<Long> = persistentSetOf(),
         val targetCount: Int = 0,
         val lastSelectedIndex: Int? = null,
+        val mergeRevision: Long = 0L,
     ) {
         val isUserQuery get() = listing is Listing.Search && !listing.query.isNullOrEmpty()
         val selectionMode get() = selection.isNotEmpty()

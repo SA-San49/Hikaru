@@ -5,6 +5,7 @@ import eu.kanade.domain.base.BasePreferences
 import eu.kanade.domain.connections.service.ConnectionsPreferences
 import eu.kanade.domain.source.service.SourcePreferences
 import eu.kanade.domain.sync.SyncPreferences
+import eu.kanade.domain.telegram.TelegramPreferences
 import eu.kanade.domain.track.service.TrackPreferences
 import eu.kanade.domain.ui.UiPreferences
 import eu.kanade.tachiyomi.core.security.PrivacyPreferences
@@ -120,6 +121,9 @@ class PreferenceModule(val app: Application) : InjektModule {
 
         addSingletonFactory {
             SyncPreferences(get())
+        }
+        addSingletonFactory {
+            TelegramPreferences(get())
         }
         // Cast Server -->
         addSingletonFactory {
