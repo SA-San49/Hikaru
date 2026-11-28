@@ -1534,9 +1534,9 @@ private fun SharedAnimeBottomActionMenu(
         onInternalClicked = {
             onEpisodeClicked(selected.fastMap { it.episode }.first(), true)
         }.takeIf { alwaysUseExternalPlayer && selected.size == 1 },
-        onUnmergeClicked = {
-            onUnmergeClicked?.invoke(selected.fastMap { it.episode })
-        }.takeIf { onUnmergeClicked != null },
+        onUnmergeClicked = onUnmergeClicked?.let { handler ->
+            { handler(selected.fastMap { it.episode }) }
+        },
     )
 }
 
